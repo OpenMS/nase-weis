@@ -1,0 +1,10 @@
+{
+  "channel": "nightly",
+  "source_repository": "OpenMS/OpenMS",
+  "source_ref": "nightly",
+  "source_commit": "553de474c71b4f9926e5fcb264530e3d30b72b88",
+  "image": "ghcr.io/openms/openms-executables@sha256:2328f9e3ffe968b92455009d7a327f02fe973d150f8bb5784c3fe37c6288f97d",
+  "openms_version": "3.7.0-pre-HEAD-2026-11-03",
+  "revision": "553de47",
+  "pyopenms_version": "3.6.0"
+}

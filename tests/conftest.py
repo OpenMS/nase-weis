@@ -21,7 +21,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--naseweis-baseline",
         action="store_true",
-        help="Compare every NME1 match/mapping with the pinned OpenMS 3.6 reference.",
+        help="Compare every NME1 match/mapping with the pinned nightly reference.",
     )
 
 
@@ -45,7 +45,9 @@ def pytest_sessionstart(session):
         )
     if not config.getoption("--naseweis-baseline"):
         return
-    manifest = json.loads((ROOT / "tests/data/naseweis/manifest.json").read_text())
+    manifest = json.loads(
+        (ROOT / "tests/data/naseweis/nightly/manifest.json").read_text()
+    )
     help_text = subprocess.run(
         ["NucleicAcidSearchEngine", "--help"],
         capture_output=True,
@@ -56,8 +58,16 @@ def pytest_sessionstart(session):
     version = re.search(r"Version: (\S+)", help_text.stdout + help_text.stderr)
     if not version or version.group(1) != manifest["openms_version"]:
         raise pytest.UsageError(
-            "Reference results require the pinned OpenMS 3.6.0 runtime. "
+            "Reference results require the pinned OpenMS nightly runtime. "
             "Run: python scripts/check_regressions.py --container"
+        )
+    if (
+        manifest.get("revision")
+        and f"Revision: {manifest['revision']}"
+        not in help_text.stdout + help_text.stderr
+    ):
+        raise pytest.UsageError(
+            "OpenMS source revision does not match the nightly reference."
         )
     import pyopenms
 

@@ -25,6 +25,7 @@ def app(tmp_path, monkeypatch):
     "page",
     [
         "content/quickstart.py",
+        "content/decoy_database.py",
         "content/topp_workflow_file_upload.py",
         "content/naseweis.py",
         "content/topp_workflow_execution.py",
@@ -257,3 +258,93 @@ def test_missing_run_parameters_do_not_break_other_exports(app):
     assert len(app.dataframe[0].value) == 1
     assert "Download search parameters" not in _downloads(app)
     assert "Download mzTab" in _downloads(app)
+
+
+def test_nightly_configuration_preserves_exports_and_cached_digest_mode(app):
+    app.run(timeout=30)
+    app.switch_page("content/naseweis.py").run(timeout=30)
+    exports = next(
+        widget for widget in app.multiselect if widget.label == "Result files"
+    )
+    exports.set_value(["id_out", "db_out", "lfq_out"]).run()
+    app.switch_page("content/topp_workflow_file_upload.py").run()
+    app.switch_page("content/naseweis.py").run()
+    app.selectbox(key="naseweis-param-database-source").select("Cached digest").run()
+    assert not app.exception
+    assert any("cached database controls digestion" in info.value for info in app.info)
+    saved = json.loads(
+        (Path(app.session_state.workspace) / "naseweis/params.json").read_text()
+    )
+    assert saved["search-exports"] == ["id_out", "db_out", "lfq_out"]
+    assert saved["database-source"] == "Cached digest"
+
+
+def test_all_available_search_artifacts_can_be_downloaded(app):
+    from src.naseweis_tools import SEARCH_EXPORTS
+
+    results = _finished_run(app)
+    for label, relative, mime in SEARCH_EXPORTS.values():
+        path = results / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("test artifact")
+    (results / "database").mkdir()
+    (results / "database/decoys.fasta").write_text(">DECOY_rna\nUGCA\n")
+    _results_page(app)
+    downloads = _downloads(app)
+    for option, (label, relative, mime) in SEARCH_EXPORTS.items():
+        assert (
+            "Download idXML" if option == "id_out" else f"Download {label}"
+        ) in downloads
+    assert "Download decoys.fasta" in downloads
+
+
+def test_database_page_shows_saved_counts_exports_and_parameter_snapshot(app):
+    from src.workflow.RunManager import RunManager
+
+    app.run(timeout=30)
+    app.switch_page("content/decoy_database.py").run(timeout=30)
+    assert not app.exception
+    app.radio(key="decoy-database-step").set_value("Configure").run(timeout=30)
+    directory = Path(app.session_state.workspace) / "decoy-database"
+    runs = RunManager(directory)
+    run_id = runs.new_run("Saved database", directory / "params.json")
+    database = runs.results_dir(run_id) / "database"
+    database.mkdir(parents=True)
+    (database / "database.fasta").write_text(">rna\nACGU\n>DECOY_rna\nUGCA\n")
+    runs.finish(run_id, "finished")
+    # Refresh the full page so that the run picker reads its new persisted run.
+    app.switch_page("content/quickstart.py").run()
+    app.switch_page("content/decoy_database.py").run(timeout=30)
+    assert not app.exception
+    app.radio(key="decoy-database-step").set_value("Results").run(timeout=30)
+    assert any(str(metric.value) == "2 sequences" for metric in app.metric)
+    assert "Download database.fasta" in _downloads(app)
+    assert "Download database parameters" in _downloads(app)
+    runs.params_file(run_id).unlink()
+    app.switch_page("content/quickstart.py").run()
+    app.switch_page("content/decoy_database.py").run(timeout=30)
+    app.radio(key="decoy-database-step").set_value("Results").run(timeout=30)
+    assert "Download database parameters" not in _downloads(app)
+    (database / "database.fasta").unlink()
+    app.run(timeout=30)
+    assert any("No generated databases" in info.value for info in app.info)
+
+
+def test_database_step_change_refreshes_files_added_on_upload(app):
+    app.run(timeout=30)
+    app.switch_page("content/decoy_database.py").run(timeout=30)
+    directory = Path(app.session_state.workspace) / "decoy-database"
+    uploaded = directory / "input-files/database-files/new-rna.fasta"
+    uploaded.parent.mkdir(parents=True, exist_ok=True)
+    uploaded.write_text(">rna\nACGU\n")
+    app.radio(key="decoy-database-step").set_value("Configure").run(timeout=30)
+    assert not app.exception
+    selector = app.multiselect(key="decoy-database-param-database-files")
+    assert "new-rna.fasta" in selector.options
+    selector.set_value([str(uploaded)]).run()
+    app.radio(key="decoy-database-step").set_value("Run").run(timeout=30)
+    assert any(button.label == "Start Workflow" for button in app.button)
+    saved = json.loads((directory / "params.json").read_text())
+    assert saved["database-files"] == [str(uploaded)]
+    app.radio(key="decoy-database-step").set_value("Results").run(timeout=30)
+    assert any("No finished runs" in info.value for info in app.info)

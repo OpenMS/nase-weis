@@ -7,9 +7,10 @@
 # debug container after build (comment out ENTRYPOINT) and run container with interactive /bin/bash shell
 # prune unused images/etc. to free disc space (e.g. might be needed on gitpod). Use with care.: docker system prune --all --force
 
-FROM ubuntu:22.04 AS stage1
+ARG OPENMS_NIGHTLY_IMAGE=ghcr.io/openms/openms-executables@sha256:2328f9e3ffe968b92455009d7a327f02fe973d150f8bb5784c3fe37c6288f97d
+FROM ${OPENMS_NIGHTLY_IMAGE} AS stage1
 ARG OPENMS_REPO=https://github.com/OpenMS/OpenMS.git
-ARG OPENMS_BRANCH=develop
+ARG OPENMS_BRANCH=nightly
 ARG PORT=8501
 # GitHub repository whose latest release supplies the bundled Windows
 # installer. Empty: `github-user` and `repository-name` from settings.json,
@@ -106,6 +107,7 @@ COPY hooks/ /app/hooks
 COPY src/ /app/src
 COPY utils/ /app/utils
 COPY app.py /app/app.py
+COPY openms-runtime.json /app/openms-runtime.json
 COPY settings.json /app/settings.json
 COPY default-parameters.json /app/default-parameters.json
 COPY presets.json /app/presets.json

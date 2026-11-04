@@ -202,10 +202,17 @@ def _make_workflow(workflow_dir: Path, params: dict, executor) -> Workflow:
     workflow = object.__new__(Workflow)
     workflow.name = workflow_dir.name
     workflow.workflow_dir = workflow_dir
+    workflow.results_dir = workflow_dir / "results"
     workflow.file_manager = FileManager(workflow_dir)
     workflow.logger = Logger(workflow_dir)
     workflow.parameter_manager = MagicMock()
     workflow.parameter_manager.ini_dir = workflow_dir / "ini"
+    schema_dir = Path(__file__).parent / "data/naseweis/nightly"
+    workflow.parameter_manager.ini_dir.mkdir(parents=True, exist_ok=True)
+    for tool in ["NucleicAcidSearchEngine", "DecoyDatabase"]:
+        (workflow.parameter_manager.ini_dir / f"{tool}.ini").write_bytes(
+            (schema_dir / f"{tool}.ini").read_bytes()
+        )
     workflow.executor = executor
     workflow.params = params
     # workflow_process() and execute_workflow() both create results/ before
@@ -441,7 +448,7 @@ def test_execution_returns_false_on_missing_input(nase_workflow):
     assert nase_workflow.execution() is False
     nase_workflow.executor.run_topp.assert_not_called()
     assert (
-        "Select one existing mzML spectra file"
+        "Select one existing MS spectra file"
         in _read_logs(nase_workflow.workflow_dir)["minimal.log"]
     )
 

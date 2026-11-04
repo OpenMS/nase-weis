@@ -1,4 +1,4 @@
-"""Record reviewable NME1 reference results in a matching OpenMS 3.6 runtime.
+"""Record reviewable NME1 reference results in the pinned OpenMS runtime.
 
 Run explicitly in the pinned test container; never run automatically in CI.
 Use a candidate directory, inspect the diff, then replace accepted fixtures.
@@ -43,13 +43,21 @@ def main(output: Path) -> None:
         check=True,
     )
     version = re.search(r"Version: (\S+)", help_text.stdout + help_text.stderr).group(1)
-    if version != "3.6.0" or pyopenms.__version__ != "3.6.0":
+    runtime = json.loads((ROOT / "openms-runtime.json").read_text())
+    if (
+        version != runtime["openms_version"]
+        or pyopenms.__version__ != runtime["pyopenms_version"]
+        or f"Revision: {runtime['revision']}" not in help_text.stdout + help_text.stderr
+    ):
         raise SystemExit(
-            "Use the pinned OpenMS/pyOpenMS 3.6.0 container to record these references."
+            "Use the runtime pinned in openms-runtime.json to record these references."
         )
     inputs = ["example-data/mzML/NME1.mzML", "example-data/fasta/NME1_Target.fasta"]
     manifest = {
         "openms_version": version,
+        "source_commit": runtime["source_commit"],
+        "revision": runtime["revision"],
+        "image": runtime["image"],
         "pyopenms_version": pyopenms.__version__,
         "inputs": {
             path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest()

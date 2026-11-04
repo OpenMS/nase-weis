@@ -1,7 +1,7 @@
 {
     "app-name": "NASEWEIS",
     "github-user": "poshul",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "repository-name": "nase-weis",
     "legal_links": {
         "impressum": "https://openms.de/impressum",
@@ -48,7 +48,8 @@
         "max_workspace_gb": 200,
         "chunk_mb": 32,
         "workflows": {
-            "naseweis": "src.Workflow:Workflow"
+            "naseweis": "src.Workflow:Workflow",
+            "decoy-database": "src.DecoyWorkflow:DecoyWorkflow"
         }
     },
     "max_threads": {

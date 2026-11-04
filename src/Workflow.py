@@ -8,10 +8,23 @@ import streamlit as st
 from streamlit.components.v1 import html
 
 from src.naseweis_results import coverage_html, match_table, read_mztab
-from src.workflow.ParameterManager import bool_param_paths_from_param_xml_ini
+from src.naseweis_tools import (
+    DECOY_INPUTS,
+    DECOY_OUTPUTS,
+    SEARCH_EXPORTS,
+    SEARCH_INPUTS,
+    enabled,
+    tool_flags,
+    tool_schema,
+    validate_search_options,
+)
 from src.workflow.WorkflowManager import WorkflowManager
 
-SEARCH_DEFAULTS = {"oligo:enzyme": "RNase_T1"}
+SEARCH_DEFAULTS = {
+    "oligo:enzyme": "RNase_T1",
+    "fdr:decoy_pattern": "DECOY_",
+    "fdr:remove_decoys": True,
+}
 DECOY_DEFAULTS = {"type": "RNA", "method": "shuffle"}
 # Older TOPP versions store CLI flags as strings in ParamXML, so keep the
 # known flags as well as those detected from current type="bool" entries.
@@ -23,7 +36,7 @@ SEARCH_FLAGS = [
     "modifications:resolve_ambiguities",
     "fdr:remove_decoys",
 ]
-DECOY_FLAGS = ["only_decoy", "keep_terminal_nucleotides"]
+DECOY_FLAGS = ["only_decoy"]
 
 
 @st.cache_data(show_spinner=False)
@@ -59,32 +72,67 @@ class Workflow(WorkflowManager):
         if st.button("Load example dataset", type="primary", icon=":material/science:"):
             self.load_example_data()
             st.success("NME1 spectra and RNA database loaded. Continue to Configure.")
-        for label, key, extension in [
-            ("MS/MS spectra", "mzML-files", "mzML"),
-            ("RNA sequences", "fasta-files", "fasta"),
+        for label, key, extensions in [
+            ("MS/MS spectra", "mzML-files", ["mzML", "raw", "d"]),
+            ("RNA sequences", "fasta-files", ["fasta", "fa", "faa"]),
+            ("Reusable database digest (optional)", "digest-files", ["oms"]),
+            (
+                "bedRMod modification mapping (optional)",
+                "bedrmod-mapping-files",
+                ["csv"],
+            ),
         ]:
             with st.expander(label, expanded=True):
-                self.ui.upload_widget(key=key, name=label, file_types=[extension])
+                self.ui.upload_widget(key=key, name=label, file_types=extensions)
 
     def configure(self) -> None:
         self.ui.select_input_file(
             "mzML-files",
             name="MS/MS spectra",
             multiple=False,
-            upload={"file_types": ["mzML"]},
+            upload={"file_types": ["mzML", "raw", "d"]},
         )
-        self.ui.select_input_file(
-            "fasta-files",
-            name="RNA sequence database",
-            multiple=False,
-            upload={"file_types": ["fasta"]},
+        self.ui.input_widget(
+            "database-source",
+            "FASTA",
+            "Search database source",
+            "A cached digest keeps its original digestion and decoy provenance.",
+            "selectbox",
+            options=["FASTA", "Cached digest"],
+            reactive=True,
         )
+        source = st.session_state.get(
+            f"{self.parameter_manager.param_prefix}database-source", "FASTA"
+        )
+        if source == "Cached digest":
+            self.ui.select_input_file(
+                "digest-files",
+                name="Cached RNA digest",
+                multiple=False,
+                upload={"file_types": ["oms"]},
+            )
+            st.info(
+                "The cached database controls digestion. Enable FDR only if its original database includes decoys."
+            )
+        else:
+            self.ui.select_input_file(
+                "fasta-files",
+                name="RNA sequence database",
+                multiple=False,
+                upload={"file_types": ["fasta", "fa", "faa"]},
+            )
         st.subheader("False discovery rate")
         self.ui.input_widget(
             "add-decoys",
             True,
-            "Estimate FDR with shuffled RNA decoys",
-            "Generate a target-decoy database and filter by q-value.",
+            "Generate a target-decoy RNA database",
+            "Disable for a FASTA that already includes decoys, or when searching a cached digest.",
+        )
+        self.ui.input_widget(
+            "estimate-fdr",
+            self.params.get("add-decoys", True),
+            "Estimate false discovery rate",
+            "Requires a target-decoy FASTA or a cached digest containing decoys.",
         )
         self.ui.input_widget(
             "FDR_cutoff",
@@ -114,9 +162,30 @@ class Workflow(WorkflowManager):
                 "fragment:mass_tolerance_unit",
                 "modifications:fixed",
                 "modifications:variable",
+                "modifications:variable_max_per_oligo",
+                "modifications:resolve_ambiguities",
+                "precursor:correct_with_flash",
+                "precursor:min_charge",
+                "precursor:max_charge",
+                "precursor:isotopes",
+                "fragment:ions",
+                "preprocessing:deisotoping",
+                "preprocessing:remove_precursor_peak",
+                "preprocessing:filter_window_mower",
+                "preprocessing:filter_nlargest",
+                "scoring:method",
+                "scoring:use_mass_accuracy",
+                "report:top_hits",
+                "report:require_coverage",
+                "report:precursor_percentage",
+                "fdr:decoy_pattern",
+                "fdr:remove_decoys",
             ],
-            exclude_parameters=["fdr:"],
-            flag_parameters=SEARCH_FLAGS,
+            exclude_parameters=["fdr:cutoff"],
+            flag_parameters=tool_flags(
+                self.parameter_manager.ini_dir / "NucleicAcidSearchEngine.ini",
+                SEARCH_FLAGS,
+            ),
         )
         with st.expander("Decoy generation settings"):
             self.ui.input_TOPP(
@@ -125,33 +194,68 @@ class Workflow(WorkflowManager):
                 custom_defaults=DECOY_DEFAULTS,
                 exclude_parameters=[
                     "type",
-                    "decoy_string",
-                    "decoy_string_position",
-                    "only_decoy",
                     "enzyme",
                     "rnase",
                     "NeighborSearch:",
+                    "entrapment_ratio",
+                    "entrapment_string",
                     "Decoy:",
                 ],
-                flag_parameters=DECOY_FLAGS,
+                flag_parameters=tool_flags(
+                    self.parameter_manager.ini_dir / "DecoyDatabase.ini", DECOY_FLAGS
+                ),
             )
+
+        st.subheader("Additional result files")
+        export_key = f"{self.parameter_manager.param_prefix}search-exports"
+        if export_key not in st.session_state:
+            st.session_state[export_key] = self.params.get("search-exports", ["id_out"])
+        st.multiselect(
+            "Result files",
+            list(SEARCH_EXPORTS),
+            key=export_key,
+            format_func=lambda option: SEARCH_EXPORTS[option][0],
+            help="Selected files are retained with this run and can be downloaded from Results.",
+            on_change=self.parameter_manager.save_parameters,
+        )
+        self.parameter_manager.save_parameters()
+        self.ui.select_input_file(
+            "bedrmod-mapping-files",
+            name="Custom modification mapping (optional)",
+            multiple=False,
+            upload={"file_types": ["csv"]},
+        )
+        st.caption(
+            "RNA mode excludes protein-only entrapment and neighbor searches. The standalone DecoyDatabase page exposes the complete tool."
+        )
 
     def execution(self) -> bool:
         """Run the tools and propagate failure; never save Streamlit state here."""
+        cached_digest = self.params.get("database-source", "FASTA") == "Cached digest"
         for key, label in [
-            ("mzML-files", "mzML spectra"),
-            ("fasta-files", "RNA FASTA database"),
+            ("mzML-files", "MS spectra"),
+            ("digest-files", "cached RNA digest")
+            if cached_digest
+            else ("fasta-files", "RNA FASTA database"),
         ]:
             selected = self.params.get(key)
-            # Reject ambiguous legacy selections instead of combining acquisitions.
-            if not isinstance(selected, str) or not Path(selected).is_file():
+            valid_vendor = (
+                key == "mzML-files"
+                and isinstance(selected, str)
+                and Path(selected).suffix.lower() == ".d"
+                and Path(selected).is_dir()
+            )
+            if not isinstance(selected, str) or not (
+                Path(selected).is_file() or valid_vendor
+            ):
                 self.logger.log(
                     f"ERROR: Select one existing {label} file on Configure."
                 )
                 return False
-        if not all(
-            shutil.which(tool) for tool in ["DecoyDatabase", "NucleicAcidSearchEngine"]
-        ):
+        needed = ["NucleicAcidSearchEngine"]
+        if enabled(self.params.get("add-decoys", True)) and not cached_digest:
+            needed.append("DecoyDatabase")
+        if not all(shutil.which(tool) for tool in needed):
             self.logger.log(
                 "ERROR: Install OpenMS TOPP tools (DecoyDatabase and NucleicAcidSearchEngine) and add them to PATH."
             )
@@ -168,71 +272,145 @@ class Workflow(WorkflowManager):
             | params.get("_defaults", {}).get("DecoyDatabase", {})
             | params.get("DecoyDatabase", {})
         )
-        use_decoys = params.get("add-decoys", True)
+        # File destinations and sources belong to the workspace selectors,
+        # never to an imported native parameter dictionary.
+        for key in SEARCH_INPUTS | set(SEARCH_EXPORTS) | {"out"}:
+            search.pop(key, None)
+        for key in DECOY_INPUTS | DECOY_OUTPUTS:
+            decoy.pop(key, None)
+        use_decoys = enabled(params.get("add-decoys", True)) and not cached_digest
+        calculate_fdr = enabled(
+            params.get("estimate-fdr", params.get("add-decoys", True))
+        )
+        exports = params.get("search-exports", ["id_out"])
+        error = validate_search_options(search, exports, cached_digest=cached_digest)
+        if error:
+            self.logger.log(f"ERROR: {error}")
+            return False
         cutoff = float(params.get("FDR_cutoff", 0.05))
         if not 0 <= cutoff <= 1:
             self.logger.log("ERROR: Maximum q-value must be between 0 and 1.")
             return False
-        # Override both enabled and disabled states on every run. In particular,
-        # do not leave the previous run's decoy pattern or average-mass mode behind.
-        search.update(
-            {
-                "fdr:cutoff": cutoff if use_decoys else 1.0,
-                "fdr:decoy_pattern": "DECOY_" if use_decoys else "",
-                "fdr:remove_decoys": bool(use_decoys),
-            }
+        # Preserve native settings; derive only the flags owned by the workflow.
+        search["fdr:cutoff"] = cutoff if calculate_fdr else 1.0
+        search["fdr:decoy_pattern"] = (
+            (
+                decoy.get("decoy_string", "DECOY_")
+                if use_decoys
+                else search.get("fdr:decoy_pattern", "DECOY_")
+            )
+            if calculate_fdr
+            else ""
         )
-        decoy.update(
-            {
-                "type": "RNA",
-                "decoy_string": "DECOY_",
-                "decoy_string_position": "prefix",
-                "only_decoy": False,
-            }
+        search["fdr:remove_decoys"] = (
+            enabled(search.get("fdr:remove_decoys", True)) if calculate_fdr else False
         )
+        # NASE consumes RNA sequences, while the standalone builder also supports proteins.
+        decoy["type"] = "RNA"
+        decoy.setdefault("decoy_string", "DECOY_")
+        decoy.setdefault("decoy_string_position", "prefix")
+        if use_decoys and (not str(decoy["decoy_string"]).strip()):
+            self.logger.log("ERROR: The decoy accession marker must not be empty.")
+            return False
+        if calculate_fdr and not str(search["fdr:decoy_pattern"]).strip():
+            self.logger.log(
+                "ERROR: FDR estimation requires a nonempty decoy accession marker."
+            )
+            return False
+        if (
+            use_decoys
+            and calculate_fdr
+            and int(decoy.get("shuffle_decoy_ratio", 1)) != 1
+        ):
+            self.logger.log(
+                "ERROR: NASE's FDR estimation requires a 1:1 target-decoy ratio. Use ratio 1 or disable FDR."
+            )
+            return False
         params["NucleicAcidSearchEngine"], params["DecoyDatabase"] = search, decoy
         params.setdefault("_flag_params", {})
-        for tool, flags in [
-            ("NucleicAcidSearchEngine", SEARCH_FLAGS),
-            ("DecoyDatabase", DECOY_FLAGS),
-        ]:
+        tools = [("NucleicAcidSearchEngine", SEARCH_FLAGS)]
+        if use_decoys:
+            tools.append(("DecoyDatabase", DECOY_FLAGS))
+        for tool, flags in tools:
             if not self.parameter_manager.create_ini(tool):
                 self.logger.log(f"ERROR: Cannot read {tool} parameters.")
                 return False
-            detected = bool_param_paths_from_param_xml_ini(
-                self.parameter_manager.ini_dir / f"{tool}.ini", tool
+            params["_flag_params"][tool] = tool_flags(
+                self.parameter_manager.ini_dir / f"{tool}.ini", flags
             )
-            params["_flag_params"][tool] = sorted(set(flags) | detected)
+        schema = tool_schema(
+            self.parameter_manager.ini_dir / "NucleicAcidSearchEngine.ini"
+        )
+        unknown = sorted(set(search) - schema.keys())
+        if use_decoys:
+            decoy_schema = tool_schema(
+                self.parameter_manager.ini_dir / "DecoyDatabase.ini"
+            )
+            unknown += [
+                f"DecoyDatabase:{key}"
+                for key in sorted(set(decoy) - decoy_schema.keys())
+            ]
+        if unknown:
+            self.logger.log(
+                "ERROR: Unsupported parameters for these OpenMS tools: "
+                + ", ".join(unknown)
+            )
+            return False
+        for option in exports:
+            if option not in schema:
+                self.logger.log(
+                    f"ERROR: This NASE installation cannot generate {SEARCH_EXPORTS[option][0]}; use the pinned nightly runtime."
+                )
+                return False
         # The manager points at this run's snapshot in both local and queue mode.
         self.parameter_manager.write_parameters(params)
         self.params = params
-        database = [params["fasta-files"]]
+        database = [params["digest-files"] if cached_digest else params["fasta-files"]]
         if use_decoys:
             output = self.file_manager.get_files(
-                "target-decoy.fasta", set_results_dir="database"
+                "decoys.fasta"
+                if enabled(decoy.get("only_decoy", False))
+                else "target-decoy.fasta",
+                set_results_dir="database",
             )
-            self.logger.log("Generating shuffled RNA decoys...")
+            self.logger.log("Generating RNA decoys...")
             if not self.executor.run_topp(
                 "DecoyDatabase", {"in": [database], "out": output}
             ):
                 return False
-            database = output
+            if enabled(decoy.get("only_decoy", False)):
+                combined = self.results_dir / "database" / "target-and-decoy.fasta"
+                combined.write_bytes(
+                    Path(params["fasta-files"]).read_bytes().rstrip()
+                    + b"\n"
+                    + Path(output[0]).read_bytes()
+                )
+                database = [str(combined)]
+            else:
+                database = output
         tab_out = self.file_manager.get_files(
             "search.mzTab", set_results_dir="mztab_results"
         )
-        id_out = self.file_manager.get_files(
-            "search.idXML", set_results_dir="idxml_results"
-        )
+        io = {
+            "in": [params["mzML-files"]],
+            "digest" if cached_digest else "database": database,
+            "out": tab_out,
+        }
+        mapping = params.get("bedrmod-mapping-files")
+        if mapping:
+            if not Path(mapping).is_file():
+                self.logger.log(
+                    "ERROR: The selected custom modification mapping no longer exists."
+                )
+                return False
+            io["bedrmod_chebi_mapping"] = [mapping]
+        for option in exports:
+            relative = SEARCH_EXPORTS[option][1]
+            destination = self.results_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            io[option] = [str(destination)]
         self.logger.log("Searching RNA oligonucleotides...")
-        return self.executor.run_topp(
-            "NucleicAcidSearchEngine",
-            {
-                "in": [params["mzML-files"]],
-                "database": database,
-                "out": tab_out,
-                "id_out": id_out,
-            },
-        )
+        return self.executor.run_topp("NucleicAcidSearchEngine", io)
 
     def results(self) -> None:
         # Legacy runs used extensionless names; retain access after migration.
@@ -312,6 +490,23 @@ class Workflow(WorkflowManager):
             ]:
                 if path.is_file():
                     st.download_button(label, path.read_bytes(), path.name, mime)
+            for option, (label, relative, mime) in SEARCH_EXPORTS.items():
+                if option == "id_out":
+                    continue
+                artifact = self.results_dir / relative
+                if artifact.is_file():
+                    st.download_button(
+                        f"Download {label}", artifact.read_bytes(), artifact.name, mime
+                    )
+            database_dir = self.results_dir / "database"
+            if database_dir.is_dir():
+                for artifact in sorted(database_dir.glob("*.fasta")):
+                    st.download_button(
+                        f"Download {artifact.name}",
+                        artifact.read_bytes(),
+                        artifact.name,
+                        "text/plain",
+                    )
             snapshot = (
                 self.runs.params_file(self.run_id)
                 if self.run_id

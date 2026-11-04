@@ -11,20 +11,42 @@ app:
   image: ghcr.io/poshul/nase-weis
 inputs:
   mzML-files:
-    types: [mzML]
+    types: [mzML, raw, d]
     multiple: false
-    description: One MS/MS acquisition in mzML format.
+    description: One MS/MS acquisition (mzML, Thermo RAW or Bruker directory).
   fasta-files:
-    types: [fasta]
+    types: [fasta, fa, faa]
     multiple: false
     description: RNA sequence database, including bracketed MODOMICS modifications.
+  digest-files:
+    types: [oms]
+    multiple: false
+    description: Previously generated NASE RNA digest.
+  bedrmod-mapping-files:
+    types: [csv]
+    multiple: false
+    description: Custom bedRMod modification mapping.
+  database-files:
+    types: [fasta, fa, faa]
+    multiple: true
+    description: RNA or protein FASTA inputs for the standalone database builder.
+  neighbor-files:
+    types: [fasta, fa, faa]
+    multiple: false
+    description: Relevant proteins for NeighborSearch.
 workflows:
   - name: NASEWEIS
     class: src/Workflow.py:Workflow
-    inputs: [mzML-files, fasta-files]
+    inputs: [mzML-files, fasta-files, digest-files, bedrmod-mapping-files]
     steps:
       - {tool: DecoyDatabase, in: fasta-files, optional: true}
       - {tool: NucleicAcidSearchEngine, in: mzML-files}
+    presets: false
+  - name: Decoy Database
+    class: src/DecoyWorkflow.py:DecoyWorkflow
+    inputs: [database-files, neighbor-files]
+    steps:
+      - {tool: DecoyDatabase, in: database-files}
     presets: false
 results:
   - {role: table, workflow: NASEWEIS, title: Oligonucleotide spectrum matches, source: mztab_results}
@@ -34,6 +56,7 @@ pages:
   - content/naseweis.py
   - content/topp_workflow_execution.py
   - content/topp_workflow_results.py
+  - content/decoy_database.py
 deploy:
   k8s:
     enabled: false
@@ -55,6 +78,9 @@ sync:
     - content/*
     - src/Workflow.py
     - src/naseweis_results.py
+    - src/naseweis_tools.py
+    - src/DecoyWorkflow.py
+    - openms-runtime.json
     - docker/Dockerfile.app
     - docker/restore_tool_registry.py
     - requirements-dev.txt

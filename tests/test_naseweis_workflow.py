@@ -43,10 +43,14 @@ def workflow(tmp_path, monkeypatch):
     # A real ParamXML flag makes this fixture detect regressions in flag
     # discovery too, rather than relying only on the app's hardcoded list.
     for tool in ["DecoyDatabase", "NucleicAcidSearchEngine"]:
+        original = (Path("tests/data/naseweis/nightly") / f"{tool}.ini").read_text(
+            encoding="latin-1"
+        )
+        marker = '<ITEM name="future_flag" type="bool" value="false"/>'
+        # Place an extra bool in instance 1, without altering its real IO fields.
+        position = original.index(">", original.index('<NODE name="1"')) + 1
         (wf.parameter_manager.ini_dir / f"{tool}.ini").write_text(
-            f'<PARAMETERS><NODE name="{tool}"><NODE name="1">'
-            '<ITEM name="future_flag" type="bool" value="false"/>'
-            "</NODE></NODE></PARAMETERS>"
+            original[:position] + marker + original[position:], encoding="latin-1"
         )
     monkeypatch.setattr(wf.parameter_manager, "create_ini", Mock(return_value=True))
     monkeypatch.setattr("src.Workflow.shutil.which", lambda name: f"/tools/{name}")
@@ -126,7 +130,7 @@ def test_explicit_scientific_settings_survive_and_fdr_is_reset(workflow, use_dec
             },
             "DecoyDatabase": {
                 "type": "protein",
-                "only_decoy": True,
+                "only_decoy": False,
                 "decoy_string": "WRONG_",
             },
         }
@@ -143,13 +147,13 @@ def test_explicit_scientific_settings_survive_and_fdr_is_reset(workflow, use_dec
     assert engine["precursor:use_avg_mass"] is False
     assert engine["precursor:include_unknown_charge"] is True
     assert engine["modifications:variable"] == ["m5C", "Am"]
-    assert engine["fdr:decoy_pattern"] == ("DECOY_" if use_decoys else "")
+    assert engine["fdr:decoy_pattern"] == ("WRONG_" if use_decoys else "")
     assert engine["fdr:cutoff"] == (0.01 if use_decoys else 1.0)
     assert engine["fdr:remove_decoys"] is use_decoys
     assert saved["DecoyDatabase"]["type"] == "RNA"
     assert saved["DecoyDatabase"]["only_decoy"] is False
-    assert saved["DecoyDatabase"]["decoy_string"] == "DECOY_"
-    for tool in ["DecoyDatabase", "NucleicAcidSearchEngine"]:
+    assert saved["DecoyDatabase"]["decoy_string"] == "WRONG_"
+    for tool in (["DecoyDatabase"] if use_decoys else []) + ["NucleicAcidSearchEngine"]:
         assert "future_flag" in saved["_flag_params"][tool]
     calls = workflow.executor.run_topp.call_args_list
     assert [call.args[0] for call in calls] == (
@@ -202,3 +206,126 @@ def test_example_loading_copies_both_inputs(workflow):
         Path(saved["fasta-files"]).read_bytes()
         == Path("example-data/fasta/NME1_Target.fasta").read_bytes()
     )
+
+
+@pytest.mark.parametrize(
+    "changes,reason",
+    [
+        ({"search-exports": ["imaginary"]}, "Unknown output"),
+        (
+            {
+                "NucleicAcidSearchEngine": {
+                    "precursor:correct_with_flash": True,
+                    "precursor:use_avg_mass": True,
+                }
+            },
+            "monoisotopic",
+        ),
+        ({"DecoyDatabase": {"decoy_string": " "}}, "marker must not be empty"),
+        (
+            {
+                "add-decoys": False,
+                "estimate-fdr": True,
+                "NucleicAcidSearchEngine": {"fdr:decoy_pattern": ""},
+            },
+            "nonempty decoy",
+        ),
+        ({"DecoyDatabase": {"shuffle_decoy_ratio": 2}}, "1:1"),
+        (
+            {"NucleicAcidSearchEngine": {"old_removed_setting": True}},
+            "Unsupported parameters",
+        ),
+        ({"DecoyDatabase": {"unknown_setting": True}}, "Unsupported parameters"),
+    ],
+)
+def test_nightly_invalid_settings_fail_before_any_tool(workflow, changes, reason):
+    before = workflow.parameter_manager.params_file.read_bytes()
+    workflow.params.update(changes)
+    assert workflow.execution() is False
+    workflow.executor.run_topp.assert_not_called()
+    assert workflow.parameter_manager.params_file.read_bytes() == before
+    assert reason in (workflow.workflow_dir / "logs/minimal.log").read_text()
+
+
+def test_missing_export_capability_is_reported(workflow):
+    path = workflow.parameter_manager.ini_dir / "NucleicAcidSearchEngine.ini"
+    path.write_text(
+        path.read_text(encoding="latin-1").replace(
+            'name="db_out"', 'name="old_output"'
+        ),
+        encoding="latin-1",
+    )
+    workflow.params["search-exports"] = ["db_out"]
+    assert workflow.execution() is False
+    workflow.executor.run_topp.assert_not_called()
+    assert "pinned nightly" in (workflow.workflow_dir / "logs/minimal.log").read_text()
+
+
+def test_cached_digest_ignores_fasta_and_does_not_require_decoy_tool(
+    workflow, monkeypatch
+):
+    cached = workflow.workflow_dir / "cached.oms"
+    cached.touch()
+    workflow.params.update(
+        {
+            "database-source": "Cached digest",
+            "digest-files": str(cached),
+            "fasta-files": None,
+        }
+    )
+    monkeypatch.setattr(
+        "src.Workflow.shutil.which",
+        lambda name: None if name == "DecoyDatabase" else name,
+    )
+    assert workflow.execution() is True
+    assert workflow.executor.run_topp.call_count == 1
+    io = workflow.executor.run_topp.call_args.args[1]
+    assert io["digest"] == [str(cached)]
+    assert "database" not in io
+
+
+def test_vendor_directory_and_custom_mapping_reach_native_inputs(workflow):
+    folder = workflow.workflow_dir / "sample.d"
+    folder.mkdir()
+    mapping = workflow.workflow_dir / "modifications.csv"
+    mapping.write_text("mod,chebi_id\nAm,28177\n")
+    workflow.params.update(
+        {
+            "mzML-files": str(folder),
+            "add-decoys": False,
+            "bedrmod-mapping-files": str(mapping),
+        }
+    )
+    assert workflow.execution() is True
+    io = workflow.executor.run_topp.call_args.args[1]
+    assert io["in"] == [str(folder)]
+    assert io["bedrmod_chebi_mapping"] == [str(mapping)]
+
+
+def test_missing_modification_mapping_fails(workflow):
+    workflow.params.update(
+        {"add-decoys": False, "bedrmod-mapping-files": "missing.csv"}
+    )
+    assert workflow.execution() is False
+    workflow.executor.run_topp.assert_not_called()
+    assert (
+        "mapping no longer exists"
+        in (workflow.workflow_dir / "logs/minimal.log").read_text()
+    )
+
+
+def test_imported_file_parameters_cannot_replace_workspace_io(workflow):
+    workflow.params.update(
+        {
+            "NucleicAcidSearchEngine": {
+                "out": "/elsewhere/result",
+                "in": "other.mzML",
+                "digest": "other.oms",
+            },
+            "DecoyDatabase": {"in": ["other.fasta"], "out": "/elsewhere/db"},
+        }
+    )
+    assert workflow.execution() is True
+    saved = workflow.parameter_manager.read_parameters_strict()
+    assert not {"in", "out", "digest"} & saved["NucleicAcidSearchEngine"].keys()
+    assert not {"in", "out"} & saved["DecoyDatabase"].keys()

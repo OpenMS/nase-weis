@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # This Dockerfile builds OpenMS, the TOPP tools, pyOpenMS and thidparty tools.
 # It also adds a basic streamlit server that serves a pyOpenMS-based app.
 # hints:
@@ -7,9 +8,9 @@
 # debug container after build (comment out ENTRYPOINT) and run container with interactive /bin/bash shell
 # prune unused images/etc. to free disc space (e.g. might be needed on gitpod). Use with care.: docker system prune --all --force
 #
-# OpenMS version: OPENMS_BRANCH below takes a release branch (release/3.5.0),
-# a release tag (v3.6.0) or a branch such as develop. Override it per build with
-# --build-arg OPENMS_BRANCH=v3.6.0, or change the default in an app's copy.
+# OPENMS_BRANCH defaults to the verified nightly commit. It also accepts a
+# branch or tag: --build-arg OPENMS_BRANCH=nightly follows the current nightly
+# head explicitly. Fetching a ref supports commit pins as well as named branches.
 # The same steps build every OpenMS from 3.5 on: dependencies come from Ubuntu
 # packages plus Apache Arrow/Parquet (required from 3.6 on), never from the
 # contrib or vcpkg submodules, and the pyOpenMS wheel is built the way the
@@ -18,7 +19,7 @@
 
 FROM ubuntu:24.04 AS setup-build-system
 ARG OPENMS_REPO=https://github.com/OpenMS/OpenMS.git
-ARG OPENMS_BRANCH=v3.6.0
+ARG OPENMS_BRANCH=553de474c71b4f9926e5fcb264530e3d30b72b88
 ARG PORT=8501
 # GitHub repository whose latest release supplies the bundled Windows
 # installer. Empty: `github-user` and `repository-name` from settings.json,
@@ -29,7 +30,7 @@ ARG GITHUB_REPO=
 ARG PYTHON_VERSION=3.11
 # Apache Arrow/Parquet major version. OpenMS 3.6 needs 23 or newer; it is pinned
 # so the libraries do not move under an image between two builds.
-ARG ARROW_VERSION=23
+ARG ARROW_VERSION=24
 
 USER root
 
@@ -67,6 +68,50 @@ RUN . /etc/os-release \
     && apt-get update \
     && apt-get install -y --no-install-recommends --no-install-suggests libarrow-dev libparquet-dev
 
+# Ubuntu 24.04's libxml2 is older than the 2.13 context-local API OpenMS needs.
+# Build the same pinned version for both image architectures and runtime stages.
+ARG LIBXML2_VERSION=2.15.4
+ARG LIBXML2_SHA256=98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821
+RUN <<-EOF
+    set -eux
+    wget "https://download.gnome.org/sources/libxml2/2.15/libxml2-${LIBXML2_VERSION}.tar.xz" -O libxml2.tar.xz
+    echo "${LIBXML2_SHA256}  libxml2.tar.xz" | sha256sum -c -
+    mkdir libxml2-src
+    tar xf libxml2.tar.xz --strip-components=1 -C libxml2-src
+    cmake -S libxml2-src -B libxml2-build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/libxml2 -DBUILD_SHARED_LIBS=ON \
+      -DLIBXML2_WITH_PYTHON=OFF -DLIBXML2_WITH_PROGRAMS=OFF -DLIBXML2_WITH_TESTS=OFF \
+      -DLIBXML2_WITH_LEGACY=OFF -DLIBXML2_WITH_ZLIB=ON \
+      -DLIBXML2_WITH_SAX1=ON -DLIBXML2_WITH_PUSH=ON -DLIBXML2_WITH_SCHEMAS=ON \
+      -DLIBXML2_WITH_THREADS=ON -DLIBXML2_WITH_ICONV=ON
+    cmake --build libxml2-build --parallel 8
+    cmake --install libxml2-build
+    mkdir -p /opt/libxml2/share/licenses/libxml2
+    cp libxml2-src/Copyright /opt/libxml2/share/licenses/libxml2/
+    rm -rf libxml2-src libxml2-build libxml2.tar.xz
+EOF
+
+# Install the .NET 8 SDK for the openms-thermo-bridge build (WITH_THERMO_RAW).
+# The bridge's FindDotNetHost.cmake requires the nethost headers/library from
+# the official .NET SDK host pack under /usr/share/dotnet/packs/..., and runs
+# `dotnet publish` to build the managed Thermo wrapper. We use Microsoft's
+# dotnet-install.sh because Ubuntu's own dotnet-sdk-8.0 installs to /usr/lib/dotnet
+# and does not provide the host pack in the expected layout.
+# WITH_THERMO_RAW is ON on every Linux target we build (amd64 and aarch64), so
+# the SDK is needed on both; dotnet-install.sh auto-detects the host architecture.
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH="${DOTNET_ROOT}:${PATH}"
+RUN <<-EOF
+    set -eux
+    wget https://dot.net/v1/dotnet-install.sh -O /tmp/dotnet-install.sh
+    chmod +x /tmp/dotnet-install.sh
+    /tmp/dotnet-install.sh --channel 8.0 --install-dir "${DOTNET_ROOT}"
+    ln -s "${DOTNET_ROOT}/dotnet" /usr/local/bin/dotnet
+    rm -f /tmp/dotnet-install.sh
+EOF
+
+RUN printf '%s\n' /opt/libxml2/lib > /etc/ld.so.conf.d/openms-libxml2.conf && ldconfig
+
 # Install Github CLI
 RUN (type -p wget >/dev/null || (apt-get update && apt-get install wget -y)) \
 	&& mkdir -p -m 755 /etc/apt/keyrings \
@@ -99,7 +144,10 @@ SHELL ["mamba", "run", "-n", "streamlit-env", "/bin/bash", "-c"]
 
 # Clone the OpenMS branch or tag, and of its submodules only THIRDPARTY: the
 # dependencies come from the packages above, not from contrib or vcpkg.
-RUN git clone --depth=1 -b ${OPENMS_BRANCH} --single-branch ${OPENMS_REPO} /OpenMS
+RUN git init /OpenMS && \
+    git -C /OpenMS remote add origin "${OPENMS_REPO}" && \
+    git -C /OpenMS fetch --depth=1 origin "${OPENMS_BRANCH}" && \
+    git -C /OpenMS checkout --detach FETCH_HEAD
 WORKDIR /OpenMS
 
 # Python packages for the pyOpenMS build, as the checked-out source lists them.
@@ -142,17 +190,16 @@ WORKDIR /
 # Options a version does not know are ignored with a warning, so one command
 # serves 3.5 and 3.6+: OPENMS_USE_VCPKG=OFF takes the system packages,
 # WITH_UV=OFF builds against this Python instead of a uv-made venv, and
-# WITH_THERMO_RAW=OFF leaves out the .NET Thermo reader (FileConverter converts
-# Thermo RAW files with ThermoRawFileParser and mono, installed below).
+# WITH_THERMO_RAW=ON provides the native .NET Thermo reader used by NASE.
 SHELL ["/bin/bash", "-c"]
 RUN cmake -S /OpenMS -B /openms-build \
         -DCMAKE_BUILD_TYPE='Release' \
-        -DCMAKE_PREFIX_PATH='/usr/;/usr/local' \
+        -DCMAKE_PREFIX_PATH='/opt/libxml2;/usr/;/usr/local' \
         -DHAS_XSERVER=OFF \
         -DBOOST_USE_STATIC=OFF \
         -DOPENMS_USE_VCPKG=OFF \
         -DWITH_UV=OFF \
-        -DWITH_THERMO_RAW=OFF \
+        -DWITH_THERMO_RAW=ON \
         -DPYOPENMS=ON \
         -DPY_MEMLEAK_DISABLE=On \
         -DPython_EXECUTABLE=/root/miniforge3/envs/streamlit-env/bin/python
@@ -279,6 +326,7 @@ COPY hooks/ /app/hooks
 COPY src/ /app/src
 COPY utils/ /app/utils
 COPY app.py /app/app.py
+COPY openms-runtime.json /app/openms-runtime.json
 COPY settings.json /app/settings.json
 COPY default-parameters.json /app/default-parameters.json
 COPY presets.json /app/presets.json

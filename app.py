@@ -32,5 +32,12 @@ pages = {
             icon=":material/analytics:",
         ),
     ],
+    "Database tools": [
+        st.Page(
+            "content/decoy_database.py",
+            title="DecoyDatabase",
+            icon=":material/genetics:",
+        )
+    ],
 }
 st.navigation(pages).run()
