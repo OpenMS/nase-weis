@@ -129,3 +129,69 @@ def test_long_coverage_wraps_into_blocks():
     assert "Positions 51–60" in plot
     assert plot.count('class="hit"') == 2
     assert "6.7% sequence coverage" in plot
+
+
+def test_cached_results_refresh_after_an_in_place_update(result_file):
+    from src.Workflow import load_results
+
+    stat = result_file.stat()
+    old = load_results(str(result_file), stat.st_mtime_ns, stat.st_size)
+    result_file.write_text(result_file.read_text().replace("500.2", "700.2"))
+    new = load_results(str(result_file), stat.st_mtime_ns + 1, stat.st_size)
+    assert old["OSM"].loc[0, "exp_mass_to_charge"] == 500.2
+    assert new["OSM"].loc[0, "exp_mass_to_charge"] == 700.2
+
+
+def test_mutating_a_cached_table_does_not_change_other_views(result_file):
+    from src.Workflow import load_results
+
+    stat = result_file.stat()
+    args = (str(result_file), stat.st_mtime_ns, stat.st_size)
+    view = load_results(*args)
+    view["OSM"].loc[0, "sequence"] = "CHANGED"
+    assert load_results(*args)["OSM"].loc[0, "sequence"] == "A[Am]Cp"
+
+
+@pytest.mark.parametrize("sequence", [None, ""])
+def test_missing_reference_sequence_has_an_explanation(sequence):
+    tables = {"NUC": pd.DataFrame({"accession": ["rna"], "opt_sequence": [sequence]})}
+    assert "No reference sequence was exported" in coverage_html(tables, "rna")
+
+
+def test_mixed_missing_q_values_are_not_reported_as_negative_percentages():
+    tables = {
+        "OSM": pd.DataFrame(
+            {
+                "sequence": ["ACG", "ACG", "ACG"],
+                "search_engine_score[2]": [0.0, -1, float("nan")],
+            }
+        )
+    }
+    result = match_table(tables)
+    assert result.loc[0, "q-value (%)"] == 0.0
+    assert result["q-value (%)"].iloc[1:].isna().all()
+    assert len(result) == 3
+
+
+@pytest.mark.parametrize("sequence", ["c", "AcG", "ApCG"])
+def test_invalid_terminal_markers_are_rejected(sequence):
+    with pytest.raises(ValueError):
+        split_sequence(sequence)
+
+
+def test_legacy_coverage_imports_still_work(result_file):
+    from src import plot_full_coverage as legacy
+
+    tables = legacy.read_mzTab(result_file)
+    assert legacy.split_sequence("A[Am]Cp") == ["A", "[Am]", "Cp"]
+    # Both accessions need a reference sequence for a complete export.
+    tables["NUC"] = tables["NUC"].iloc[:1]
+    assert "60.0% sequence coverage" in legacy.make_coverage_html(tables)
+
+
+def test_reference_without_any_hits_has_zero_coverage():
+    tables = {
+        "NUC": pd.DataFrame({"accession": ["rna"], "opt_sequence": ["ACGU"]}),
+        "OLI": pd.DataFrame(columns=["accession", "sequence", "start", "end"]),
+    }
+    assert "0.0% sequence coverage" in coverage_html(tables, "rna")

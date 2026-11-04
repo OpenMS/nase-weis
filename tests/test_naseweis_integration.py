@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.parametrize("use_decoys", [True, False])
-def test_example_search_in_fresh_worker(tmp_path, use_decoys):
+def test_example_search_in_fresh_worker(tmp_path, use_decoys, request):
     workflow = tmp_path / "naseweis"
     workflow.mkdir()
     # Include stale FDR and average-mass settings from an older workspace.
@@ -30,7 +30,7 @@ def test_example_search_in_fresh_worker(tmp_path, use_decoys):
         "fasta-files": str(ROOT / "example-data/fasta/NME1_Target.fasta"),
         "add-decoys": use_decoys,
         "FDR_cutoff": 0.05,
-        "max_threads": 2,
+        "max_threads": 1 if request.config.getoption("--naseweis-baseline") else 2,
         "_defaults": {"NucleicAcidSearchEngine": {"fdr:decoy_pattern": "STALE_"}},
         "NucleicAcidSearchEngine": {"precursor:use_avg_mass": False},
     }
@@ -56,6 +56,10 @@ def test_example_search_in_fresh_worker(tmp_path, use_decoys):
     )
     results_dir = runs.results_dir(run_id)
     tables = read_mztab(results_dir / "mztab_results/search.mzTab")
+    if request.config.getoption("--naseweis-baseline"):
+        from naseweis_reference import assert_nme1_reference
+
+        assert_nme1_reference(tables, use_decoys)
     matches = match_table(tables)
     assert len(matches) > 0
     assert "NME1" in tables["NUC"]["accession"].values

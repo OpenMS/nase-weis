@@ -1,0 +1,15 @@
+{
+  "openms_version": "3.6.0",
+  "pyopenms_version": "3.6.0",
+  "inputs": {
+    "example-data/mzML/NME1.mzML": "141aed27a88d8031c8b21025527624a236c558c24e6e81dfb2b6e1dfc2cd41f6",
+    "example-data/fasta/NME1_Target.fasta": "180f7070ac55f4cc2b69cdfd3ee5d89503395746841933e418486c61c245a63e"
+  },
+  "settings": {
+    "enzyme": "RNase_T1",
+    "precursor_tolerance_ppm": 10.0,
+    "fragment_tolerance_ppm": 10.0,
+    "fdr_cutoff": 0.05,
+    "threads": 1
+  }
+}

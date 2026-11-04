@@ -1,0 +1,10 @@
+# Build the current application first. This image and its temporary containers
+# are independent of the running local app and its workspace volume.
+ARG APP_IMAGE=naseweis-regression-app:local
+FROM ${APP_IMAGE}
+WORKDIR /app
+COPY requirements-dev.txt /app/requirements-dev.txt
+RUN /root/miniforge3/envs/streamlit-env/bin/python -m pip install --no-cache-dir -r requirements-dev.txt
+# Framework tests also inspect the Dockerfiles and Kubernetes manifests.
+# Include the full current checkout; .dockerignore excludes local data/secrets.
+COPY . /app/

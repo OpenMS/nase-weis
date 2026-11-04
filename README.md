@@ -91,6 +91,18 @@ contains q-values, independently of the current configuration.
 
 ## Development and verification
 
+Run the complete regression gate before merging future improvements:
+
+```bash
+python3 scripts/check_regressions.py --container
+```
+
+It checks the current checkout in the pinned OpenMS runtime, compares all NME1
+scientific results with reviewed references, rejects skipped checks and enforces
+95% application coverage. It leaves a running local app and its workspaces alone.
+See [the regression maintenance guide](docs/naseweis-regressions.md) for faster
+local checks, reports, CI and intentional baseline updates.
+
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m utils.app_spec
