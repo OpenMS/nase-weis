@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import pyopenms as poms
-from src.common.common import show_fig, display_large_dataframe
+from src.common.common import show_fig, display_large_dataframe, follow_app_theme
 from typing import Union
 
 
@@ -26,7 +26,12 @@ def get_df(file: Union[str, Path]) -> pd.DataFrame:
     exp = poms.MSExperiment()
     poms.MzMLFile().load(str(file), exp)
     df_spectra = exp.get_df()
-    df_spectra["MS level"] = [spec.getMSLevel() for spec in exp]
+    df_spectra.rename(columns={
+        'rt': 'RT',
+        'ms_level': 'MS level',
+        'mz_array': 'mzarray',
+        'intensity_array': 'intarray',
+    }, inplace=True)
     precs = []
     for spec in exp:
         p = spec.getPrecursors()
@@ -53,35 +58,16 @@ def get_df(file: Union[str, Path]) -> pd.DataFrame:
             exp_ms1.addSpectrum(spec)
         elif spec.getMSLevel() == 2:
             exp_ms2.addSpectrum(spec)
+    _long_rename = {'rt': 'RT', 'intensity': 'inty'}
     if not exp_ms1.empty():
-        st.session_state["view_ms1"] = exp_ms1.get_df(long=True)
+        st.session_state["view_ms1"] = exp_ms1.get_df(long=True).rename(columns=_long_rename)
     else:
         st.session_state["view_ms1"] = pd.DataFrame(columns=['RT', 'mz', 'inty'])
     if not exp_ms2.empty():
-        st.session_state["view_ms2"] = exp_ms2.get_df(long=True)
+        st.session_state["view_ms2"] = exp_ms2.get_df(long=True).rename(columns=_long_rename)
     else:
         st.session_state["view_ms2"] = pd.DataFrame(columns=['RT', 'mz', 'inty'])
 
-def get_id_df(file: Union[str, Path]) -> pd.DataFrame:
-    """
-    Loads a list of Peptide identifications from a given idXML file and return
-    a pandas dataframe representation of the identifications.
-
-    Args:
-        file (Union[str, Path]): The path to the idXML file to load.
-
-    Returns:
-        pd.DataFrame: A pandas DataFrame with the following columns: "id", 
-        "RT", "mz", "q-value", "charge", "protein accession", "start", "end"
-        and probably some other stuff that just isn't documented #FIXME
-    """
-    prot_ids = []
-    pep_ids = []
-    poms.IdXMLFile().load(str(file),prot_ids, pep_ids)
-    df = poms.peptide_identifications_to_df(pep_ids)
-    if not df.empty:
-        return df
-    return pd.DataFrame()
 
 def plot_bpc_tic() -> go.Figure:
     """Plot the base peak and total ion chromatogram (TIC).
@@ -159,10 +145,8 @@ def plot_bpc_tic() -> go.Figure:
         title=f"{st.session_state.view_selected_file}",
         xaxis_title="retention time (s)",
         yaxis_title="intensity",
-        plot_bgcolor="rgb(255,255,255)",
         height=500,
     )
-    fig.layout.template = "plotly_white"
     return fig
 
 
@@ -181,9 +165,7 @@ def plot_ms_spectrum(df, title, bin_peaks, num_x_bins):
         num_x_bins=num_x_bins,
         aggregate_duplicates=True,
     )
-    fig.update_layout(
-        template="plotly_white", dragmode="select", plot_bgcolor="rgb(255,255,255)"
-    )
+    fig.update_layout(dragmode="select")
     return fig
 
 
@@ -212,7 +194,7 @@ def view_peak_map():
         backend="ms_plotly",
         aggregate_duplicates=True,
     )
-    peak_map.update_layout(template="simple_white", dragmode="select")
+    peak_map.update_layout(dragmode="select")
     c1, c2 = st.columns(2)
     with c1:
         st.info(
@@ -242,7 +224,7 @@ def view_peak_map():
                 width=900,
                 aggregate_duplicates=True,
             )
-            st.plotly_chart(peak_map_3D, use_container_width=True)
+            st.plotly_chart(follow_app_theme(peak_map_3D), use_container_width=True)
 
 
 @st.fragment

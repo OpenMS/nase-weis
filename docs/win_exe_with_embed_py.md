@@ -3,6 +3,12 @@
 To create an executable for Streamlit app on Windows, we'll use an embeddable version of Python.</br>
 Here's a step-by-step guide:
 
+### Prerequisites
+
+You need a **system Python installation** (the regular Python installer from python.org) of the same version as the embeddable Python you'll download. This is required because the embeddable Python lacks development headers (`Python.h`) needed to compile native extensions.
+
+Install Python 3.11.9 from https://www.python.org/downloads/ if you don't have it already.
+
 ### Download and Extract Python Embeddable Version
 
 1. Download a suitable Python embeddable version. For example, let's download Python 3.11.9:
@@ -22,24 +28,6 @@ Here's a step-by-step guide:
    rm python-3.11.9-embed-amd64.zip
    ```
 
-### Install pip
-
-1. Download `get-pip.py`:
-
-   ```bash
-   # use curl command or manually download
-   curl -O https://bootstrap.pypa.io/get-pip.py
-   ```
-
-2. Install pip:
-
-   ```bash
-   ./python-3.11.9/python get-pip.py --no-warn-script-location
-
-   # no need anymore get-pip.py
-   rm get-pip.py
-   ```
-
 ### Configure Python Environment
 
 1. Uncomment 'import site' in the `._pth` file:
@@ -55,28 +43,25 @@ Here's a step-by-step guide:
 
 ### Install Required Packages
 
-Install all required packages from `requirements.txt`:
+Install all required packages from `requirements.txt` using the **system Python** with `--target` to install into the embeddable Python's site-packages:
 
 ```bash
-./python-3.11.9/python -m pip install -r requirements.txt --no-warn-script-location
+# Use system Python (which has development headers) to compile packages,
+# installing into the embeddable Python's site-packages directory.
+# The embeddable Python lacks Python.h headers needed for native extensions.
+python -m pip install -r requirements.txt --target python-3.11.9/Lib/site-packages --upgrade --no-warn-script-location
 ```
 
-### Test and create `run_app.bat` file
+> **Important**: Do NOT use `./python-3.11.9/python -m pip install ...` directly. The embeddable Python lacks the development headers required to compile native extensions (e.g., `Python.h`), which will cause builds to fail with errors like:
+> ```
+> fatal error C1083: Cannot open include file: 'Python.h': No such file or directory
+> ```
 
-1. Test by running app
+### Test the app
 
-   ```batch
-       .\python-3.11.9\python -m streamlit run app.py
-   ```
-
-2. Create a Clickable Shortcut
-
-   Create a `run_app.bat` file to make running the app easier:
-
-   ```batch
-   echo @echo off > run_app.bat
-   echo .\\python-3.11.9\\python -m streamlit run app.py >> run_app.bat
-   ```
+```batch
+.\python-3.11.9\python -m streamlit run app.py local
+```
 
 ### Create one executable folder
 
@@ -92,185 +77,82 @@ Install all required packages from `requirements.txt`:
    # move Python environment folder
    mv  python-3.11.9 ../streamlit_exe
 
-   # move run_app.bat file
-   mv  run_app.bat ../streamlit_exe
-
    # copy streamlit app files
-   cp -r src pages .streamlit assets example-data ../streamlit_exe
-   cp app.py ../streamlit_exe
+   cp -r src utils content docs .streamlit assets example-data ../streamlit_exe
+   cp app.py settings.json default-parameters.json ../streamlit_exe
    ```
 
-#### 🚀 After successfully completing all these steps, the Streamlit app will be available by running the run_app.bat file.
+3. Remove the server address from the bundled config to use `localhost` (default) instead of `0.0.0.0`, which doesn't work as a connect address on Windows:
 
-:pencil: You can still change the configuration of Streamlit app with .streamlit/config.toml file, e.g., provide a different port, change upload size, etc.
+   ```powershell
+   (Get-Content streamlit_exe/.streamlit/config.toml) -notmatch '^address' | Set-Content streamlit_exe/.streamlit/config.toml
+   ```
 
-## Build executable in github action automatically
+This folder is the payload that the Electron shell packages into an installer, as described below.
 
-Automate the process of building executables for your project with the GitHub action example [Test streamlit executable for Windows with embeddable python](https://github.com/OpenMS/streamlit-template/blob/main/.github/workflows/test-win-exe-w-embed-py.yaml)
+## Build the installers in GitHub Actions
+
+The workflow [Build desktop app](https://github.com/OpenMS/streamlit-template/blob/main/.github/workflows/build-desktop-app.yaml) does not use the embeddable Python above. It builds the Windows, macOS and Linux installers in one job, run on all three platforms with the same steps:
+
+1. **Stage** the payload in `electron/payload`, identically everywhere: `electron/scripts/stage-openms.sh` copies the TOPP tools listed in `TOPP_TOOLS` and `share/OpenMS`, `electron/scripts/stage-python.sh` installs `requirements.txt` into a relocatable CPython from [python-build-standalone](https://github.com/astral-sh/python-build-standalone) (which has the development headers and tkinter, so no system Python is needed), and the app's files are copied next to them.
+2. **Package** it with `electron/scripts/package.sh`, the only platform-specific step: `<APP_NAME>-Setup.exe` (NSIS) on Windows, `<APP_NAME>-macOS-arm64.dmg` (signed and notarized) on macOS, `<APP_NAME>-Linux-x86_64.AppImage` on Linux. Set `INSTALLER_NAME` for installer files named differently from the app, such as `MyApp-1.2` while the install folder stays `MyApp`; arguments after `package.sh` go to electron-builder.
+3. **Test** the result: `electron/scripts/install-app.sh` installs it the way a user would, then `smoke-payload.js`, `smoke-app.js` and `e2e.js` run against the installed app.
+
+On a release, every installer is attached to the release. The Docker images download them from the latest release and offer them on the Quickstart and Installation pages.
 </br>
 
-## Create MSI Installer using WiX Toolset
+## Electron desktop app (per-user installer)
 
-After creating your executable folder, you can package it into an MSI installer using WiX Toolset. Here's how:
+The Windows build produces `<APP_NAME>-Setup.exe`, which packages the staged payload (Python, pyOpenMS, TOPP tools, `share/OpenMS`) in the Electron shell from `electron/`. The older MSI installer is no longer built.
 
-### 1. Set Environment Variables
+- It installs per user to `%LOCALAPPDATA%\Programs\<APP_NAME>` and needs no admin rights.
+- The app opens in its own window. The shell starts Streamlit on a free loopback port and stops it, together with any running TOPP tools, when the window closes.
+- Workspaces live in `%APPDATA%\<APP_NAME>\workspaces`. The shell passes that location to the app in `LOCAL_WORKSPACES_DIR`, which takes precedence over `workspaces_dir` from `settings.json` in local mode.
+- On start, it checks the latest release of `github-user`/`repository-name` from `settings.json` and links to the release page when a newer version exists. It never downloads anything by itself.
+- Streamlit's output is written to `%APPDATA%\<APP_NAME>\logs\streamlit.log`.
 
-Set these variables for consistent naming throughout the process:
+The shell sets up the environment for the TOPP tools: `openms\bin` (the tools and their DLLs) and every `share\OpenMS\THIRDPARTY\*` folder go on `PATH`, and `OPENMS_DATA_PATH` points to `share\OpenMS`. CI installs the result silently and checks pyOpenMS, every tool in `TOPP_TOOLS`, and the app page before uploading it.
 
-```batch
-APP_NAME=OpenMS-StreamlitTemplateApp
-APP_UpgradeCode= generate-new
+CI then runs `electron/scripts/e2e.js` against the installed app: it drives the app window with Playwright, opens every page in the navigation and fails on any Python exception shown there. An app adds its own steps, such as running a workflow and checking its results page, as scenario modules passed with `--scenario <file.js>`; each module exports `async (t) => {...}` and gets helpers such as `t.open(page)`, `t.clickTab`, `t.clickButton`, `t.choose(label, option)`, `t.waitForText` and `t.waitForComponent(selector)`. Locally, `node scripts/e2e.js` (run in `electron/`) without `--exe` runs the shell from the checkout (on Linux under `xvfb-run`).
+
+The window allows Chromium's software WebGL renderer, so WebGL plots also draw without a usable GPU (remote desktop, virtual machines).
+
+To try the shell from a checkout, run `npm install` and then `npm start` in `electron/`. It runs `app.py` from the repository with the `python` on your `PATH`. Set `OPENMS_APP_PAYLOAD` to use a built payload folder instead.
+
+## macOS and Linux
+
+The same job wraps the app in the same Electron shell as `<APP_NAME>-macOS-arm64.dmg` (Apple Silicon only) and as `<APP_NAME>-Linux-x86_64.AppImage`, from `APP_NAME`, `TOPP_TOOLS` and the `openms:` setting.
+
+- `electron/scripts/stage-python.sh` also compiles the bytecode there, because the signed app and the AppImage are read-only (Windows writes it on first use).
+- `electron/scripts/stage-openms.sh` takes the TOPP tools from the official OpenMS release: the arm64 `.pkg` on macOS, the `.deb` on Linux, whose system libraries (Qt, Xerces, ...) it copies into the bundle. The tools stay in `openms/bin` next to `openms/lib` and find their libraries through a relative rpath. On Windows it unpacks the release's installer, and the DLLs sit next to the tools in `openms/bin`. `OPENMS_PACKAGE` names a local `.pkg`, `.deb` or Windows zip to stage instead of the release.
+- Which OpenMS is used is set once, as `openms:` of the workflow's `openms` job (`.github/workflows/openms.yml`). A release such as `"3.5.0"` is downloaded as above and nothing is built. A branch, tag or commit, such as `"OpenMS/OpenMS@develop"` or `"<owner>/OpenMS@<branch>"`, is built from source on all three platforms (on Windows with the vcpkg presets of OpenMS 3.6+, or else against a prebuilt OpenMS/contrib release), packaged like an OpenMS release and handed to `stage-openms.sh` as `OPENMS_PACKAGE`. The packages are cached per commit, so a source build only runs again when the branch has new commits.
+- Workspaces and the log live in `~/Library/Application Support/<APP_NAME>` on macOS and in `~/.config/<APP_NAME>` on Linux.
+
+CI runs the same smoke and end-to-end tests on every platform: on Windows against the installed app, on macOS from the mounted dmg and on Linux against the AppImage.
+
+### Signing for macOS
+
+macOS only opens downloaded apps that are signed with a Developer ID certificate and notarized by Apple. The workflow does both when these repository or organization secrets exist, and builds an unsigned app otherwise:
+
+| Secret | Content |
+|---|---|
+| `MACOS_CERTIFICATE` | The "Developer ID Application" certificate with its private key, as a base64-encoded `.p12` |
+| `MACOS_CERTIFICATE_PASSWORD` | The `.p12` password |
+| `APPLE_API_KEY` | Contents of an App Store Connect API key (`.p8`, Team key with the Developer role) |
+| `APPLE_API_KEY_ID` | The key's ID |
+| `APPLE_API_ISSUER` | The issuer ID shown above the key list |
+
+Instead of the three `APPLE_API_*` secrets, notarization also works with an Apple ID: `APPLE_ID` (the developer account's email), `APPLE_APP_SPECIFIC_PASSWORD` (created at account.apple.com under Sign-In and Security → App-Specific Passwords) and `APPLE_TEAM_ID` (the 10-character team ID from developer.apple.com → Membership details).
+
+The `.p12` can be made without a Mac:
+
+```bash
+openssl genrsa -out devid.key 2048
+openssl req -new -key devid.key -out devid.csr -subj "/emailAddress=<Apple ID>/CN=<name>/C=<country>"
+# developer.apple.com: Certificates -> + -> Developer ID Application (G2 Sub-CA), upload devid.csr
+openssl x509 -inform DER -in developerID_application.cer -out devid.pem
+openssl pkcs12 -export -legacy -inkey devid.key -in devid.pem -name "Developer ID Application" -out cert.p12
+base64 -w0 cert.p12   # -> MACOS_CERTIFICATE
 ```
 
-To generate a new GUID for your application's UpgradeCode, you can use:
-
--  PowerShell: `[guid]::NewGuid().ToString()`
--  Online GUID generator: https://www.guidgen.com/
--  Windows Command Prompt: `powershell -Command "[guid]::NewGuid().ToString()"`
-
-### 2. Install WiX Toolset
-
-1. Download WiX Toolset binaries:
-   ```batch
-   curl -LO https://github.com/wixtoolset/wix3/releases/download/wix3111rtm/wix311-binaries.zip
-   unzip wix311-binaries.zip -d wix
-   ```
-
-### 3. Prepare Installation Files
-
-1. Create a SourceDir structure:
-
-   ```batch
-   mkdir SourceDir
-   move streamlit_exe\* SourceDir
-   ```
-
-2. Create Readme.txt:
-
-   ```batch
-   # Create a Readme.txt file in the SourceDir folder with instructions
-   # for launching the application
-   ```
-
-3. Add necessary assets:
-   -  Copy license file: `copy assets\openms_license.rtf SourceDir\`
-   -  Copy app icon: `copy assets\openms.ico SourceDir\`
-   -  Create success message script:
-      ```vbscript
-      ' ShowSuccessMessage.vbs
-      MsgBox "The " & "%APP_NAME%" & " application is successfully installed.", vbInformation, "Installation Complete"
-      ```
-
-### 4. Generate WiX Source Files
-
-1. Generate component list from your files:
-
-   ```batch
-   wix\heat.exe dir SourceDir -gg -sfrag -sreg -srd -template component -cg StreamlitExeFiles -dr AppSubFolder -out streamlit_exe_files.wxs
-   ```
-
-2. Create main WiX configuration file (streamlit_exe.wxs):
-
-   ```xml
-   <?xml version="1.0"?>
-   <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-     <Product Id="*" Name="$(env.APP_NAME)" Language="1033" Version="1.0.0.0"
-              Manufacturer="OpenMS Developer Team" UpgradeCode="$(env.APP_UpgradeCode)">
-       <Package Id="*" InstallerVersion="300" Compressed="yes" InstallPrivileges="elevated" Platform="x64" />
-       <Media Id="1" Cabinet="streamlit.cab" EmbedCab="yes" />
-
-       <!-- Directory structure -->
-       <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
-       <Directory Id="TARGETDIR" Name="SourceDir">
-         <Directory Id="ProgramFilesFolder">
-           <Directory Id="INSTALLFOLDER" Name="$(env.APP_NAME)">
-             <Directory Id="AppSubFolder" Name="$(env.APP_NAME)" />
-             <Component Id="CreateAppFolder" Guid="95dbfa06-d36a-427f-995c-e87769ac2e59">
-               <CreateFolder>
-                 <Permission User="Everyone" GenericAll="yes" />
-               </CreateFolder>
-             </Component>
-           </Directory>
-         </Directory>
-         <Directory Id="DesktopFolder" />
-       </Directory>
-
-       <!-- Features -->
-       <Feature Id="MainFeature" Title="Main Application" Level="1">
-         <ComponentGroupRef Id="StreamlitExeFiles" />
-         <ComponentRef Id="CreateAppFolder" />
-         <ComponentRef Id="DesktopShortcutComponent" />
-         <ComponentRef Id="InstallDirShortcutComponent" />
-       </Feature>
-
-       <!-- Desktop Shortcut -->
-       <Component Id="DesktopShortcutComponent" Guid="3597b243-9180-4d0b-b105-30d8b0d1a334" Directory="DesktopFolder">
-         <Shortcut Id="DesktopShortcut" Name="$(env.APP_NAME)"
-                   Description="Launch $(env.APP_NAME)"
-                   Target="[AppSubFolder]$(env.APP_NAME).bat"
-                   WorkingDirectory="AppSubFolder"
-                   Icon="AppIcon" />
-         <RegistryValue Root="HKCU" Key="Software\OpenMS\$(env.APP_NAME)"
-                       Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
-       </Component>
-
-       <!-- Installation Directory Shortcut -->
-       <Component Id="InstallDirShortcutComponent" Guid="c2df9472-3b45-4558-a56d-6034cf7c8b72" Directory="AppSubFolder">
-         <Shortcut Id="InstallDirShortcut" Name="$(env.APP_NAME)"
-                   Description="Launch $(env.APP_NAME)"
-                   Target="[AppSubFolder]$(env.APP_NAME).bat"
-                   WorkingDirectory="AppSubFolder"
-                   Icon="AppIcon" />
-         <RegistryValue Root="HKCU" Key="Software\OpenMS\$(env.APP_NAME)"
-                       Name="InstallFolderShortcut" Type="integer" Value="1" KeyPath="yes" />
-       </Component>
-
-       <!-- UI and Icon -->
-       <Icon Id="AppIcon" SourceFile="SourceDir/openms.ico" />
-       <UI>
-         <UIRef Id="WixUI_InstallDir" />
-         <UIRef Id="WixUI_ErrorProgressText" />
-       </UI>
-
-       <!-- Success Message -->
-       <Binary Id="ShowMessageScript" SourceFile="SourceDir/ShowSuccessMessage.vbs" />
-       <CustomAction Id="ShowSuccessMessage" BinaryKey="ShowMessageScript" VBScriptCall="" Execute="immediate" Return="check" />
-
-       <!-- Custom Actions Sequence -->
-       <InstallExecuteSequence>
-         <Custom Action="ShowSuccessMessage" After="InstallFinalize">NOT Installed</Custom>
-       </InstallExecuteSequence>
-
-       <!-- License -->
-       <WixVariable Id="WixUILicenseRtf" Value="SourceDir/openms_license.rtf" />
-     </Product>
-   </Wix>
-   ```
-
-### 5. Build the MSI
-
-1. Compile WiX source files:
-
-   ```batch
-   # Generate wixobj files from the WiX source files
-   wix\candle.exe streamlit_exe.wxs streamlit_exe_files.wxs
-   ```
-
-2. Link and create MSI:
-   ```batch
-   # Create the MSI installer from the wixobj files
-   # The -sice:ICE60 flag stops a warning about duplicate component GUIDs, which can happen when heat.exe auto-generates components
-   wix\light.exe -ext WixUIExtension -sice:ICE60 -o %APP_NAME%.msi streamlit_exe_files.wixobj streamlit_exe.wixobj
-   ```
-
-### 6. Additional Notes
-
--  The generated MSI will create desktop and start menu shortcuts
--  Installation requires elevated privileges
--  A success message will be shown after installation
--  The installer includes a proper license agreement page
--  All files will be installed in Program Files by default
-
-For more detailed customization options, refer to the [WiX Toolset documentation](https://wixtoolset.org/documentation/).
-
-:warning: The `APP_UpgradeCode` GUID should be unique for your application. Generate a new one if you're creating a different app.
+`-legacy` keeps the `.p12` readable by the macOS keychain. The entitlements the bundled Python and TOPP tools need under the hardened runtime are in `electron/build/entitlements.mac.plist`.

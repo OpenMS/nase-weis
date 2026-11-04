@@ -1,185 +1,326 @@
-import streamlit as st
-import json
+"""NASEWEIS workflow: optional RNA decoys, NASE search and result inspection."""
+
 import shutil
-from src import plot_full_coverage
-from .workflow.WorkflowManager import WorkflowManager
-from src import view
-from src import fileupload
-from src.common.common import show_table
+from copy import deepcopy
 from pathlib import Path
-from os.path import getsize
+
+import streamlit as st
+from streamlit.components.v1 import html
+
+from src.naseweis_results import coverage_html, match_table, read_mztab
+from src.workflow.ParameterManager import bool_param_paths_from_param_xml_ini
+from src.workflow.WorkflowManager import WorkflowManager
+
+SEARCH_DEFAULTS = {"oligo:enzyme": "RNase_T1"}
+DECOY_DEFAULTS = {"type": "RNA", "method": "shuffle"}
+# Older TOPP versions store CLI flags as strings in ParamXML, so keep the
+# known flags as well as those detected from current type="bool" entries.
+SEARCH_FLAGS = [
+    "precursor:include_unknown_charge",
+    "precursor:use_avg_mass",
+    "precursor:use_adducts",
+    "decharge_ms2",
+    "modifications:resolve_ambiguities",
+    "fdr:remove_decoys",
+]
+DECOY_FLAGS = ["only_decoy", "keep_terminal_nucleotides"]
+
+
+@st.cache_data(show_spinner=False)
+def load_results(path: str, mtime_ns: int, size: int) -> dict:
+    """Cache by full result path and file revision, including the workspace/run."""
+    return read_mztab(path)
+
 
 class Workflow(WorkflowManager):
-    # Setup pages for upload, parameter, execution and results.
-    # For layout use any streamlit components such as tabs (as shown in example), columns, or even expanders.
+    """Keep each search and its parameter snapshot as an independent run."""
+
+    multi_run = True
+
     def __init__(self) -> None:
-        # Initialize the parent class with the workflow name.
         super().__init__("NASEWEIS", st.session_state["workspace"])
 
-    def upload(self)-> None:
-        t = st.tabs(["MS data", "Nucleotide sequences"])
-        with t[0]:
-            # Use the upload method from StreamlitUI to handle mzML file uploads.
-            self.ui.upload_widget(key="mzML-files", name="MS data", file_types=["mzML"])
-            if st.button("Load Example Data", type="primary", help="Import the example mzML files", key="example_mzml"):
-                fileupload.load_example_files("mzML",Path(self.workflow_dir,"input-files"))
-        with t[1]:
-            # Example with fallback data (not used in workflow)
-            self.ui.upload_widget(key="fasta-files", name="nucleotide sequence file", file_types=["fasta"])
-            if st.button("Load Example Data", type="primary", help="Import the example mzML files", key="example_fasta" ):
-                fileupload.load_example_files("fasta",Path(self.workflow_dir,"input-files"))
+    def load_example_data(self) -> None:
+        """Copy and select the paired NME1 dataset without replacing user files."""
+        params = self.parameter_manager.read_parameters_strict()
+        for key, folder, filename in [
+            ("mzML-files", "mzML", "NME1.mzML"),
+            ("fasta-files", "fasta", "NME1_Target.fasta"),
+        ]:
+            destination = self.workflow_dir / "input-files" / key / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if not destination.exists():
+                shutil.copyfile(Path("example-data", folder, filename), destination)
+            params[key] = str(destination.resolve())
+        self.parameter_manager.write_parameters(params)
+        self.parameter_manager.clear_parameter_session_state()
+
+    def upload(self) -> None:
+        if st.button("Load example dataset", type="primary", icon=":material/science:"):
+            self.load_example_data()
+            st.success("NME1 spectra and RNA database loaded. Continue to Configure.")
+        for label, key, extension in [
+            ("MS/MS spectra", "mzML-files", "mzML"),
+            ("RNA sequences", "fasta-files", "fasta"),
+        ]:
+            with st.expander(label, expanded=True):
+                self.ui.upload_widget(key=key, name=label, file_types=[extension])
 
     def configure(self) -> None:
-        # Allow users to select mzML files for the analysis.
-        self.ui.select_input_file("mzML-files", multiple=False)
-        self.ui.select_input_file("fasta-files", multiple=False)
-
-        # Create tabs for different analysis steps.
-        t = st.tabs(
-            ["**Decoy generation**", "**Nucleic acid search engine**"]
+        self.ui.select_input_file(
+            "mzML-files",
+            name="MS/MS spectra",
+            multiple=False,
+            upload={"file_types": ["mzML"]},
         )
-        with t[0]:
-            # Parameters for DecoyDatabase TOPP tool.
-            self.ui.input_widget("add-decoys", True, "Do FDR?", "Add decoys (required to calculate false discovery rate)")
-            self.ui.input_widget("FDR_cutoff", 0.05, "FDR cutoff?", "What FDR cutoff should we use?", "number", min_value=0.0, max_value=1.0)
-            self.ui.input_TOPP("DecoyDatabase", custom_defaults={"type" : "RNA", "method" : "shuffle" }, exclude_parameters=["decoy_string", "decoy_string_position", "enzyme", "only_decoy", "type", "non_shuffle_pattern", "method", "NeighborSearch"])
-
-        with t[1]:
-            self.ui.input_widget("ms1_resolution", 60000.0, "MS1 approximate resolution?", "The approximate resolution at which MS1 scans were acquired", "number", min_value=1, max_value=10000000)
-            self.ui.input_widget("ms2_resolution", 60000.0, "MS2 approximate resolution?", "The approximate resolution at which MS2 scans were acquired", "number", min_value=1, max_value=10000000)
-            self.ui.input_TOPP("NucleicAcidSearchEngine", custom_defaults={"oligo:enzyme" : "RNase_T1"}, exclude_parameters=["variable", "precursor:mass_tolerance", "precursor:mass_tolerance_unit", "decharge_ms2", "include_unknown_charge" , "precursor:use_avg_mass", "precursor:isotopes", "precursor:min_charge", "precursor:max_charge", "precursor:use_adducts", "precursor:potential_adducts", "fragment:mass_tolerance", "fragment:mass_tolerance_unit", "fragment:ions", "resolve_ambiguities", "decoy_pattern", "max_size", "cutoff", "remove_decoys"])
-
-
-    def execution(self) -> None:
-        # Any parameter checks, here simply checking if mzML files are selected
-        if not self.params["mzML-files"]:
-            self.logger.log("ERROR: No mzML files selected.")
-            return
-        # Any parameter checks, here simply checking if mzML files are selected
-        if not self.params["fasta-files"]:
-            self.logger.log("ERROR: No fasta file selected.")
-            return
-        
-        # Get mzML files with FileManager
-        in_mzML = self.file_manager.get_files(self.params["mzML-files"])
-
-        # Get FASTA files with FileManager
-        in_fasta = self.file_manager.get_files(self.params["fasta-files"])
-        
-        # Log any messages.
-        self.logger.log(f"Number of input mzML files: {len(in_mzML)}")
-
-        if self.params["add-decoys"]:
-            # Prepare output files for feature detection.
-            out_fasta = self.file_manager.get_files(in_mzML, "fasta", "with-decoys")
-
-            # Run FeatureFinderMetabo tool with input and output files.
-            self.executor.run_topp(
-            "DecoyDatabase", input_output={"in": in_fasta, "out": out_fasta}
+        self.ui.select_input_file(
+            "fasta-files",
+            name="RNA sequence database",
+            multiple=False,
+            upload={"file_types": ["fasta"]},
+        )
+        st.subheader("False discovery rate")
+        self.ui.input_widget(
+            "add-decoys",
+            True,
+            "Estimate FDR with shuffled RNA decoys",
+            "Generate a target-decoy database and filter by q-value.",
+        )
+        self.ui.input_widget(
+            "FDR_cutoff",
+            0.05,
+            "Maximum q-value",
+            "0.05 corresponds to 5% estimated FDR.",
+            "number",
+            min_value=0.0,
+            max_value=1.0,
+            step_size=0.01,
+        )
+        st.subheader("Search settings")
+        st.caption(
+            "Mass tolerances are explicit instrument settings. Search for an advanced parameter to reveal it."
+        )
+        self.ui.input_TOPP(
+            "NucleicAcidSearchEngine",
+            num_cols=3,
+            custom_defaults=SEARCH_DEFAULTS,
+            include_parameters=[
+                "oligo:enzyme",
+                "oligo:missed_cleavages",
+                "oligo:min_size",
+                "precursor:mass_tolerance",
+                "precursor:mass_tolerance_unit",
+                "fragment:mass_tolerance",
+                "fragment:mass_tolerance_unit",
+                "modifications:fixed",
+                "modifications:variable",
+            ],
+            exclude_parameters=["fdr:"],
+            flag_parameters=SEARCH_FLAGS,
+        )
+        with st.expander("Decoy generation settings"):
+            self.ui.input_TOPP(
+                "DecoyDatabase",
+                num_cols=3,
+                custom_defaults=DECOY_DEFAULTS,
+                exclude_parameters=[
+                    "type",
+                    "decoy_string",
+                    "decoy_string_position",
+                    "only_decoy",
+                    "enzyme",
+                    "rnase",
+                    "NeighborSearch:",
+                    "Decoy:",
+                ],
+                flag_parameters=DECOY_FLAGS,
             )
-            self.params["NucleicAcidSearchEngine"]["fdr:cutoff"] = self.params["FDR_cutoff"]
-            self.params["NucleicAcidSearchEngine"]["fdr:decoy_pattern"] = "DECOY_"
-        else:
-            self.params["NucleicAcidSearchEngine"]["fdr:decoy_pattern"] = ""
-            out_fasta = in_fasta # Use the un-decoyed fasta if we don't want decoys
 
-        # Magic UX improving logic
-        self.params["NucleicAcidSearchEngine"]["precursor:mass_tolerance"] = float(self.params["ms1_resolution"]) / 1000000
+    def execution(self) -> bool:
+        """Run the tools and propagate failure; never save Streamlit state here."""
+        for key, label in [
+            ("mzML-files", "mzML spectra"),
+            ("fasta-files", "RNA FASTA database"),
+        ]:
+            selected = self.params.get(key)
+            # Reject ambiguous legacy selections instead of combining acquisitions.
+            if not isinstance(selected, str) or not Path(selected).is_file():
+                self.logger.log(
+                    f"ERROR: Select one existing {label} file on Configure."
+                )
+                return False
+        if not all(
+            shutil.which(tool) for tool in ["DecoyDatabase", "NucleicAcidSearchEngine"]
+        ):
+            self.logger.log(
+                "ERROR: Install OpenMS TOPP tools (DecoyDatabase and NucleicAcidSearchEngine) and add them to PATH."
+            )
+            return False
 
-        if self.params["ms1_resolution"] <= 1500:
-            #MS1 low-res
-            self.params["NucleicAcidSearchEngine"]["precursor:mass_tolerance"] = 1500
-            self.params["NucleicAcidSearchEngine"]["precursor:use_avg_mass"] = True
-            self.params["NucleicAcidSearchEngine"]["precursor:include_unknown_charge"] = True
-        elif self.params["ms1_resolution"] <= 30000:
-            #MS1 medium-res
-            self.params["NucleicAcidSearchEngine"]["precursor:mass_tolerance"] = 100
-            self.params["NucleicAcidSearchEngine"]["precursor:use_avg_mass"] = False
-            self.params["NucleicAcidSearchEngine"]["precursor:include_unknown_charge"] = True
-        elif self.params["ms1_resolution"] <= 1000000:
-            #MS1 high-res
-            self.params["NucleicAcidSearchEngine"]["precursor:mass_tolerance"] = 10
-            self.params["NucleicAcidSearchEngine"]["precursor:include_unknown_charge"] = True
-
-
-        else:
-            #I'm jealous
-            self.params["NucleicAcidSearchEngine"]["precursor:mass_tolerance"] = 3
-        
-        if self.params["ms2_resolution"] <= 1500:
-            #MS2 low-res
-            self.params["NucleicAcidSearchEngine"]["fragment:mass_tolerance"] = 1500
-        elif self.params["ms2_resolution"] <= 30000:
-            #MS2 medium-res
-            self.params["NucleicAcidSearchEngine"]["fragment:mass_tolerance"] = 100
-        elif self.params["ms2_resolution"] <= 1000000:
-            #MS2 high-res
-            self.params["NucleicAcidSearchEngine"]["fragment:mass_tolerance"] = 10
-        else:
-            #I'm jealous
-            self.params["NucleicAcidSearchEngine"]["fragment:mass_tolerance"] = 3
-
-        # Store all of these carefully curated parameters
-        self.parameter_manager.save_parameters()
-        with open(self.parameter_manager.params_file, "w", encoding="utf-8") as f:
-            json.dump(self.params, f, indent=4)      
-
-        tab_out = self.file_manager.get_files("tab_out", set_results_dir="mztab_results")
-        id_out = self.file_manager.get_files("id_out", set_results_dir="idxml_results")
-        self.executor.run_topp("NucleicAcidSearchEngine", {"in": self.file_manager.get_files(in_mzML, collect=True),
-                                                "database": self.file_manager.get_files(out_fasta, collect=True),
-                                                "out": tab_out, "id_out": id_out})
+        params = deepcopy(self.params)
+        search = (
+            SEARCH_DEFAULTS
+            | params.get("_defaults", {}).get("NucleicAcidSearchEngine", {})
+            | params.get("NucleicAcidSearchEngine", {})
+        )
+        decoy = (
+            DECOY_DEFAULTS
+            | params.get("_defaults", {}).get("DecoyDatabase", {})
+            | params.get("DecoyDatabase", {})
+        )
+        use_decoys = params.get("add-decoys", True)
+        cutoff = float(params.get("FDR_cutoff", 0.05))
+        if not 0 <= cutoff <= 1:
+            self.logger.log("ERROR: Maximum q-value must be between 0 and 1.")
+            return False
+        # Override both enabled and disabled states on every run. In particular,
+        # do not leave the previous run's decoy pattern or average-mass mode behind.
+        search.update(
+            {
+                "fdr:cutoff": cutoff if use_decoys else 1.0,
+                "fdr:decoy_pattern": "DECOY_" if use_decoys else "",
+                "fdr:remove_decoys": bool(use_decoys),
+            }
+        )
+        decoy.update(
+            {
+                "type": "RNA",
+                "decoy_string": "DECOY_",
+                "decoy_string_position": "prefix",
+                "only_decoy": False,
+            }
+        )
+        params["NucleicAcidSearchEngine"], params["DecoyDatabase"] = search, decoy
+        params.setdefault("_flag_params", {})
+        for tool, flags in [
+            ("NucleicAcidSearchEngine", SEARCH_FLAGS),
+            ("DecoyDatabase", DECOY_FLAGS),
+        ]:
+            if not self.parameter_manager.create_ini(tool):
+                self.logger.log(f"ERROR: Cannot read {tool} parameters.")
+                return False
+            detected = bool_param_paths_from_param_xml_ini(
+                self.parameter_manager.ini_dir / f"{tool}.ini", tool
+            )
+            params["_flag_params"][tool] = sorted(set(flags) | detected)
+        # The manager points at this run's snapshot in both local and queue mode.
+        self.parameter_manager.write_parameters(params)
+        self.params = params
+        database = [params["fasta-files"]]
+        if use_decoys:
+            output = self.file_manager.get_files(
+                "target-decoy.fasta", set_results_dir="database"
+            )
+            self.logger.log("Generating shuffled RNA decoys...")
+            if not self.executor.run_topp(
+                "DecoyDatabase", {"in": [database], "out": output}
+            ):
+                return False
+            database = output
+        tab_out = self.file_manager.get_files(
+            "search.mzTab", set_results_dir="mztab_results"
+        )
+        id_out = self.file_manager.get_files(
+            "search.idXML", set_results_dir="idxml_results"
+        )
+        self.logger.log("Searching RNA oligonucleotides...")
+        return self.executor.run_topp(
+            "NucleicAcidSearchEngine",
+            {
+                "in": [params["mzML-files"]],
+                "database": database,
+                "out": tab_out,
+                "id_out": id_out,
+            },
+        )
 
     def results(self) -> None:
-        # Check that results exists at all, that we have output id_xml and that mzML-files is set
-        if Path(self.workflow_dir, "results" ).is_dir() and Path(self.file_manager.get_files("id_out", set_results_dir="idxml_results")[0]).is_file()  and  "mzML-files" in self.params:
-            # Load the hits from the idXML file
-
-            df_file = self.file_manager.get_files("id_out", set_results_dir="idxml_results")[0]
-            # File_size is not a guarantee of no changes, but it's very unlikely that we see a collision.
-            file_size = getsize(df_file)
-            # Only do the actual loading from file if the file size has changed
-            if "df_last_size" not in st.session_state or file_size != st.session_state['df_last_size']:
-                st.session_state['df_last_size'] = file_size
-                df = view.get_id_df( self.file_manager.get_files("id_out", set_results_dir="idxml_results")[0])
-                if not df.empty:
-                    # select a subset of the columns to display
-                    formatted_df = df[['protein_accession','label','RT','mz','charge','hyperscore']]
-                    # update column names
-                    formatted_df = formatted_df.rename(columns={"protein_accession": "Accession", "label":"Sequence", "RT": "Retention Time (s)", "mz": "M/Z", "hyperscore": "Hyperscore"})
-                    # if we have FDR data, add that
-                    if self.params["add-decoys"]:
-                      formatted_df['q-value %'] = df.loc[:,('PSM-level q-value')] * 100
-                    # store the df to our session state
-                    st.session_state['df'] = formatted_df
-                else:
-                    # Make sure that we store the empty df otherwise
-                    st.session_state['df'] = None
-
-            # We are using the cached DF. Just do the display
-            if st.session_state['df'] is not None and not st.session_state['df'].empty:
-                # Tabley goodness
-                show_table(st.session_state['df'], download_name="results")
-                with open (self.file_manager.get_files("id_out", set_results_dir="idxml_results")[0]) as file:
-                    st.download_button(
-                        label = "Download idXML",
-                        data = file,
-                        file_name = Path(self.params["mzML-files"]).stem + '.idXML',
-                        mime = "idXML"
-                    )
-                with open (self.file_manager.get_files("tab_out", set_results_dir="mztab_results")[0]) as file:
-                    st.download_button(
-                        label = "Download mztab",
-                        data = file,
-                        file_name = Path(self.params["mzML-files"]).stem + '.mztab',
-                        mime = "mztab"
-                    )
-                mztab1 = plot_full_coverage.read_mzTab(self.file_manager.get_files("tab_out", set_results_dir="mztab_results")[0])
-                html_string = plot_full_coverage.make_coverage_html(mztab1)
-
-                # Display the HTML string
-                st.components.v1.html(html_string, height=2000, scrolling=True)
-
-            #It is possible that we cached an empty df if there were no results from the search
+        # Legacy runs used extensionless names; retain access after migration.
+        result_file = self.results_dir / "mztab_results" / "search.mzTab"
+        if not result_file.exists():
+            result_file = self.results_dir / "mztab_results" / "tab_out"
+        if not result_file.exists():
+            st.info("No search results yet. Configure the inputs and start a run.")
+            return
+        try:
+            stat = result_file.stat()
+            tables = load_results(
+                str(result_file.resolve()), stat.st_mtime_ns, stat.st_size
+            )
+            matches = match_table(tables)
+        except (OSError, ValueError, KeyError) as error:
+            st.error(f"Could not read this run's results: {error}")
+            return
+        cols = st.columns(3)
+        cols[0].metric("Spectrum matches", len(matches))
+        cols[1].metric(
+            "Distinct oligonucleotides",
+            matches["Sequence"].nunique() if not matches.empty else 0,
+        )
+        cols[2].metric("RNA accessions", len(tables.get("NUC", [])))
+        table_tab, coverage_tab, download_tab = st.tabs(
+            ["Matches", "Sequence coverage", "Export"]
+        )
+        with table_tab:
+            if matches.empty:
+                st.info(
+                    "No matches passed this search's filters. Review the database, digestion, mass tolerances and FDR cutoff."
+                )
             else:
-                st.warning("Search returned no results")
+                st.dataframe(matches, hide_index=True, use_container_width=True)
+                st.download_button(
+                    "Download matches (CSV)",
+                    matches.to_csv(index=False).encode(),
+                    "naseweis-matches.csv",
+                    "text/csv",
+                )
+        with coverage_tab:
+            references = tables.get("NUC")
+            if references is not None and not references.empty:
+                accession = st.selectbox(
+                    "RNA accession", references["accession"].dropna().unique()
+                )
+                try:
+                    plot = coverage_html(tables, accession)
+                    html(plot, height=550, scrolling=True)
+                    st.download_button(
+                        "Download coverage (HTML)",
+                        plot,
+                        "naseweis-coverage.html",
+                        "text/html",
+                    )
+                except (ValueError, KeyError, IndexError) as error:
+                    st.warning(f"Coverage is unavailable: {error}")
+            else:
+                st.info("No RNA sequence coverage to display for this run.")
+        with download_tab:
+            st.caption(
+                "mzTab contains all result tables; idXML opens in TOPPView. Parameters record the settings used for this run."
+            )
+            for label, path, mime in [
+                ("Download mzTab", result_file, "text/tab-separated-values"),
+                (
+                    "Download idXML",
+                    self.results_dir / "idxml_results" / "search.idXML",
+                    "application/xml",
+                ),
+                (
+                    "Download legacy idXML",
+                    self.results_dir / "idxml_results" / "id_out",
+                    "application/xml",
+                ),
+            ]:
+                if path.is_file():
+                    st.download_button(label, path.read_bytes(), path.name, mime)
+            snapshot = (
+                self.runs.params_file(self.run_id)
+                if self.run_id
+                else self.parameter_manager.params_file
+            )
+            if snapshot.is_file():
+                st.download_button(
+                    "Download search parameters",
+                    snapshot.read_bytes(),
+                    "naseweis-parameters.json",
+                    "application/json",
+                )

@@ -1,6 +1,6 @@
 import json
 import sys
-from pyopenms import ConsensusXMLFile, ConsensusMap
+import pyopenms as poms
 from pathlib import Path
 
 ############################
@@ -36,11 +36,11 @@ def get_params():
 if __name__ == "__main__":
     params = get_params()
     # Add code here:
-    cm = ConsensusMap()
-    ConsensusXMLFile().load(params["in"], cm)
+    cm = poms.ConsensusMap()
+    poms.ConsensusXMLFile().load(params["in"], cm)
     df = cm.get_df()
     df = df.rename(columns={col: Path(col).name for col in df.columns})
     df = df.reset_index()
     df = df.drop(columns=["id", "sequence"])
-    df.insert(0, "metabolite", df.apply(lambda x: f"{round(x['mz'], 4)}@{round(x['RT'], 2)}", axis=1))
+    df.insert(0, "metabolite", df.apply(lambda x: f"{round(x['mz'], 4)}@{round(x['rt'], 2)}", axis=1))
     df.to_csv(Path(params["in"]).with_suffix(".tsv"), sep="\t", index=False)

@@ -1,24 +1,18 @@
-# test_my_math.py
-import unittest
-from urllib.request import urlretrieve
-
-from src.simpleworkflow import generate_random_table
-from src.mzmlfileworkflow import mzML_file_get_num_spectra
+"""Validate the bundled RNA example without downloads or synthetic delays."""
 
 from pathlib import Path
 
-class TestSimpleWorkflow(unittest.TestCase):
-    def test_workflow(self):
-        result = generate_random_table(2, 3).shape
-        self.assertEqual(result, (2,3), "Expected dataframe shape.")
+import pyopenms as poms
 
-class TestComplexWorkflow(unittest.TestCase):
-    def test_workflow(self):
-        # load data from url
-        urlretrieve("https://raw.githubusercontent.com/OpenMS/streamlit-template/main/example-data/mzML/Treatment.mzML", "testfile.mzML")
-        result = mzML_file_get_num_spectra("testfile.mzML")
-        Path("testfile.mzML").unlink()
-        self.assertEqual(result, 786, "Expected dataframe shape.")
 
-if __name__ == '__main__':
-    unittest.main()
+def test_example_contains_msms_spectra():
+    experiment = poms.MSExperiment()
+    poms.MzMLFile().load("example-data/mzML/NME1.mzML", experiment)
+    assert sum(spectrum.getMSLevel() == 2 for spectrum in experiment) == 2116
+
+
+def test_example_rna_database():
+    lines = Path("example-data/fasta/NME1_Target.fasta").read_text().splitlines()
+    assert lines[0] == ">NME1"
+    sequence = poms.NASequence.fromString("".join(lines[1:]))
+    assert sequence.size() == 340

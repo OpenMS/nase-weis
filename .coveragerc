@@ -1,0 +1,27 @@
+[run]
+branch = True
+source = .
+omit =
+    .venv/*
+    .local/*
+    .claude/*
+    tests/*
+    test.py
+    test_gui.py
+
+[report]
+# Keep this list aligned with the app-owned application code. Framework
+# coverage is separate; adding thousands of template lines hides app gaps.
+include =
+    app.py
+    content/quickstart.py
+    content/naseweis.py
+    content/topp_workflow_file_upload.py
+    content/topp_workflow_execution.py
+    content/topp_workflow_results.py
+    src/Workflow.py
+    src/naseweis_results.py
+    src/plot_full_coverage.py
+fail_under = 95
+precision = 2
+show_missing = True
