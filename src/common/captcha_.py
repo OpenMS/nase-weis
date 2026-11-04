@@ -1,14 +1,23 @@
-from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as st_components
-from streamlit.source_util import page_icon_and_name, calc_md5, get_pages, _on_pages_changed
 
+from streamlit.source_util import page_icon_and_name
 from captcha.image import ImageCaptcha
+from pathlib import Path
 
+import hashlib
 import random
 import string
 import os
 
+def calc_md5(string : str):
+    return hashlib.md5(string.encode()).hexdigest() 
+
+def get_pages():
+    return st.runtime.get_pages()
+
+def set_pages(pages : dict):
+    st.runtime.set_pages(pages)
 
 def delete_all_pages(main_script_path_str: str) -> None:
     """
@@ -22,7 +31,7 @@ def delete_all_pages(main_script_path_str: str) -> None:
 
     """
     # Get all pages from the app's configuration
-    current_pages = get_pages(main_script_path_str)
+    current_pages = get_pages()
 
     # Create a list to store keys pages to delete
     keys_to_delete = []
@@ -37,7 +46,7 @@ def delete_all_pages(main_script_path_str: str) -> None:
         del current_pages[key]
 
     # Refresh the pages configuration
-    _on_pages_changed.send()
+    set_pages(current_pages)
 
 
 def delete_page(main_script_path_str: str, page_name: str) -> None:
@@ -52,7 +61,7 @@ def delete_page(main_script_path_str: str, page_name: str) -> None:
         None
     """
     # Get all pages
-    current_pages = get_pages(main_script_path_str)
+    current_pages = get_pages()
 
     # Iterate over all pages and delete the desired page if found
     for key, value in current_pages.items():
@@ -60,7 +69,7 @@ def delete_page(main_script_path_str: str, page_name: str) -> None:
             del current_pages[key]
 
     # Refresh the pages configuration
-    _on_pages_changed.send()
+    set_pages(current_pages)
 
 
 def restore_all_pages(main_script_path_str: str) -> None:
@@ -74,7 +83,7 @@ def restore_all_pages(main_script_path_str: str) -> None:
         None
     """
     # Get all pages
-    pages = get_pages(main_script_path_str)
+    pages = get_pages()
 
     # Obtain the path to the main script
     main_script_path = Path(main_script_path_str)
@@ -126,7 +135,7 @@ def restore_all_pages(main_script_path_str: str) -> None:
         }
 
     # Refresh the page configuration
-    _on_pages_changed.send()
+    set_pages(pages)
 
 
 def add_page(main_script_path_str: str, page_name: str) -> None:
@@ -141,7 +150,7 @@ def add_page(main_script_path_str: str, page_name: str) -> None:
         None
     """
     # Get all pages
-    pages = get_pages(main_script_path_str)
+    pages = get_pages()
 
     # Obtain the path to the main script
     main_script_path = Path(main_script_path_str)
@@ -168,7 +177,7 @@ def add_page(main_script_path_str: str, page_name: str) -> None:
     }
 
     # Refresh the page configuration
-    _on_pages_changed.send()
+    set_pages(pages)
 
 
 length_captcha = 5
@@ -177,7 +186,7 @@ height = 180
 
 
 # define the function for the captcha control
-def captcha_control():
+def captcha_control(privacy_policy_url: str = ""):
     """
     Control and verification of a CAPTCHA to ensure the user is not a robot.
 
@@ -190,6 +199,10 @@ def captcha_control():
 
     The CAPTCHA text is generated as a session state and should not change during refreshes.
 
+    Args:
+        privacy_policy_url (str, optional): URL shown as the privacy policy link
+            in the GDPR consent banner. Defaults to "".
+
     Returns:
         None
     """
@@ -199,12 +212,16 @@ def captcha_control():
         # Check if consent for tracking was given
         ga = st.session_state.settings['analytics']['google-analytics']['enabled']
         pp = st.session_state.settings['analytics']['piwik-pro']['enabled']
-        if (ga or pp) and (st.session_state.tracking_consent is None):
+        mt = st.session_state.settings['analytics']['matomo']['enabled']
+        if (ga or pp or mt) and (st.session_state.tracking_consent is None):
             consent_component = st_components.declare_component("gdpr_consent", path=Path("gdpr_consent"))
             with st.spinner():
                 # Ask for consent
                 st.session_state.tracking_consent = consent_component(
-                    google_analytics=ga, piwik_pro=pp
+                    google_analytics=ga,
+                    piwik_pro=pp,
+                    matomo=mt,
+                    privacy_policy=privacy_policy_url,
                 )
                 if st.session_state.tracking_consent is None:
                     # No response by user yet
@@ -235,21 +252,25 @@ def captcha_control():
             st.image(data)
             c1, c2 = st.columns([70, 30])
             capta2_text = st.empty()
-            capta2_text = c1.text_input("Enter captcha text", max_chars=5)
+            capta2_text = c1.text_input("Enter captcha text", max_chars=5, key="captcha_input")
             c2.markdown("##")
             if c2.form_submit_button("Verify the code", type="primary"):
                 capta2_text = capta2_text.replace(" ", "")
                 # if the captcha is correct, the controllo session state is set to True
                 if st.session_state["Captcha"].lower() == capta2_text.lower().strip():
                     del st.session_state["Captcha"]
+                    if "captcha_input" in st.session_state:
+                        del st.session_state["captcha_input"]
                     col1.empty()
                     st.session_state["controllo"] = True
                     st.rerun()
                 else:
                     # if the captcha is wrong, the controllo session state is set to False and the captcha is regenerated
-                    st.error("🚨 Captch is wrong")
+                    st.error("🚨 CAPTCHA is wrong")
                     del st.session_state["Captcha"]
                     del st.session_state["controllo"]
+                    if "captcha_input" in st.session_state:
+                        del st.session_state["captcha_input"]
                     st.rerun()
             else:
                 # wait for the button click

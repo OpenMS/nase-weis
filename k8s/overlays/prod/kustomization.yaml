@@ -1,0 +1,74 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  # The shared `openms` namespace. Every app on the cluster deploys into it,
+  # so exactly one Argo CD Application may manage it: this one, the
+  # template's own deployment. Apps generated from the template delete this
+  # line and namespace.yaml (see docs/kubernetes-deployment.md); if two apps
+  # carried it, each sync would take the namespace over from the other.
+
+components:
+  - ../../components/memory-tier-low
+
+namePrefix: naseweis-
+
+commonLabels:
+  app: naseweis
+
+images:
+  - name: openms-streamlit
+    newName: ghcr.io/poshul/nase-weis
+    newTag: main-full
+
+patches:
+  # This app's values belong here, not in k8s/base or k8s/components: those
+  # are template-owned and reach every app through the template sync. The
+  # workspace share size is one such value (deploy.k8s.storage in app.yaml
+  # must match it; `python -m utils.app_spec` compares them). Worker sizes
+  # and counts are patched the same way, see docs/kubernetes-deployment.md.
+  - target:
+      kind: PersistentVolumeClaim
+      name: workspaces-manila-pvc
+    patch: |
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 50Gi
+  - target:
+      kind: IngressRoute
+      name: streamlit-traefik
+    patch: |
+      - op: replace
+        path: /spec/routes/0/match
+        value: (Host(`naseweis.webapps.openms.de`) || Host(`naseweis.webapps.openms.org`)) && PathPrefix(`/`)
+      - op: replace
+        path: /spec/routes/0/services/0/name
+        value: naseweis-streamlit
+      - op: replace
+        path: /spec/routes/1/match
+        value: (Host(`naseweis.webapps.openms.de`) || Host(`naseweis.webapps.openms.org`)) && PathPrefix(`/sync`)
+      - op: replace
+        path: /spec/routes/1/services/0/name
+        value: naseweis-sync
+  - target:
+      kind: Deployment
+      name: streamlit
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "redis://naseweis-redis:6379/0"
+  - target:
+      kind: Deployment
+      name: sync
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "redis://naseweis-redis:6379/0"
+  - target:
+      kind: Deployment
+      name: rq-worker
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "redis://naseweis-redis:6379/0"

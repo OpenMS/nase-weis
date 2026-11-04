@@ -1,20 +1,69 @@
 {
     "app-name": "NASEWEIS",
-    "github-user": "OpenMS",
-    "version": "1.0.2",
-    "repository-name": "streamlit-template",
+    "github-user": "poshul",
+    "version": "2.0.0",
+    "repository-name": "nase-weis",
+    "legal_links": {
+        "impressum": "https://openms.de/impressum",
+        "privacy": "https://openms.de/privacy",
+        "terms": "https://openms.de/terms"
+    },
     "analytics": {
         "google-analytics": {
             "enabled": false,
             "tag": ""
         },
         "piwik-pro": {
-            "enabled": true,
-            "tag": "57690c44-d635-43b0-ab43-f8bd3064ca06"
+            "enabled": false,
+            "tag": ""
+        },
+        "matomo": {
+            "enabled": false,
+            "url": "https://cdn.matomo.cloud/openms.matomo.cloud",
+            "tag": "yDGK8bfY"
         }
     },
     "online_deployment": false,
     "enable_workspaces": true,
-    "test": true,
-    "workspaces_dir": ".."
+    "test": false,
+    "workspaces_dir": "..",
+    "local_data_dir": "",
+    "queue_settings": {
+        "default_timeout": 7200,
+        "result_ttl": 86400
+    },
+    "demo_workspaces": {
+        "enabled": false,
+        "source_dirs": [
+            "example-data/workspaces"
+        ]
+    },
+    "developer_mode": {},
+    "workspace_sync": {
+        "enabled": false,
+        "developer_only": true,
+        "public_url": "",
+        "token_ttl_hours": 24,
+        "max_file_gb": 50,
+        "max_workspace_gb": 200,
+        "chunk_mb": 32,
+        "workflows": {
+            "naseweis": "src.Workflow:Workflow"
+        }
+    },
+    "max_threads": {
+        "local": 4,
+        "online": 2
+    },
+    "data_import": {
+        "enabled": true,
+        "max_download_gb_online": 50,
+        "allowed_hosts": [],
+        "parallel_downloads": 4
+    },
+    "branding": {
+        "logo": "assets/NASEWEIS.png",
+        "logo_size": "large",
+        "page_icon": "\ud83d\udc43"
+    }
 }

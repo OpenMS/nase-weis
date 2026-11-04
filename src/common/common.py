@@ -1,32 +1,325 @@
-import json
 import os
-import shutil
 import sys
 import uuid
+import json
 import time
+import psutil
+import shutil
+import logging
+
+import pandas as pd
+import streamlit as st
+
 from typing import Any
 from pathlib import Path
 from streamlit.components.v1 import html
 
-import streamlit as st
-import pandas as pd
-import psutil
+import subprocess
 
 try:
-    from tkinter import Tk, filedialog
+    import tkinter  # noqa: F401  (the dialogs run in a child process)
 
     TK_AVAILABLE = True
 except ImportError:
     TK_AVAILABLE = False
 
+from src.common.developer import render_developer_toggle
 from src.common.captcha_ import captcha_control
+from src.common.admin import (
+    is_admin_configured,
+    verify_admin_password,
+    demo_exists,
+    save_workspace_as_demo,
+)
+
+logger = logging.getLogger(__name__)
 
 # Detect system platform
 OS_PLATFORM = sys.platform
 
+# Demo and example files are symlinked on Linux to save space. An AppImage
+# mounts the app under a new path on every launch, so links into it would
+# dangle after a restart; it copies them instead.
+LINK_EXAMPLE_FILES = OS_PLATFORM == "linux" and "APPIMAGE" not in os.environ
 
-@st.fragment(run_every=5)
+# Default legal/GDPR page links. These point to the centrally maintained
+# official OpenMS pages. Forks that self-host should override them via the
+# "legal_links" key in settings.json (an Impressum must name the actual
+# operator). The defaults live here too — not only in settings.json — so that
+# downstream apps built from an older settings.json without a "legal_links"
+# key still inherit working legal links by default.
+DEFAULT_LEGAL_LINKS = {
+    "impressum": "https://openms.de/impressum",
+    "privacy": "https://openms.de/privacy",
+    "terms": "https://openms.de/terms",
+}
+
+
+def get_legal_links() -> dict[str, str]:
+    """
+    Return the legal page URLs (Impressum, Privacy Policy, Terms of Use).
+
+    Values from the "legal_links" object in settings.json override the
+    built-in OpenMS defaults. Empty override values are ignored so a blank
+    entry can't erase a default.
+
+    Returns:
+        dict[str, str]: Mapping of "impressum", "privacy" and "terms" to URLs.
+    """
+    overrides = (
+        st.session_state.settings.get("legal_links", {})
+        if "settings" in st.session_state
+        else {}
+    )
+    return {**DEFAULT_LEGAL_LINKS, **{k: v for k, v in overrides.items() if v}}
+
+
+# The OpenMS logo is used for every branding image a settings.json does not set.
+DEFAULT_LOGO = "assets/openms_transparent_bg_logo.svg"
+
+
+def get_branding(theme: str | None = None) -> dict[str, str]:
+    """
+    Return the images that brand the app for the active light or dark theme.
+
+    The optional "branding" object in settings.json sets them:
+
+      * "page_icon": the browser tab icon (one image; the tab ignores the theme),
+      * "logo": the image at the top of the sidebar,
+      * "logo_icon": the smaller image shown when the sidebar is collapsed,
+      * "app_icon": an icon for the app's own pages to use, e.g. next to a
+        title (the template shows it nowhere itself; it is also the default
+        "logo_icon"),
+      * "logo_size": "small", "medium" (default) or "large"; a wide logo with
+        the app name in it reads better at "large".
+
+    Each of "logo", "logo_icon" and "app_icon" is either one path or an object
+    {"light": path, "dark": path}. Anything not set, or set to an empty value,
+    falls back to the OpenMS logo. A "logo_icon" that is not set follows
+    "app_icon", then "logo".
+
+    Args:
+        theme (str | None): "light" or "dark". None reads the active theme
+            from st.context, which is unknown before the first rerun; the light
+            images are used then.
+
+    Returns:
+        dict[str, str]: The paths for "page_icon", "logo", "logo_icon" and
+            "app_icon", and the "logo_size".
+    """
+    if theme is None:
+        try:
+            theme = st.context.theme.type
+        except Exception:
+            theme = None
+    theme = "dark" if theme == "dark" else "light"
+    branding = (
+        st.session_state.settings.get("branding", {})
+        if "settings" in st.session_state
+        else {}
+    ) or {}
+
+    def pick(key: str) -> str:
+        value = branding.get(key)
+        if isinstance(value, dict):
+            value = value.get(theme) or value.get("light") or value.get("dark")
+        return value or ""
+
+    logo = pick("logo") or DEFAULT_LOGO
+    app_icon = pick("app_icon") or logo
+    return {
+        "page_icon": pick("page_icon") or DEFAULT_LOGO,
+        "logo": logo,
+        "logo_icon": pick("logo_icon") or app_icon,
+        "app_icon": app_icon,
+        "logo_size": branding.get("logo_size")
+        if branding.get("logo_size") in ("small", "medium", "large")
+        else "medium",
+    }
+
+
+def is_safe_workspace_name(name: str) -> bool:
+    """
+    Check if a workspace name is safe (no path traversal characters).
+
+    Args:
+        name: The workspace name to validate.
+
+    Returns:
+        bool: True if safe, False if contains path separators or parent references.
+    """
+    if not name:
+        return False
+    # Reject path separators and parent directory references
+    return "/" not in name and "\\" not in name and name not in ("..", ".")
+
+
+def local_workspaces_dir(settings: dict) -> Path:
+    """
+    Resolve the directory holding workspaces in local mode.
+
+    ``LOCAL_WORKSPACES_DIR`` wins when set, so a desktop launcher (the
+    Electron shell) can keep workspaces in the user profile instead of next
+    to a read-only install folder. Otherwise ``workspaces_dir`` from
+    settings.json is used, falling back to the parent directory.
+    """
+    override = os.environ.get("LOCAL_WORKSPACES_DIR")
+    if override:
+        return Path(override)
+    if settings.get("workspaces_dir"):
+        return Path(
+            settings["workspaces_dir"], "workspaces-" + settings["repository-name"]
+        )
+    return Path("..")
+
+
+def get_demo_source_dirs() -> list[Path]:
+    """
+    Get list of demo workspace source directories from settings.
+
+    Supports both legacy 'source_dir' (string) and new 'source_dirs' (array) formats.
+    Non-existent directories are silently skipped.
+
+    Returns:
+        list[Path]: List of existing source directory paths.
+    """
+    settings = st.session_state.get("settings", {})
+    demo_config = settings.get("demo_workspaces", {})
+
+    if not demo_config.get("enabled", False):
+        return []
+
+    # Support both source_dirs (array) and source_dir (string) for backward compatibility
+    if "source_dirs" in demo_config:
+        dirs = demo_config["source_dirs"]
+        if isinstance(dirs, str):
+            dirs = [dirs]
+    elif "source_dir" in demo_config:
+        dirs = [demo_config["source_dir"]]
+    else:
+        dirs = ["example-data/workspaces"]
+
+    # Return only existing directories
+    return [Path(d) for d in dirs if Path(d).exists()]
+
+
+def get_available_demo_workspaces() -> list[str]:
+    """
+    Get a list of available demo workspaces from all configured source directories.
+
+    When the same demo name exists in multiple directories, the first occurrence wins.
+
+    Returns:
+        list[str]: List of unique demo workspace names.
+    """
+    seen = set()
+    demos = []
+
+    for source_dir in get_demo_source_dirs():
+        for p in source_dir.iterdir():
+            if p.is_dir() and p.name not in seen:
+                seen.add(p.name)
+                demos.append(p.name)
+
+    return demos
+
+
+def find_demo_workspace_path(demo_name: str) -> Path | None:
+    """
+    Find the source path for a demo workspace by searching all configured directories.
+
+    Directories are searched in order; the first match is returned.
+
+    Args:
+        demo_name: Name of the demo workspace to find.
+
+    Returns:
+        Path to the demo workspace, or None if not found or name is unsafe.
+    """
+    # Validate against path traversal attacks
+    if not is_safe_workspace_name(demo_name):
+        return None
+
+    for source_dir in get_demo_source_dirs():
+        demo_path = source_dir / demo_name
+        if demo_path.exists() and demo_path.is_dir():
+            return demo_path
+    return None
+
+
+def _symlink_tree(source: Path, target: Path) -> None:
+    """
+    Recursively create directory structure and symlink files from source to target.
+
+    Creates real directories but symlinks individual files, allowing users to
+    add new files to workspace directories without affecting the original.
+    params.json and .ini files are copied instead of symlinked so they can be
+    modified independently.
+
+    Args:
+        source: Source directory path.
+        target: Target directory path.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        target_item = target / item.name
+        if item.is_dir():
+            _symlink_tree(item, target_item)
+        elif item.name == "params.json" or item.suffix == ".ini":
+            # Copy config files so they can be modified independently
+            shutil.copy2(item, target_item)
+        else:
+            # Create symlink to the source file
+            target_item.symlink_to(item.resolve())
+
+
+def copy_demo_workspace(demo_name: str, target_path: Path) -> bool:
+    """
+    Copy a demo workspace to the target path.
+
+    On Linux, creates symlinks to demo files instead of copying them.
+    On other platforms, copies files normally.
+
+    Searches all configured source directories for the demo (first match wins).
+
+    Args:
+        demo_name: Name of the demo workspace to copy.
+        target_path: Destination path for the workspace.
+
+    Returns:
+        bool: True if copy was successful, False otherwise.
+    """
+    demo_path = find_demo_workspace_path(demo_name)
+
+    if demo_path is None:
+        return False
+
+    try:
+        if target_path.exists():
+            shutil.rmtree(target_path)
+
+        # Use symlinks on Linux for efficiency (not in an AppImage)
+        if LINK_EXAMPLE_FILES:
+            _symlink_tree(demo_path, target_path)
+        else:
+            shutil.copytree(demo_path, target_path)
+        return True
+    except Exception:
+        return False
+
+
 def monitor_hardware():
+    """
+    Display CPU and RAM of the machine running this Streamlit process.
+
+    Gated by the caller on where the workflows actually run, not on
+    `online_deployment`: in Kubernetes psutil here reports a Streamlit pod that
+    does no work, and an idle 2Gi container shown while a 64Gi worker saturates
+    is worse than showing nothing. In the single-container images - the full
+    one under docker-compose, and `Dockerfile_simple`, which has no queue at
+    all - this process and the workflows share a machine and these are the only
+    numbers that expander has. See `health.queue_workers_are_remote()`.
+    """
     cpu_progress = psutil.cpu_percent(interval=None) / 100
     ram_progress = 1 - psutil.virtual_memory().available / psutil.virtual_memory().total
 
@@ -37,6 +330,169 @@ def monitor_hardware():
     st.progress(cpu_progress)
 
     st.caption(f"Last fetched at: {time.strftime('%H:%M:%S')}")
+
+
+def monitor_queue():
+    """Display queue metrics in sidebar (online mode only)"""
+    try:
+        from src.workflow.health import get_queue_metrics
+
+        metrics = get_queue_metrics()
+        if not metrics.get("available", False):
+            return
+
+        st.markdown("---")
+        st.markdown("**Queue Status**")
+
+        total_workers = metrics.get("total_workers", 0)
+        busy_workers = metrics.get("busy_workers", 0)
+        queued_jobs = metrics.get("queued_jobs", 0)
+
+        col1, col2 = st.columns(2)
+        col1.metric(
+            "Workers",
+            f"{busy_workers}/{total_workers}",
+            help="Busy workers / Total workers"
+        )
+        col2.metric(
+            "Queued",
+            queued_jobs,
+            help="Jobs waiting in queue"
+        )
+
+        # Utilization progress bar
+        if total_workers > 0:
+            utilization = busy_workers / total_workers
+            st.progress(utilization, text=f"{int(utilization * 100)}% utilized")
+
+        # Warning if queue is backing up
+        if queued_jobs > total_workers * 2 and total_workers > 0:
+            st.warning(f"High queue depth: {queued_jobs} jobs waiting")
+
+        st.caption(f"Last fetched at: {time.strftime('%H:%M:%S')}")
+
+    except Exception:
+        pass  # Silently fail if queue not available
+
+
+def monitor_storage():
+    """
+    Display shared storage status in sidebar.
+
+    Reads Redis and nothing else. The workspace volume is a shared NFS mount
+    online, and its failure mode is a hang rather than an error: a `stat` on a
+    `hard` mount that has wedged blocks in uninterruptible sleep and cannot be
+    killed, so a panel re-reading it on every rerun would accumulate unkillable
+    threads - this indicator would become the very hang it exists to report.
+    The mount is touched by the rq-worker readiness probe instead, which
+    publishes a per node heartbeat whose Redis TTL is the liveness mechanism.
+
+    Renders nothing where no node publishes a heartbeat at all - local mode,
+    docker-compose, apptainer - because a red tick for a mechanism that is not
+    deployed is a false alarm pointing at the wrong layer.
+    """
+    try:
+        from src.workflow.health import get_storage_status
+
+        status = get_storage_status()
+        if not status:
+            return
+
+        state = status.get("state", "unknown")
+        nodes = status.get("nodes") or []
+        stale = status.get("stale_nodes") or []
+
+        st.markdown("---")
+        st.markdown("**Storage Status**")
+
+        if state == "connected":
+            st.markdown(":green[Connected]")
+            st.caption(
+                f"{len(nodes)} node{'' if len(nodes) == 1 else 's'} reporting a "
+                "healthy shared volume."
+            )
+        elif state == "degraded":
+            # The case per node heartbeats exist for. Collapsing them would
+            # show green here, because a healthy node is still reporting.
+            st.markdown(":orange[Degraded]")
+            st.caption(
+                f"{', '.join(stale)} stopped confirming the shared volume. "
+                "Workflows running there may be stalled; other nodes are fine."
+            )
+        elif state == "unreachable":
+            st.markdown(":red[Unreachable]")
+            st.caption(
+                "No node has confirmed the shared volume recently. Running "
+                "workflows may be stalled and new results may not appear."
+            )
+        else:
+            # Redis is down, which says nothing about the mount. Showing this as
+            # unreachable storage would send an operator to the wrong layer.
+            st.markdown(":gray[Unknown]")
+            st.caption("Cannot reach the queue, so storage status is unknown.")
+
+        st.caption(f"Last fetched at: {time.strftime('%H:%M:%S')}")
+
+    except Exception:
+        # Never break the sidebar over an indicator, but never swallow it in
+        # silence either: a broken indicator that renders nothing is
+        # indistinguishable from a deployment that has no shared storage.
+        logger.exception("Could not render the shared storage indicator")
+
+
+def render_resource_utilization():
+    """
+    Render the sidebar's "Resource Utilization" expander.
+
+    Extracted from `render_sidebar()` so the choice of panels is reachable
+    without standing up a whole session (tests/test_sidebar_monitors.py).
+
+    Which panels apply is a question about the deployment, and the three
+    answers do not line up with `online_deployment`:
+
+    - Kubernetes: the queue and the shared volume are what a user's job waits
+      on, and psutil here would describe a Streamlit pod that runs nothing.
+    - Full image under docker/docker-compose: one container runs Redis, the RQ
+      workers and Streamlit, so all three panels describe the same machine.
+    - `Dockerfile_simple`: `online_deployment` is baked true but there is no
+      Redis and no queue, so the psutil panel is the only content there is.
+      Gating it on `online_deployment` left the expander empty.
+    """
+    with st.expander("📊 **Resource Utilization**"):
+        _resource_panels()
+
+
+@st.fragment
+def _resource_panels():
+    """
+    The panels of the "Resource Utilization" expander, refreshed by a button.
+
+    They update on every rerun of the page and when the button reruns just this
+    fragment. They used to rerun themselves with `run_every=5`, which crashed
+    online pages with "Bad 'setIn' index": a timer that fired as the user
+    switched pages sent its rerun tagged with the page being left, the server
+    ran it after the new page, and the browser took it for a page change,
+    cleared the page and then received the panel's elements for a sidebar it
+    no longer had. The window is one network round trip, so it showed online
+    and not locally.
+    """
+    from src.workflow.health import get_queue_metrics, queue_workers_are_remote
+
+    st.button(
+        "Refresh", icon=":material/refresh:", key="resource-utilization-refresh",
+        type="tertiary", help="Fetch the current numbers",
+    )
+    # `{}` means "no queue in this deployment" - the same distinction
+    # get_queue_metrics() already draws for the metrics themselves.
+    metrics = get_queue_metrics()
+    if metrics:
+        monitor_queue()
+        monitor_storage()
+    # Short-circuited on `available`: an unreachable queue is not evidence
+    # that the workers are elsewhere, and this saves the second round trip
+    # in exactly the case where Redis is slow to answer.
+    if not (metrics.get("available") and queue_workers_are_remote()):
+        monitor_hardware()
 
 
 def load_params(default: bool = False) -> dict[str, Any]:
@@ -132,7 +588,7 @@ def page_setup(page: str = "") -> dict[str, Any]:
     # Set Streamlit page configurations
     st.set_page_config(
         page_title=st.session_state.settings["app-name"],
-        page_icon="assets/openms_transparent_bg_logo.svg",
+        page_icon=get_branding()["page_icon"],
         layout="wide",
         initial_sidebar_state="auto",
         menu_items=None,
@@ -152,7 +608,12 @@ def page_setup(page: str = "") -> dict[str, Any]:
         unsafe_allow_html=True,
     )
 
-    st.logo("assets/openms_transparent_bg_logo.svg")
+    branding = get_branding()
+    st.logo(
+        branding["logo"],
+        size=branding["logo_size"],
+        icon_image=branding["logo_icon"],
+    )
 
     # Create google analytics if consent was given
     if (
@@ -203,6 +664,23 @@ def page_setup(page: str = "") -> dict[str, Any]:
                 width=1,
                 height=1,
             )
+        if (st.session_state.settings["analytics"]["matomo"]["enabled"]) and (
+            st.session_state.tracking_consent["matomo"] == True
+        ):
+            html(
+                """
+                <!DOCTYPE html>
+                <html lang="en">
+                    <head></head>
+                    <body><script>
+                    window.parent._mtm = window.parent._mtm || [];
+                    window.parent._mtm.push(['MTMSetConsentGiven']);
+                    </script></body>
+                </html>
+                """,
+                width=1,
+                height=1,
+            )
 
     # Determine the workspace for the current session
     if ("workspace" not in st.session_state) or (
@@ -223,23 +701,41 @@ def page_setup(page: str = "") -> dict[str, Any]:
         if "windows" in sys.argv:
             os.chdir("../streamlit-template")
         # Define the directory where all workspaces will be stored
-        if (
-            st.session_state.settings["workspaces_dir"]
-            and st.session_state.location == "local"
-        ):
+        if st.session_state.location == "local":
+            workspaces_dir = local_workspaces_dir(st.session_state.settings)
+        elif st.session_state.location == "online":
             workspaces_dir = Path(
-                st.session_state.settings["workspaces_dir"],
-                "workspaces-" + st.session_state.settings["repository-name"],
+                os.environ.get("WORKSPACES_DIR", "/workspaces-streamlit-template")
             )
         else:
             workspaces_dir = ".."
 
         # Check if workspace logic is enabled
         if st.session_state.settings["enable_workspaces"]:
+            # Get available demo workspaces using helper function
+            available_demos = get_available_demo_workspaces()
+
             if "workspace" in st.query_params:
-                st.session_state.workspace = Path(
-                    workspaces_dir, st.query_params.workspace
-                )
+                requested_workspace = st.query_params.workspace
+
+                # Validate workspace name against path traversal
+                if not is_safe_workspace_name(requested_workspace):
+                    # Invalid workspace name - fall back to new UUID workspace
+                    workspace_id = str(uuid.uuid1())
+                    st.session_state.workspace = Path(workspaces_dir, workspace_id)
+                    st.query_params.workspace = workspace_id
+                # Check if the requested workspace is a demo workspace (online mode)
+                elif st.session_state.location == "online" and requested_workspace in available_demos:
+                    # Create a new UUID workspace and copy demo contents
+                    workspace_id = str(uuid.uuid1())
+                    st.session_state.workspace = Path(workspaces_dir, workspace_id)
+                    st.query_params.workspace = workspace_id
+                    # Copy demo workspace contents using helper function
+                    copy_demo_workspace(requested_workspace, st.session_state.workspace)
+                else:
+                    st.session_state.workspace = Path(
+                        workspaces_dir, requested_workspace
+                    )
             elif st.session_state.location == "online":
                 workspace_id = str(uuid.uuid1())
                 st.session_state.workspace = Path(workspaces_dir, workspace_id)
@@ -251,6 +747,12 @@ def page_setup(page: str = "") -> dict[str, Any]:
         else:
             # Use default workspace when workspace feature is disabled
             st.session_state.workspace = Path(workspaces_dir, "default")
+
+            # For local mode with workspaces disabled, copy demo workspaces if they don't exist
+            for demo_name in get_available_demo_workspaces():
+                target = Path(workspaces_dir, demo_name)
+                if not target.exists():
+                    copy_demo_workspace(demo_name, target)
 
         if st.session_state.location != "online":
             # not any captcha so, controllo should be true
@@ -266,13 +768,11 @@ def page_setup(page: str = "") -> dict[str, Any]:
     # Make sure the necessary directories exist
     st.session_state.workspace.mkdir(parents=True, exist_ok=True)
     Path(st.session_state.workspace, "mzML-files").mkdir(parents=True, exist_ok=True)
-    Path(st.session_state.workspace, "fasta-files").mkdir(parents=True, exist_ok=True)
-
 
     # Render the sidebar
     params = render_sidebar(page)
 
-    captcha_control()
+    captcha_control(privacy_policy_url=get_legal_links()["privacy"])
 
     # If run in hosted mode, show captcha as long as it has not been solved
     # if not "local" in sys.argv:
@@ -285,7 +785,7 @@ def page_setup(page: str = "") -> dict[str, Any]:
         "controllo" in params.keys() and params["controllo"] == False
     ):
         # Apply captcha by calling the captcha_control function
-        captcha_control()
+        captcha_control(privacy_policy_url=get_legal_links()["privacy"])
 
     return params
 
@@ -312,29 +812,27 @@ def render_sidebar(page: str = "") -> None:
         # The main page has workspace switcher
         # Display workspace switcher if workspace is enabled in local mode
         if st.session_state.settings["enable_workspaces"]:
-            with st.expander("🖥️ **Workspaces**"):
-                # Workspaces directory specified in the settings.json
-                if (
-                    st.session_state.settings["workspaces_dir"]
-                    and st.session_state.location == "local"
-                ):
-                    workspaces_dir = Path(
-                        st.session_state.settings["workspaces_dir"],
-                        "workspaces-" + st.session_state.settings["repository-name"],
-                    )
-                else:
-                    workspaces_dir = ".."
-                # Online: show current workspace name in info text and option to change to other existing workspace
-                if st.session_state.location == "local":
+            # Workspaces directory specified in the settings.json
+            if st.session_state.location == "local":
+                workspaces_dir = local_workspaces_dir(st.session_state.settings)
+            else:
+                workspaces_dir = ".."
+            # Online: show current workspace name in info text and option to change to other existing workspace
+            if st.session_state.location == "local":
+                with st.expander("🖥️ **Workspaces**"):
                     # Define callback function to change workspace
                     def change_workspace():
+                        # A page switch while a page is still loading can replay
+                        # this widget's value before its key is mapped again, so
+                        # the callback fires with no readable value. The user did
+                        # not pick another workspace then: leave everything as is.
+                        chosen = st.session_state.get("chosen-workspace")
+                        if chosen is None or chosen == st.session_state.workspace.name:
+                            return
                         for key in params.keys():
                             if key in st.session_state.keys():
                                 del st.session_state[key]
-                        st.session_state.workspace = Path(
-                            workspaces_dir, st.session_state["chosen-workspace"]
-                        )
-                        st.query_params.workspace = st.session_state["chosen-workspace"]
+                        st.query_params.workspace = chosen
 
                     # Get all available workspaces as options
                     options = [
@@ -344,7 +842,7 @@ def render_sidebar(page: str = "") -> None:
                     st.selectbox(
                         "choose existing workspace",
                         options,
-                        index=options.index(str(st.session_state.workspace.stem)),
+                        index=options.index(st.session_state.workspace.name),
                         on_change=change_workspace,
                         key="chosen-workspace",
                     )
@@ -370,6 +868,113 @@ def render_sidebar(page: str = "") -> None:
                             st.query_params.workspace = "default"
                             st.rerun()
 
+            # Imported only when enabled: most apps never use workspace sync.
+            if st.session_state.settings.get("workspace_sync", {}).get("enabled"):
+                from src.common.workspace_sync import render_sync_sidebar
+                render_sync_sidebar()
+
+            # Demo workspace loader for online mode
+            if st.session_state.location == "online":
+                available_demos = get_available_demo_workspaces()
+                if available_demos:
+                    with st.expander("🎮 **Demo Data**"):
+                        st.caption("Load example data to explore the app")
+                        selected_demo = st.selectbox(
+                            "Select demo dataset",
+                            available_demos,
+                            key="selected-demo-workspace"
+                        )
+                        if st.button("Load Demo Data"):
+                            demo_path = find_demo_workspace_path(selected_demo)
+                            if demo_path:
+                                # Link or copy demo files to current workspace
+                                for item in demo_path.iterdir():
+                                    target = st.session_state.workspace / item.name
+                                    if item.is_dir():
+                                        if target.exists():
+                                            shutil.rmtree(target)
+                                        # Use symlinks on Linux for efficiency (not in an AppImage)
+                                        if LINK_EXAMPLE_FILES:
+                                            _symlink_tree(item, target)
+                                        else:
+                                            shutil.copytree(item, target)
+                                    else:
+                                        if target.exists():
+                                            target.unlink()
+                                        # Copy config files so they can be modified independently
+                                        if LINK_EXAMPLE_FILES and item.name != "params.json" and item.suffix != ".ini":
+                                            target.symlink_to(item.resolve())
+                                        else:
+                                            shutil.copy2(item, target)
+                                st.success(f"Demo data '{selected_demo}' loaded!")
+                                time.sleep(1)
+                                st.rerun()
+
+                # Save as Demo section (online mode only; hidden when admin
+                # password is not configured — the feature is then disabled).
+                if is_admin_configured():
+                    with st.expander("💾 **Save as Demo**"):
+                        st.caption("Save current workspace as a demo for others to use")
+
+                        demo_name_input = st.text_input(
+                            "Demo name",
+                            key="save-demo-name",
+                            placeholder="e.g., workshop-2024",
+                            help="Name for the demo workspace (no spaces or special characters)"
+                        )
+
+                        # Check if demo already exists
+                        demo_name_clean = demo_name_input.strip() if demo_name_input else ""
+                        existing_demo = demo_exists(demo_name_clean) if demo_name_clean else False
+
+                        if existing_demo:
+                            st.warning(f"Demo '{demo_name_clean}' already exists and will be overwritten.")
+                            confirm_overwrite = st.checkbox(
+                                "Confirm overwrite",
+                                key="confirm-demo-overwrite"
+                            )
+                        else:
+                            confirm_overwrite = True  # No confirmation needed for new demos
+
+                        if st.button("Save as Demo", key="save-demo-btn", disabled=not demo_name_clean):
+                            if existing_demo and not confirm_overwrite:
+                                st.error("Please confirm overwrite to continue.")
+                            else:
+                                # Show password dialog
+                                st.session_state["show_admin_password_dialog"] = True
+
+                        # Password dialog (shown after clicking Save as Demo)
+                        if st.session_state.get("show_admin_password_dialog", False):
+                            admin_password = st.text_input(
+                                "Admin password",
+                                type="password",
+                                key="admin-password-input",
+                                help="Enter the admin password to save this workspace as a demo"
+                            )
+
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("Confirm", key="confirm-save-demo"):
+                                    if verify_admin_password(admin_password):
+                                        success, message = save_workspace_as_demo(
+                                            st.session_state.workspace,
+                                            demo_name_clean
+                                        )
+                                        if success:
+                                            st.success(message)
+                                            st.session_state["show_admin_password_dialog"] = False
+                                            time.sleep(1)
+                                            st.rerun()
+                                        else:
+                                            st.error(message)
+                                    else:
+                                        st.error("Invalid admin password.")
+
+                            with col2:
+                                if st.button("Cancel", key="cancel-save-demo"):
+                                    st.session_state["show_admin_password_dialog"] = False
+                                    st.rerun()
+
         # All pages have settings, workflow indicator and logo
         with st.expander("⚙️ **Settings**"):
             img_formats = ["svg", "png", "jpeg", "webp"]
@@ -387,9 +992,9 @@ def render_sidebar(page: str = "") -> None:
                 )
             else:
                 st.session_state["spectrum_num_bins"] = 50
+            render_developer_toggle()
 
-        with st.expander("📊 **Resource Utilization**"):
-            monitor_hardware()
+        render_resource_utilization()
 
         # Display OpenMS WebApp Template Version from settings.json
         with st.container():
@@ -415,7 +1020,19 @@ def render_sidebar(page: str = "") -> None:
                 f'<div class="version-box">{app_name}<br>Version: {version_info}</div>',
                 unsafe_allow_html=True,
             )
-            st.image("assets/openms_transparent_bg_logo.svg", "powered by", use_container_width=True)
+
+        # Legal links (Impressum, Privacy Policy, Terms of Use), shown on every
+        # page. URLs are configurable via "legal_links" in settings.json.
+        links = get_legal_links()
+        st.markdown(
+            '<div style="text-align:center; font-size:0.8rem; '
+            'margin-top:0.5rem; color:#a4a5ad;">'
+            f'<a href="{links["impressum"]}" target="_blank" rel="noopener" style="white-space:nowrap">Impressum</a> &middot; '
+            f'<a href="{links["privacy"]}" target="_blank" rel="noopener" style="white-space:nowrap">Privacy Policy</a> &middot; '
+            f'<a href="{links["terms"]}" target="_blank" rel="noopener" style="white-space:nowrap">Terms of Use</a>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
     return params
 
 
@@ -517,6 +1134,35 @@ def show_table(df: pd.DataFrame, download_name: str = "") -> None:
     return df
 
 
+def follow_app_theme(fig):
+    """
+    Removes fixed light-mode styling from a Plotly figure.
+
+    Figures from pyopenms-viz, or built with templates such as "plotly_white",
+    carry a white background, black axes and black annotation text, which
+    disappear on the dark theme. Without them, st.plotly_chart applies the
+    Streamlit theme, so the figure matches the active light or dark app theme.
+    Trace colors are kept.
+
+    Args:
+        fig (plotly.graph_objs._figure.Figure): The Plotly figure to adjust.
+
+    Returns:
+        plotly.graph_objs._figure.Figure: The same figure, for chaining.
+    """
+    black = {"black", "#000", "#000000", "rgb(0,0,0)", "rgb(0, 0, 0)"}
+    fig.update_layout(template="streamlit", paper_bgcolor=None, plot_bgcolor=None)
+    for axis in list(fig.select_xaxes()) + list(fig.select_yaxes()):
+        if str(axis.linecolor).lower() in black:
+            axis.linecolor = None
+        if str(axis.tickcolor).lower() in black:
+            axis.tickcolor = None
+    for annotation in fig.layout.annotations:
+        if str(annotation.font.color).lower() in black:
+            annotation.font.color = None
+    return fig
+
+
 def show_fig(
     fig,
     download_name: str,
@@ -535,6 +1181,7 @@ def show_fig(
     Returns:
         None
     """
+    follow_app_theme(fig)
     if not selection_session_state_key:
         st.plotly_chart(
             fig,
@@ -617,6 +1264,55 @@ def get_dataframe_mem_useage(df):
     return memory_usage_mb
 
 
+# Runs a Tk dialog in its own Python process. Tk must own the main thread of
+# its process: Streamlit runs page scripts in worker threads, where Tk crashes
+# on macOS and can take the whole server down on Linux. A child process keeps
+# a dialog failure away from the server.
+_TK_DIALOG_SCRIPT = r"""
+import json, sys
+from tkinter import Tk, filedialog
+
+args = json.loads(sys.argv[1])
+root = Tk()
+root.attributes("-topmost", True)
+root.withdraw()
+if args["kind"] == "directory":
+    result = filedialog.askdirectory(title=args["title"], initialdir=args["initialdir"])
+else:
+    result = filedialog.askopenfilename(
+        title=args["title"],
+        filetypes=[tuple(t) for t in args["filetypes"]],
+        initialdir=args["initialdir"],
+        multiple=args["multiple"],
+    )
+root.destroy()
+if isinstance(result, str):
+    result = [result] if result and args["multiple"] else result
+print(json.dumps(list(result) if isinstance(result, tuple) else result))
+"""
+
+
+def _run_tk_dialog(**args):
+    """Show a Tk dialog in a child process and return its result (None on failure)."""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _TK_DIALOG_SCRIPT, json.dumps(args)],
+            capture_output=True,
+            text=True,
+            creationflags=flags,
+        )
+    except OSError as e:
+        st.error(f"Could not open the file dialog: {e}")
+        return None
+    if proc.returncode != 0:
+        st.error("The file dialog failed. Enter the folder path instead.")
+        logging.getLogger(__name__).warning("Tk dialog failed: %s", proc.stderr.strip())
+        return None
+    lines = proc.stdout.strip().splitlines()
+    return json.loads(lines[-1]) if lines else None
+
+
 def tk_directory_dialog(title: str = "Select Directory", parent_dir: str = os.getcwd()):
     """
     Creates a Tkinter directory dialog for selecting a directory.
@@ -626,17 +1322,14 @@ def tk_directory_dialog(title: str = "Select Directory", parent_dir: str = os.ge
         parent_dir (str): The path to the parent directory of the directory dialog.
 
     Returns:
-        str: The path to the selected directory.
+        str: The path to the selected directory, "" if cancelled.
 
     Warning:
         This function is not avaliable in a streamlit cloud context.
     """
-    root = Tk()
-    root.attributes("-topmost", True)
-    root.withdraw()
-    file_path = filedialog.askdirectory(title=title, initialdir=parent_dir)
-    root.destroy()
-    return file_path
+    return _run_tk_dialog(
+        kind="directory", title=title, initialdir=str(parent_dir)
+    ) or ""
 
 
 def tk_file_dialog(
@@ -655,20 +1348,85 @@ def tk_file_dialog(
         multiple (bool): If True, multiple files can be selected.
 
     Returns:
-        str: The path to the selected file.
+        list[str]: The selected files (empty if cancelled).
 
     Warning:
         This function is not avaliable in a streamlit cloud context.
     """
-    root = Tk()
-    root.attributes("-topmost", True)
-    root.withdraw()
-    file_types.extend([("All files", "*.*")])
-    file_path = filedialog.askopenfilename(
-        title=title, filetypes=file_types, initialdir=parent_dir, multiple=True
+    result = _run_tk_dialog(
+        kind="files",
+        title=title,
+        filetypes=[list(t) for t in file_types] + [["All files", "*.*"]],
+        initialdir=str(parent_dir),
+        multiple=True,
     )
-    root.destroy()
-    return file_path
+    return result or []
+
+
+def export_folder_input(key: str) -> Path:
+    """
+    Show the folder that local exports are written to, with a browse button.
+
+    The folder is kept in ``st.session_state["export_dir"]``, so every export
+    page starts from the last folder chosen. It defaults to
+    ``~/Documents/<app-name>`` and is created on the first export.
+
+    Args:
+        key (str): Prefix for the widget keys, unique on the page.
+
+    Returns:
+        Path: The chosen folder (not checked for existence).
+    """
+    if "export_dir" not in st.session_state:
+        st.session_state["export_dir"] = str(
+            Path.home() / "Documents" / st.session_state.settings["app-name"]
+        )
+    widget_key = f"{key}-export-dir"
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = st.session_state["export_dir"]
+    c1, c2 = st.columns([0.05, 0.95], gap="small")
+    with c1:
+        st.write("\n")
+        st.write("\n")
+        if st.button(
+            "📁",
+            key=f"{key}-export-browse",
+            help="Choose the export folder.",
+            disabled=not TK_AVAILABLE,
+        ):
+            chosen = tk_directory_dialog(
+                "Select the export folder", st.session_state["export_dir"]
+            )
+            if chosen:
+                st.session_state[widget_key] = chosen
+    with c2:
+        folder = st.text_input("Export folder", key=widget_key)
+    st.session_state["export_dir"] = folder
+    return Path(folder).expanduser()
+
+
+def export_files(files: list[tuple[Path, Path]], target: Path) -> bool:
+    """
+    Copy files into an export folder, keeping their relative paths.
+
+    Args:
+        files (list[tuple[Path, Path]]): Pairs of (source file, path relative to ``target``).
+        target (Path): Folder to write into; created if missing.
+
+    Returns:
+        bool: True if every file was copied, otherwise False (with an error shown).
+    """
+    try:
+        with st.spinner(f"Exporting {len(files)} files..."):
+            for source, rel in files:
+                dest = Path(target, rel)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, dest)
+    except OSError as e:
+        st.error(f"Export failed: {e}")
+        return False
+    st.success(f"Exported {len(files)} files to **{target}**.")
+    return True
 
 
 # General warning/error messages

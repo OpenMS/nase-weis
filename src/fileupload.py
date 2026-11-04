@@ -1,9 +1,9 @@
 import shutil
 from pathlib import Path
-from os import makedirs
+
 import streamlit as st
 
-from src.common.common import reset_directory
+from src.common.common import reset_directory, LINK_EXAMPLE_FILES
 
 
 @st.cache_data
@@ -69,37 +69,29 @@ def copy_local_mzML_files_from_directory(local_mzML_directory: str, make_copy: b
     st.success("Successfully added local files!")
 
 
-def load_example_files(file_type, directory) -> None:
-    """
-    Copies example files to the `extension` directory 
-
-    Args:
-        file_type (str): the extension of the example files to load
-        directory (str): where to load them
-
-    Returns:
-        None
-    """
-    file_dir = Path(directory, file_type + "-files")
-    #Create any folders necessary to copy the files
-    makedirs(file_dir, exist_ok=True)
-    # Copy files from example-data/mzML to workspace mzML directory, add to selected files
-    for f in Path("example-data", file_type).glob("*."+ file_type):
-        shutil.copy(f, file_dir)
-    st.success("Example " + file_type + " files loaded!")
-
-
 def load_example_mzML_files() -> None:
     """
     Copies example mzML files to the mzML directory.
 
+    On Linux, creates symlinks to example files instead of copying them.
+
     Args:
         None
 
     Returns:
         None
     """
-    load_example_files("mzML", st.session_state.workspace)
+    mzML_dir = Path(st.session_state.workspace, "mzML-files")
+    # Copy or symlink files from example-data/mzML to workspace mzML directory
+    for f in Path("example-data", "mzML").glob("*.mzML"):
+        target = mzML_dir / f.name
+        if LINK_EXAMPLE_FILES:
+            if target.exists():
+                target.unlink()
+            target.symlink_to(f.resolve())
+        else:
+            shutil.copy(f, mzML_dir)
+    st.success("Example mzML files loaded!")
 
 
 def remove_selected_mzML_files(to_remove: list[str], params: dict) -> dict:

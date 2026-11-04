@@ -1,5 +1,16 @@
 # OpenMS streamlit app deployment
 
+OpenMS streamlit apps can be deployed two ways:
+
+- **Kubernetes** — Kustomize manifests under `k8s/` with CI-built images pushed to GHCR. See the "Developers Guide: Kubernetes Deployment" page.
+- **Docker Compose** — described below. Uses the external [OpenMS/streamlit-deployment](https://github.com/OpenMS/streamlit-deployment) repo to aggregate multiple apps as submodules.
+
+If you're using Claude Code, the `configure-app-settings` and `configure-docker-compose-deployment` skills automate the docker-compose path; `configure-app-settings` + `configure-k8s-deployment` automate the Kubernetes path.
+
+---
+
+## Docker Compose
+
 Multiple streamlit apps based on the [OpenMS streamlit template](https://github.com/OpenMS/streamlit-template/) can be deployed together using docker compose.
 
 ## Features
@@ -86,4 +97,13 @@ Run docker-compose to launch all services.
 
 
 # Other Architectures
-In principle OpenMS runs on most processor architectures. The images are provided and tested for x86 but OpenMS can also be compiled on architectures like arm64. Please note that you might have to adjust the miniforge version according to the processor architecture.
+CI builds the images listed in `deploy.images` of `app.yaml`. By default that is all four, the full and the simple image for amd64 and arm64 (`Dockerfile.arm`, `Dockerfile_simple.arm`), and CI tests each on kind and publishes multi-arch tags, so `docker pull` picks the right one. A tag only covers the architectures that were built: with `simple-arm64` left out, the simple tag has no arm64 entry.
+
+An app whose dependencies have no build for one platform (a pip pin without a linux/aarch64 wheel, for example) lists the images it does build in `app.yaml`:
+
+```yaml
+deploy:
+  images: [full-amd64, simple-amd64, full-arm64]
+```
+
+The default is all four. The kind tests and the multi-arch tags then cover only the listed images. `full` and `simple` stand for that image on both architectures: an app without TOPP tools sets `images: [simple]` and skips the two from-source OpenMS builds.

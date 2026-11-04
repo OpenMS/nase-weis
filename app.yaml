@@ -1,0 +1,71 @@
+spec_version: 1
+template:
+  repository: OpenMS/streamlit-template
+  branch: main
+app:
+  slug: naseweis
+  name: NASEWEIS
+  description: RNA oligonucleotide identification with OpenMS NucleicAcidSearchEngine.
+  repository: poshul/nase-weis
+  domain: other
+  image: ghcr.io/poshul/nase-weis
+inputs:
+  mzML-files:
+    types: [mzML]
+    multiple: false
+    description: One MS/MS acquisition in mzML format.
+  fasta-files:
+    types: [fasta]
+    multiple: false
+    description: RNA sequence database, including bracketed MODOMICS modifications.
+workflows:
+  - name: NASEWEIS
+    class: src/Workflow.py:Workflow
+    inputs: [mzML-files, fasta-files]
+    steps:
+      - {tool: DecoyDatabase, in: fasta-files, optional: true}
+      - {tool: NucleicAcidSearchEngine, in: mzML-files}
+    presets: false
+results:
+  - {role: table, workflow: NASEWEIS, title: Oligonucleotide spectrum matches, source: mztab_results}
+pages:
+  - content/quickstart.py
+  - content/topp_workflow_file_upload.py
+  - content/naseweis.py
+  - content/topp_workflow_execution.py
+  - content/topp_workflow_results.py
+deploy:
+  k8s:
+    enabled: false
+    hosts: []
+    storage: 50Gi
+    worker_tier: low
+  images: [full]
+  docker_compose: true
+  desktop: [windows, linux, macos]
+  online_deployment: false
+sync:
+  app_owned:
+    - app.yaml
+    - app.py
+    - settings.json
+    - default-parameters.json
+    - presets.json
+    - README.md
+    - content/*
+    - src/Workflow.py
+    - src/naseweis_results.py
+    - docker/Dockerfile.app
+    - docker/restore_tool_registry.py
+    - requirements-dev.txt
+    - test.py
+    - src/plot_full_coverage.py
+    - tests/test_naseweis*.py
+    - test_gui.py
+    - src/python-tools/*
+    - example-data/*
+    - assets/*
+    - k8s/overlays/*
+    - k8s/argocd/*
+    - CLAUDE.app.md
+    - conda-requirements.txt

@@ -1,10 +1,7 @@
 {
-    "example-workflow-selected-mzML-files": [],
     "image-format": "svg",
-    "2D-map-intensity-cutoff": 5000,
-
-    "example-x-dimension": 10,
-    "example-y-dimension": 5,
-
-    "controllo": false
+    "mzML-files": null,
+    "fasta-files": null,
+    "add-decoys": true,
+    "FDR_cutoff": 0.05
 }

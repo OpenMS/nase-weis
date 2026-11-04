@@ -1,18 +1,23 @@
-
 services:
-  openms-streamlit-template:
+  naseweis:
     build:
       context: .
-      dockerfile: Dockerfile
-      args:
-        GITHUB_TOKEN: $GITHUB_TOKEN
-    image: openms_streamlit_template
-    container_name: openms-streamlit-template
-    restart: always
+      dockerfile: docker/Dockerfile.app
+    image: naseweis:local
+    restart: unless-stopped
     ports:
-      - 8501:8501
+      - "127.0.0.1:8501:8501"
+    environment:
+      WORKSPACES_DIR: /workspaces-streamlit-template
+      LOCAL_WORKSPACES_DIR: /workspaces-streamlit-template
+      STREAMLIT_SERVER_COUNT: "1"
     volumes:
-      - workspaces-streamlit-template:/workspaces-streamlit-template
-    command: streamlit run openms-streamlit-template/app.py
+      - naseweis-workspaces:/workspaces-streamlit-template
+    healthcheck:
+      test: ["CMD", "/root/miniforge3/envs/streamlit-env/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
 volumes:
-  workspaces-streamlit-template:
+  naseweis-workspaces:
