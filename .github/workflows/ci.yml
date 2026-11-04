@@ -23,7 +23,7 @@ jobs:
         python-version: ["3.11"]
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-python@v4
+    - uses: actions/setup-python@v7
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -36,3 +36,8 @@ jobs:
       run: |
         python -m pytest test_gui.py tests/
 
+  regressions:
+    name: NASEWEIS regressions
+    permissions:
+      contents: read
+    uses: ./.github/workflows/naseweis-regressions.yml

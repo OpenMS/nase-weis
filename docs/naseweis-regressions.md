@@ -22,10 +22,12 @@ of the coverage configuration. Framework tests run too, but thousands of
 framework lines do not dilute the application coverage measurement.
 
 Reports are written to `.local/regressions/junit.xml` and `coverage.xml`.
-The `NASEWEIS regressions` workflow runs this same command for pull requests
-and pushes to `main`, uploading reports even when tests fail. Once that
-workflow is published, the status check **NASEWEIS pinned OpenMS regression
-gate** can be made required in branch protection. This local change does not
+The main `continuous-integration` workflow calls the reusable `NASEWEIS
+regressions` workflow for pull requests and pushes to `main`. The reusable
+workflow can also be started manually and uploads reports even when tests fail.
+It has no separate push/PR trigger, so each CI run starts the pinned gate once.
+Once published, its emitted **NASEWEIS regressions / NASEWEIS pinned OpenMS
+regression gate** status check can be made required in branch protection. This local change does not
 modify repository settings or publish anything to GitHub.
 
 ## What the gate protects
