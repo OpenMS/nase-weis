@@ -1,15 +1,20 @@
 # Nightly NASE and DecoyDatabase support
 
 The app targets the **OpenMS `nightly` branch**, pinned to
-[`553de474c71b4f9926e5fcb264530e3d30b72b88`](https://github.com/OpenMS/OpenMS/commit/553de474c71b4f9926e5fcb264530e3d30b72b88).
-The executable reports `3.7.0-pre-HEAD-2026-11-03`, revision `553de47`.
+[`07075086398bc0c2d8d18e47111ed43fbecfc9e1`](https://github.com/OpenMS/OpenMS/commit/07075086398bc0c2d8d18e47111ed43fbecfc9e1).
+The executable reports `3.7.0-pre-HEAD-2026-11-09`, revision `0707508`.
 `nightly` and `develop` are separate branches; parameters found only on a
 newer `develop` are not added here.
 
 ## Search capabilities
 
-Configure shows common parameters and provides searchable **All parameters**
-dialogs generated from the installed executables' ParamXML. This includes:
+Configure starts with common digestion, tolerance and modification parameters.
+Enable **Advanced** to reveal the RNOME controls below and searchable **All
+parameters** dialogs generated from the installed executables' ParamXML.
+With Advanced off, those dialogs contain only common settings. Saved advanced
+values remain active when hidden; toggling visibility never changes a search.
+The standalone database builder uses the same toggle for its additional controls.
+This includes:
 
 - FLASH precursor correction, its mass/cosine/SNR controls and audit output;
   legacy/none/FLASH RNA deisotoping, precursor removal, window mowing and
@@ -63,7 +68,10 @@ The locally validated deployment is `docker/Dockerfile.app`, used by Compose
 and the strict CI regression gate. It takes native tools **and all their
 libraries/data** from the official OpenMS image digest in `openms-runtime.json`.
 It copies the template Python environment and installs the self-contained
-PyPI pyOpenMS 3.6 wheel for ParamXML/mzML parsing. This avoids loading the
+`pyopenms==3.7.0.dev20261110` wheel for ParamXML/mzML parsing from
+[the official nightly index](https://pypi.openms.de/simple/pyopenms/).
+`requirements.txt` uses that package-specific wheel page with `--find-links`;
+other Python packages continue to resolve from PyPI. This avoids loading the
 template's locally linked 3.6 wheel against the nightly native library.
 
 The source-build Dockerfiles select the same OpenMS source commit and align
@@ -82,7 +90,7 @@ and fragment tolerances, one thread and default hyperscore.
 | Runtime | Matches at q ≤ 0.05 | Unfiltered matches | Filtered/unfiltered mappings |
 | --- | ---: | ---: | ---: |
 | OpenMS 3.6.0 | 163 | 299 | 22 / 32 |
-| Nightly `553de47` | 163 | 301 | 22 / 32 |
+| Nightly `0707508` | 163 | 301 | 22 / 32 |
 
 All 163 filtered assignments and all 299 original unfiltered assignments
 remain. Among shared assignments, 33 filtered scores and 23 q-values change;
@@ -100,10 +108,22 @@ equivalence, marker/decoy-only modes, supplied target-decoy input, protein
 entrapment and NeighborSearch. See [regression maintenance](naseweis-regressions.md).
 
 
-Local validation on 2026-11-04: **650 tests passed with no skips**, **99.57%**
+Historical validation on 2026-11-04 (previous pin): **650 tests passed with no skips**, **99.57%**
 combined application statement/branch coverage; both workflow classes and all
 registered pages reached **100%**. The strict gate also passed the real
 container entrypoint health check and `pip check`. Browser validation completed
 an example search with six native export types and verified their download
 controls. A browser-discovered stale file selector in the standalone builder
 was replaced by rerendering preparation steps and given a regression test.
+
+
+Validation on 2026-11-10 uses pyOpenMS `3.7.0.dev20261110` and native revision
+`0707508`. All six scientific TSV references are byte-for-byte identical to
+those recorded with revision `553de47`; only the runtime manifest and schema
+version/enzyme ordering changed. The strict gate passed **652 tests with no
+skips** and `pip check`. New UI checks cover Advanced visibility (including the
+searchable dialog), saved MVH values after hiding controls, and the standalone
+builder toggle. A real search combines MVH, FLASH MS1 correction, FLASH MS2
+deisotoping, window mowing and largest-peak filtering. Linux amd64 Compose is
+validated locally; alternative source images and desktop installers still need
+their platform builds.

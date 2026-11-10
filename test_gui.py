@@ -263,12 +263,14 @@ def test_missing_run_parameters_do_not_break_other_exports(app):
 def test_nightly_configuration_preserves_exports_and_cached_digest_mode(app):
     app.run(timeout=30)
     app.switch_page("content/naseweis.py").run(timeout=30)
+    app.toggle(key="advanced").set_value(True).run(timeout=30)
     exports = next(
         widget for widget in app.multiselect if widget.label == "Result files"
     )
     exports.set_value(["id_out", "db_out", "lfq_out"]).run()
     app.switch_page("content/topp_workflow_file_upload.py").run()
     app.switch_page("content/naseweis.py").run()
+    app.toggle(key="advanced").set_value(True).run(timeout=30)
     app.selectbox(key="naseweis-param-database-source").select("Cached digest").run()
     assert not app.exception
     assert any("cached database controls digestion" in info.value for info in app.info)
@@ -305,6 +307,16 @@ def test_database_page_shows_saved_counts_exports_and_parameter_snapshot(app):
     app.switch_page("content/decoy_database.py").run(timeout=30)
     assert not app.exception
     app.radio(key="decoy-database-step").set_value("Configure").run(timeout=30)
+    assert not app.toggle(key="advanced").value
+    assert not any(
+        widget.label == "Relevant proteins (optional)" for widget in app.selectbox
+    )
+    app.toggle(key="advanced").set_value(True).run(timeout=30)
+    assert not app.exception
+    assert any(
+        widget.key == "decoy-database-TOPP-DecoyDatabase:1:decoy_string"
+        for widget in app.text_input
+    )
     directory = Path(app.session_state.workspace) / "decoy-database"
     runs = RunManager(directory)
     run_id = runs.new_run("Saved database", directory / "params.json")
@@ -348,3 +360,60 @@ def test_database_step_change_refreshes_files_added_on_upload(app):
     assert saved["database-files"] == [str(uploaded)]
     app.radio(key="decoy-database-step").set_value("Results").run(timeout=30)
     assert any("No finished runs" in info.value for info in app.info)
+
+
+def test_rnome_controls_require_advanced_and_keep_saved_values(app):
+    app.run(timeout=30)
+    app.switch_page("content/naseweis.py").run(timeout=30)
+    assert not app.toggle(key="advanced").value
+    prefix = "naseweis-TOPP-NucleicAcidSearchEngine:1:"
+
+    def keys():
+        return {
+            widget.key
+            for kind in [
+                "selectbox",
+                "checkbox",
+                "number_input",
+                "text_input",
+                "text_area",
+                "multiselect",
+            ]
+            for widget in app.get(kind)
+        }
+
+    advanced_keys = {
+        prefix + name
+        for name in [
+            "scoring:method",
+            "scoring:single_peak_credit",
+            "precursor:correct_with_flash",
+            "precursor:flash:min_cos",
+            "preprocessing:deisotoping",
+            "preprocessing:flash:min_cos",
+            "preprocessing:filter_window_mower",
+            "report:precursor_percentage",
+            "modifications:resolve_ambiguities",
+            "scoring:blacklist_mz",
+        ]
+    }
+    assert not keys() & advanced_keys
+    assert not any(widget.label == "Result files" for widget in app.multiselect)
+    # The searchable dialog must obey the toggle too.
+    app.button(key="all-params-NucleicAcidSearchEngine").click().run(timeout=30)
+    assert not any("scoring:" in str(item.value) for item in app.markdown)
+    app.switch_page("content/naseweis.py").run(timeout=30)
+    app.toggle(key="advanced").set_value(True).run(timeout=30)
+    assert not app.exception
+    assert advanced_keys <= keys()
+    app.selectbox(key=prefix + "scoring:method").select("mvh").run(timeout=30)
+    app.switch_page("content/naseweis.py").run(timeout=30)
+    app.toggle(key="advanced").set_value(False).run(timeout=30)
+    assert not keys() & advanced_keys
+    saved = json.loads(
+        (Path(app.session_state.workspace) / "naseweis/params.json").read_text()
+    )
+    assert saved["NucleicAcidSearchEngine"]["scoring:method"] == "mvh"
+    app.toggle(key="advanced").set_value(True).run(timeout=30)
+    assert app.selectbox(key=prefix + "scoring:method").value == "mvh"
+    assert not app.exception

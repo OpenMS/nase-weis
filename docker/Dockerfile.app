@@ -1,8 +1,8 @@
 # Python/UI dependencies and nightly TOPP tools have independent pinned roots.
-# The Python ParamXML API is kept at pyOpenMS 3.6; NASE/DecoyDatabase and their
-# native libraries/data all come from the same verified nightly installation.
+# Python bindings and native tools use the verified 2026-11-10 nightly.
+# Native libraries/data stay with their matching executables.
 ARG TEMPLATE_IMAGE=ghcr.io/openms/streamlit-template@sha256:26640815c707bb685d57d197c591956cbc264a4736ab3ccee36c379aa486064e
-ARG OPENMS_NIGHTLY_IMAGE=ghcr.io/openms/openms-executables@sha256:2328f9e3ffe968b92455009d7a327f02fe973d150f8bb5784c3fe37c6288f97d
+ARG OPENMS_NIGHTLY_IMAGE=ghcr.io/openms/openms-executables@sha256:8e3c559cc474a57e12eff10569e2aef033eb867783ab36d45df08e8279880c3d
 FROM ${TEMPLATE_IMAGE} AS python-runtime
 FROM ${OPENMS_NIGHTLY_IMAGE}
 USER root
@@ -14,7 +14,6 @@ RUN NucleicAcidSearchEngine -write_ini /tmp/nase-check.ini && \
     rm -f /tmp/nase-check.ini /tmp/decoy-check.ini
 COPY requirements.txt /app/requirements.txt
 RUN /root/miniforge3/envs/streamlit-env/bin/python -m pip install --no-cache-dir -r requirements.txt && \
-    /root/miniforge3/envs/streamlit-env/bin/python -m pip install --no-cache-dir --force-reinstall --no-deps pyopenms==3.6.0 && \
     /root/miniforge3/envs/streamlit-env/bin/python -c "import pyopenms; print(pyopenms.__version__)"
 COPY assets/ /app/assets/
 COPY content/ /app/content/

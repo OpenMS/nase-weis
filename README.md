@@ -6,7 +6,7 @@ configure digestion, modifications and mass tolerances, then inspect spectrum
 matches and reference sequence coverage.
 
 Built on [OpenMS/streamlit-template](https://github.com/OpenMS/streamlit-template),
-with Streamlit 1.54, pinned **OpenMS nightly 3.7** command-line tools and pyOpenMS 3.6 for the UI ParamXML API. The framework is merged from `main`, so
+with Streamlit 1.54, pinned **OpenMS nightly 3.7** command-line tools and pyOpenMS **3.7.0.dev20261110** from the official nightly wheel index. The framework is merged from `main`, so
 future template updates retain their Git history.
 
 ## Run locally with containers
@@ -32,10 +32,10 @@ docker compose down
 Compose uses `docker/Dockerfile.app`: the complete native runtime comes from
 an immutable official OpenMS executables image; Python/UI dependencies come
 from the pinned template image. Native tools, libraries, data and registry stay
-together. A self-contained PyPI pyOpenMS 3.6 wheel provides Python parsing;
+together. A self-contained official pyOpenMS nightly wheel provides Python parsing;
 searches and database generation use the **3.7 nightly executables**.
 `openms-runtime.json` records the image digest and source commit
-`553de474c71b4f9926e5fcb264530e3d30b72b88`. New upstream nightlies do not
+`07075086398bc0c2d8d18e47111ed43fbecfc9e1`. New upstream nightlies do not
 silently change existing deployments.
 
 The source-build Dockerfiles and desktop default select the same source
@@ -73,7 +73,9 @@ not require Redis or a CAPTCHA.
 1. Select **Load example dataset** on Overview. Both NME1 input files are
    copied into the workspace and selected automatically.
 2. On **Configure**, review the RNA database, RNase, modifications and mass
-   tolerances. Settings are saved automatically.
+   tolerances. Enable **Advanced** for MVH scoring, FLASH MS1 precursor correction,
+   MS2 deisotoping, filters, mass-accuracy weighting, reporting and export options.
+   Settings are saved automatically; hiding Advanced preserves their saved values.
 3. On **Run**, optionally enter a run name, then select **Start Workflow**.
 4. On **Results**, choose a completed run. Inspect matches and sequence
    coverage; download the selected native artifacts, CSV, coverage HTML and search parameters.

@@ -76,6 +76,19 @@ def run_search(tmp_path, name, overrides=None):
         ({"precursor:correct_with_flash": True}, "out_precursor_corrections"),
         (
             {
+                "scoring:method": "mvh",
+                "scoring:num_intensity_classes": 4,
+                "scoring:tic_fraction": 0.95,
+                "scoring:use_mass_accuracy": True,
+                "precursor:correct_with_flash": True,
+                "preprocessing:deisotoping": "flash",
+                "preprocessing:filter_window_mower": True,
+                "preprocessing:filter_nlargest": True,
+            },
+            "out_precursor_corrections",
+        ),
+        (
+            {
                 "report:top_hits": 3,
                 "report:require_coverage": 0.2,
                 "report:precursor_percentage": True,

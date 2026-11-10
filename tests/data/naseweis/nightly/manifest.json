@@ -1,9 +1,9 @@
 {
-  "openms_version": "3.7.0-pre-HEAD-2026-11-03",
-  "source_commit": "553de474c71b4f9926e5fcb264530e3d30b72b88",
-  "revision": "553de47",
-  "image": "ghcr.io/openms/openms-executables@sha256:2328f9e3ffe968b92455009d7a327f02fe973d150f8bb5784c3fe37c6288f97d",
-  "pyopenms_version": "3.6.0",
+  "openms_version": "3.7.0-pre-HEAD-2026-11-09",
+  "source_commit": "07075086398bc0c2d8d18e47111ed43fbecfc9e1",
+  "revision": "0707508",
+  "image": "ghcr.io/openms/openms-executables@sha256:8e3c559cc474a57e12eff10569e2aef033eb867783ab36d45df08e8279880c3d",
+  "pyopenms_version": "3.7.0.dev20261110",
   "inputs": {
     "example-data/mzML/NME1.mzML": "141aed27a88d8031c8b21025527624a236c558c24e6e81dfb2b6e1dfc2cd41f6",
     "example-data/fasta/NME1_Target.fasta": "180f7070ac55f4cc2b69cdfd3ee5d89503395746841933e418486c61c245a63e"

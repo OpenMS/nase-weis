@@ -91,7 +91,7 @@ readable review artifacts, not opaque hashes. Numeric comparisons allow
 `1e-9` relative/absolute rounding; assignments, row counts and sequence/position
 changes must match. Row ordering and runtime paths/timestamps are ignored.
 
-For pinned OpenMS nightly `553de47`, default RNase T1 searches at 10 ppm and one thread produce:
+For pinned OpenMS nightly `0707508`, default RNase T1 searches at 10 ppm and one thread produce:
 
 | Mode | Spectrum matches | Oligonucleotide mappings |
 | --- | ---: | ---: |

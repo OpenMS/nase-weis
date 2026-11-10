@@ -25,6 +25,18 @@ SEARCH_DEFAULTS = {
     "fdr:decoy_pattern": "DECOY_",
     "fdr:remove_decoys": True,
 }
+BASIC_SEARCH_PARAMETERS = [
+    "oligo:enzyme",
+    "oligo:missed_cleavages",
+    "oligo:min_size",
+    "precursor:mass_tolerance",
+    "precursor:mass_tolerance_unit",
+    "fragment:mass_tolerance",
+    "fragment:mass_tolerance_unit",
+    "modifications:fixed",
+    "modifications:variable",
+    "modifications:variable_max_per_oligo",
+]
 DECOY_DEFAULTS = {"type": "RNA", "method": "shuffle"}
 # Older TOPP versions store CLI flags as strings in ParamXML, so keep the
 # known flags as well as those detected from current type="bool" entries.
@@ -86,23 +98,30 @@ class Workflow(WorkflowManager):
                 self.ui.upload_widget(key=key, name=label, file_types=extensions)
 
     def configure(self) -> None:
+        advanced = st.toggle(
+            "Advanced",
+            key="advanced",
+            help="Show MVH scoring, MS1 precursor correction, MS2 deisotoping, filtering, reporting and database options. Hiding controls keeps their saved values.",
+        )
         self.ui.select_input_file(
             "mzML-files",
             name="MS/MS spectra",
             multiple=False,
             upload={"file_types": ["mzML", "raw", "d"]},
         )
-        self.ui.input_widget(
-            "database-source",
-            "FASTA",
-            "Search database source",
-            "A cached digest keeps its original digestion and decoy provenance.",
-            "selectbox",
-            options=["FASTA", "Cached digest"],
-            reactive=True,
-        )
+        if advanced:
+            self.ui.input_widget(
+                "database-source",
+                "FASTA",
+                "Search database source",
+                "A cached digest keeps its original digestion and decoy provenance.",
+                "selectbox",
+                options=["FASTA", "Cached digest"],
+                reactive=True,
+            )
         source = st.session_state.get(
-            f"{self.parameter_manager.param_prefix}database-source", "FASTA"
+            f"{self.parameter_manager.param_prefix}database-source",
+            self.params.get("database-source", "FASTA"),
         )
         if source == "Cached digest":
             self.ui.select_input_file(
@@ -128,12 +147,13 @@ class Workflow(WorkflowManager):
             "Generate a target-decoy RNA database",
             "Disable for a FASTA that already includes decoys, or when searching a cached digest.",
         )
-        self.ui.input_widget(
-            "estimate-fdr",
-            self.params.get("add-decoys", True),
-            "Estimate false discovery rate",
-            "Requires a target-decoy FASTA or a cached digest containing decoys.",
-        )
+        if advanced:
+            self.ui.input_widget(
+                "estimate-fdr",
+                self.params.get("add-decoys", True),
+                "Estimate false discovery rate",
+                "Requires a target-decoy FASTA or a cached digest containing decoys.",
+            )
         self.ui.input_widget(
             "FDR_cutoff",
             0.05,
@@ -146,88 +166,74 @@ class Workflow(WorkflowManager):
         )
         st.subheader("Search settings")
         st.caption(
-            "Mass tolerances are explicit instrument settings. Search for an advanced parameter to reveal it."
+            "Mass tolerances are explicit instrument settings. Enable Advanced for additional search controls."
         )
+        # Filter the schema as well as inline widgets so the All parameters
+        # dialog cannot bypass Advanced. Saved overrides remain untouched.
+        excluded = ["fdr:cutoff"]
+        if not advanced and self.parameter_manager.create_ini(
+            "NucleicAcidSearchEngine"
+        ):
+            schema = tool_schema(
+                self.parameter_manager.ini_dir / "NucleicAcidSearchEngine.ini"
+            )
+            excluded += sorted(schema.keys() - set(BASIC_SEARCH_PARAMETERS))
         self.ui.input_TOPP(
             "NucleicAcidSearchEngine",
             num_cols=3,
             custom_defaults=SEARCH_DEFAULTS,
-            include_parameters=[
-                "oligo:enzyme",
-                "oligo:missed_cleavages",
-                "oligo:min_size",
-                "precursor:mass_tolerance",
-                "precursor:mass_tolerance_unit",
-                "fragment:mass_tolerance",
-                "fragment:mass_tolerance_unit",
-                "modifications:fixed",
-                "modifications:variable",
-                "modifications:variable_max_per_oligo",
-                "modifications:resolve_ambiguities",
-                "precursor:correct_with_flash",
-                "precursor:min_charge",
-                "precursor:max_charge",
-                "precursor:isotopes",
-                "fragment:ions",
-                "preprocessing:deisotoping",
-                "preprocessing:remove_precursor_peak",
-                "preprocessing:filter_window_mower",
-                "preprocessing:filter_nlargest",
-                "scoring:method",
-                "scoring:use_mass_accuracy",
-                "report:top_hits",
-                "report:require_coverage",
-                "report:precursor_percentage",
-                "fdr:decoy_pattern",
-                "fdr:remove_decoys",
-            ],
-            exclude_parameters=["fdr:cutoff"],
+            include_parameters=BASIC_SEARCH_PARAMETERS,
+            exclude_parameters=excluded,
             flag_parameters=tool_flags(
                 self.parameter_manager.ini_dir / "NucleicAcidSearchEngine.ini",
                 SEARCH_FLAGS,
             ),
         )
-        with st.expander("Decoy generation settings"):
-            self.ui.input_TOPP(
-                "DecoyDatabase",
-                num_cols=3,
-                custom_defaults=DECOY_DEFAULTS,
-                exclude_parameters=[
-                    "type",
-                    "enzyme",
-                    "rnase",
-                    "NeighborSearch:",
-                    "entrapment_ratio",
-                    "entrapment_string",
-                    "Decoy:",
-                ],
-                flag_parameters=tool_flags(
-                    self.parameter_manager.ini_dir / "DecoyDatabase.ini", DECOY_FLAGS
-                ),
-            )
+        if advanced:
+            with st.expander("Decoy generation settings"):
+                self.ui.input_TOPP(
+                    "DecoyDatabase",
+                    num_cols=3,
+                    custom_defaults=DECOY_DEFAULTS,
+                    exclude_parameters=[
+                        "type",
+                        "enzyme",
+                        "rnase",
+                        "NeighborSearch:",
+                        "entrapment_ratio",
+                        "entrapment_string",
+                        "Decoy:",
+                    ],
+                    flag_parameters=tool_flags(
+                        self.parameter_manager.ini_dir / "DecoyDatabase.ini",
+                        DECOY_FLAGS,
+                    ),
+                )
 
-        st.subheader("Additional result files")
-        export_key = f"{self.parameter_manager.param_prefix}search-exports"
-        if export_key not in st.session_state:
-            st.session_state[export_key] = self.params.get("search-exports", ["id_out"])
-        st.multiselect(
-            "Result files",
-            list(SEARCH_EXPORTS),
-            key=export_key,
-            format_func=lambda option: SEARCH_EXPORTS[option][0],
-            help="Selected files are retained with this run and can be downloaded from Results.",
-            on_change=self.parameter_manager.save_parameters,
-        )
-        self.parameter_manager.save_parameters()
-        self.ui.select_input_file(
-            "bedrmod-mapping-files",
-            name="Custom modification mapping (optional)",
-            multiple=False,
-            upload={"file_types": ["csv"]},
-        )
-        st.caption(
-            "RNA mode excludes protein-only entrapment and neighbor searches. The standalone DecoyDatabase page exposes the complete tool."
-        )
+            st.subheader("Additional result files")
+            export_key = f"{self.parameter_manager.param_prefix}search-exports"
+            if export_key not in st.session_state:
+                st.session_state[export_key] = self.params.get(
+                    "search-exports", ["id_out"]
+                )
+            st.multiselect(
+                "Result files",
+                list(SEARCH_EXPORTS),
+                key=export_key,
+                format_func=lambda option: SEARCH_EXPORTS[option][0],
+                help="Selected files are retained with this run and can be downloaded from Results.",
+                on_change=self.parameter_manager.save_parameters,
+            )
+            self.parameter_manager.save_parameters()
+            self.ui.select_input_file(
+                "bedrmod-mapping-files",
+                name="Custom modification mapping (optional)",
+                multiple=False,
+                upload={"file_types": ["csv"]},
+            )
+            st.caption(
+                "RNA mode excludes protein-only entrapment and neighbor searches. The standalone DecoyDatabase page exposes the complete tool."
+            )
 
     def execution(self) -> bool:
         """Run the tools and propagate failure; never save Streamlit state here."""

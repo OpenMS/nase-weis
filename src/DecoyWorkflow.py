@@ -31,6 +31,16 @@ class DecoyWorkflow(WorkflowManager):
             )
 
     def configure(self):
+        advanced = st.toggle(
+            "Advanced",
+            key="advanced",
+            help="Show decoy markers, shuffle controls, entrapment and NeighborSearch options.",
+        )
+        basic = ["type", "method"]
+        excluded = []
+        if not advanced and self.parameter_manager.create_ini("DecoyDatabase"):
+            schema = tool_schema(self.parameter_manager.ini_dir / "DecoyDatabase.ini")
+            excluded = sorted(schema.keys() - set(basic))
         self.ui.select_input_file(
             "database-files",
             name="Sequence databases",
@@ -41,32 +51,23 @@ class DecoyWorkflow(WorkflowManager):
             "DecoyDatabase",
             num_cols=3,
             custom_defaults={"type": "RNA", "method": "shuffle"},
-            include_parameters=[
-                "type",
-                "method",
-                "decoy_string",
-                "decoy_string_position",
-                "only_decoy",
-                "shuffle_decoy_ratio",
-                "seed",
-                "enzyme",
-                "entrapment_ratio",
-                "entrapment_string",
-            ],
+            include_parameters=basic,
+            exclude_parameters=excluded,
             flag_parameters=tool_flags(
                 self.parameter_manager.ini_dir / "DecoyDatabase.ini", ["only_decoy"]
             ),
         )
-        with st.expander("NeighborSearch input"):
-            st.caption(
-                "Entrapment and NeighborSearch operate on proteins. Choose protein sequence type to use them."
-            )
-            self.ui.select_input_file(
-                "neighbor-files",
-                name="Relevant proteins (optional)",
-                multiple=False,
-                upload={"file_types": ["fasta", "fa", "faa"]},
-            )
+        if advanced:
+            with st.expander("NeighborSearch input"):
+                st.caption(
+                    "Entrapment and NeighborSearch operate on proteins. Choose protein sequence type to use them."
+                )
+                self.ui.select_input_file(
+                    "neighbor-files",
+                    name="Relevant proteins (optional)",
+                    multiple=False,
+                    upload={"file_types": ["fasta", "fa", "faa"]},
+                )
 
     def execution(self) -> bool:
         files = self.params.get("database-files", [])

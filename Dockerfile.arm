@@ -19,7 +19,7 @@
 
 FROM ubuntu:24.04 AS setup-build-system
 ARG OPENMS_REPO=https://github.com/OpenMS/OpenMS.git
-ARG OPENMS_BRANCH=553de474c71b4f9926e5fcb264530e3d30b72b88
+ARG OPENMS_BRANCH=07075086398bc0c2d8d18e47111ed43fbecfc9e1
 ARG PORT=8501
 # GitHub repository whose latest release supplies the bundled Windows
 # installer. Empty: `github-user` and `repository-name` from settings.json,
