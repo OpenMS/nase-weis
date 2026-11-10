@@ -49,18 +49,21 @@ def test_search_commands_ignore_file_defaults_and_keep_scientific_options(
     workflow,  # noqa: F811
     cached_digest,
 ):
+    # TOPP declares log as a string, but it can still write outside the run.
+    search_paths = SEARCH_FILES | {"log"}
+    decoy_paths = DECOY_FILES | {"log"}
     workflow.params.update(
         {
             "estimate-fdr": False,
             "search-exports": ["id_out", "out_preprocessed"],
             "_defaults": {
-                "NucleicAcidSearchEngine": imported_files(SEARCH_FILES, "defaults")
+                "NucleicAcidSearchEngine": imported_files(search_paths, "defaults")
                 | {"scoring:method": "mvh"},
-                "DecoyDatabase": imported_files(DECOY_FILES, "defaults") | {"seed": 42},
+                "DecoyDatabase": imported_files(decoy_paths, "defaults") | {"seed": 42},
             },
-            "NucleicAcidSearchEngine": imported_files(SEARCH_FILES, "overrides")
+            "NucleicAcidSearchEngine": imported_files(search_paths, "overrides")
             | {"report:top_hits": 2},
-            "DecoyDatabase": imported_files(DECOY_FILES, "overrides"),
+            "DecoyDatabase": imported_files(decoy_paths, "overrides"),
         }
     )
     if cached_digest:
@@ -85,7 +88,7 @@ def test_search_commands_ignore_file_defaults_and_keep_scientific_options(
     )
     assert_workspace_files(
         commands[-1],
-        SEARCH_FILES,
+        search_paths,
         {
             "in": workflow.params["mzML-files"],
             "digest" if cached_digest else "database": database,
@@ -101,28 +104,33 @@ def test_search_commands_ignore_file_defaults_and_keep_scientific_options(
     if not cached_digest:
         assert_workspace_files(
             commands[0],
-            DECOY_FILES,
+            decoy_paths,
             {"in": original["fasta-files"], "out": database},
         )
         assert commands[0][commands[0].index("-seed") + 1] == "42"
     snapshot = workflow.parameter_manager.read_parameters_strict()
     for tool, keys in [
-        ("NucleicAcidSearchEngine", SEARCH_FILES),
-        ("DecoyDatabase", DECOY_FILES),
+        ("NucleicAcidSearchEngine", search_paths),
+        ("DecoyDatabase", decoy_paths),
     ]:
         assert not keys & snapshot[tool].keys()
         assert not keys & snapshot["_defaults"][tool].keys()
 
 
 def test_builder_commands_ignore_file_defaults_and_preserve_neighbor_outputs(builder):  # noqa: F811
+    # Native log paths are workspace-owned even though their schema type is string.
+    owned_paths = DECOY_FILES | {"log"}
     builder.params.update(
         {
             "neighbor-files": builder.params["database-files"][0],
             "_defaults": {
-                "DecoyDatabase": imported_files(DECOY_FILES, "defaults") | {"seed": 23},
-                "unrelated": {"in": "keep-this-setting"},
+                "DecoyDatabase": imported_files(owned_paths, "defaults") | {"seed": 23},
+                "unrelated": {
+                    "in": "keep-this-setting",
+                    "log": "keep-this-log-setting",
+                },
             },
-            "DecoyDatabase": imported_files(DECOY_FILES, "overrides")
+            "DecoyDatabase": imported_files(owned_paths, "overrides")
             | {"type": "protein", "method": "reverse"},
         }
     )
@@ -132,7 +140,7 @@ def test_builder_commands_ignore_file_defaults_and_preserve_neighbor_outputs(bui
     command = executor.run_command.call_args.args[0]
     assert_workspace_files(
         command,
-        DECOY_FILES,
+        owned_paths,
         {
             "in": builder.params["database-files"][0],
             "out": str(builder.results_dir / "database/database.fasta"),
@@ -149,6 +157,9 @@ def test_builder_commands_ignore_file_defaults_and_preserve_neighbor_outputs(bui
     assert command[command.index("-method") + 1] == "reverse"
     assert builder.params == original
     snapshot = builder.parameter_manager.read_parameters_strict()
-    assert not DECOY_FILES & snapshot["DecoyDatabase"].keys()
-    assert not DECOY_FILES & snapshot["_defaults"]["DecoyDatabase"].keys()
-    assert snapshot["_defaults"]["unrelated"] == {"in": "keep-this-setting"}
+    assert not owned_paths & snapshot["DecoyDatabase"].keys()
+    assert not owned_paths & snapshot["_defaults"]["DecoyDatabase"].keys()
+    assert snapshot["_defaults"]["unrelated"] == {
+        "in": "keep-this-setting",
+        "log": "keep-this-log-setting",
+    }
