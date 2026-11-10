@@ -41,7 +41,7 @@ env:
   APP_NAME: NASEWEIS
   # Define needed TOPP tools here. FileConverter converts Thermo .raw input
   # (CommandExecutor.convert_to_mzml) with share/OpenMS/THIRDPARTY/ThermoRawFileParser.
-  TOPP_TOOLS: "DecoyDatabase NucleicAcidSearchEngine FileConverter"
+  TOPP_TOOLS: "DecoyDatabase NucleicAcidSearchEngine FileConverter FeatureFinderMetaboIdent TextExporter"
 
 jobs:
   scope:

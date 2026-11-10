@@ -91,8 +91,9 @@ class DecoyWorkflow(WorkflowManager):
         )
         # Defaults are merged again by the executor; neither stored layer may
         # reintroduce file arguments after the workspace-owned input/output.
+        # Native log paths are strings in ParamXML; the executor captures logs.
         for layer in (tool, params.get("_defaults", {}).get("DecoyDatabase", {})):
-            for key in DECOY_INPUTS | DECOY_OUTPUTS:
+            for key in DECOY_INPUTS | DECOY_OUTPUTS | {"log"}:
                 layer.pop(key, None)
         neighbor = params.get("neighbor-files")
         if tool["type"] == "RNA" and (

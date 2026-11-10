@@ -11,7 +11,9 @@ ENV PATH="/opt/OpenMS/bin:/root/miniforge3/envs/streamlit-env/bin:${PATH}"
 WORKDIR /app
 RUN NucleicAcidSearchEngine -write_ini /tmp/nase-check.ini && \
     DecoyDatabase -write_ini /tmp/decoy-check.ini && \
-    rm -f /tmp/nase-check.ini /tmp/decoy-check.ini
+    FeatureFinderMetaboIdent -write_ini /tmp/lfq-check.ini && \
+    TextExporter -write_ini /tmp/export-check.ini && \
+    rm -f /tmp/nase-check.ini /tmp/decoy-check.ini /tmp/lfq-check.ini /tmp/export-check.ini
 COPY requirements.txt /app/requirements.txt
 RUN /root/miniforge3/envs/streamlit-env/bin/python -m pip install --no-cache-dir -r requirements.txt && \
     /root/miniforge3/envs/streamlit-env/bin/python -c "import pyopenms; print(pyopenms.__version__)"

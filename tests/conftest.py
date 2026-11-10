@@ -34,7 +34,7 @@ def pytest_sessionstart(session):
         return
     missing = [
         name
-        for name in ["DecoyDatabase", "NucleicAcidSearchEngine"]
+        for name in ["DecoyDatabase", "NucleicAcidSearchEngine", "FeatureFinderMetaboIdent", "TextExporter"]
         if not shutil.which(name)
     ]
     if missing:

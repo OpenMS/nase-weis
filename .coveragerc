@@ -24,6 +24,7 @@ include =
     src/DecoyWorkflow.py
     src/naseweis_tools.py
     src/naseweis_results.py
+    src/naseweis_lfq.py
     src/plot_full_coverage.py
 fail_under = 95
 precision = 2
