@@ -3,7 +3,10 @@
 Search RNA oligonucleotides in MS/MS data with the OpenMS
 **NucleicAcidSearchEngine**. Upload an MS/MS run and an RNA FASTA database or cached digest,
 configure digestion, modifications and mass tolerances, then inspect spectrum
-matches and reference sequence coverage.
+matches and reference sequence coverage. Optional label-free quantification follows
+the RNA TOPPAS chain: NASE targets → FeatureFinderMetaboIdent on the original
+acquisition → TextExporter. It retains raw per-acquisition feature intensities,
+featureXML and a TSV with all metadata; it does not link or normalize runs.
 
 Built on [OpenMS/streamlit-template](https://github.com/OpenMS/streamlit-template),
 with Streamlit 1.54, pinned **OpenMS nightly 3.7** command-line tools and pyOpenMS **3.7.0.dev20261110** from the official nightly wheel index. The framework is merged from `main`, so
@@ -52,7 +55,8 @@ PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose docker compose up -d --no-build
 ## Run with Python
 
 Use Python 3.11 or 3.12 and install the pinned OpenMS nightly TOPP tools separately. Both
-`NucleicAcidSearchEngine` and `DecoyDatabase` must be on `PATH`; installing the
+`NucleicAcidSearchEngine` and `DecoyDatabase` must be on `PATH`; optional LFQ also
+requires `FeatureFinderMetaboIdent` and `TextExporter`. Installing the
 pyOpenMS wheel alone does not install command-line tools.
 
 ```bash
@@ -76,9 +80,13 @@ not require Redis or a CAPTCHA.
    tolerances. Enable **Advanced** for MVH scoring, FLASH MS1 precursor correction,
    MS2 deisotoping, filters, mass-accuracy weighting, reporting and export options.
    Settings are saved automatically; hiding Advanced preserves their saved values.
+   On the **Quantification** tab, optionally enable LFQ for acquisitions containing
+   MS1 scans. Its extraction settings are under Advanced and default to the saved
+   Herbert TOPPAS workflow. See [LFQ settings and provenance](docs/lfq.md).
 3. On **Run**, optionally enter a run name, then select **Start Workflow**.
 4. On **Results**, choose a completed run. Inspect matches and sequence
-   coverage; download the selected native artifacts, CSV, coverage HTML and search parameters.
+   coverage, plus the **Quantification** tab for LFQ results; download the selected
+   native artifacts, CSV, coverage HTML and search parameters.
 
 The example contains 512 MS1 and 2,116 MS2 spectra. With the tested OpenMS
 3.7 nightly container and default RNase T1 / 10 ppm settings, the example yields 163
@@ -130,7 +138,7 @@ cache isolation, framework parameters, run management and workspace sync.
 Some framework tests start localhost servers; run them with socket access.
 
 App-specific code lives in `src/Workflow.py`, `src/DecoyWorkflow.py`,
-`src/naseweis_tools.py` and `src/naseweis_results.py`.
+`src/naseweis_tools.py`, `src/naseweis_results.py` and `src/naseweis_lfq.py`.
 Navigation and user-facing pages live in `app.py` and `content/`.
 `app.yaml` records the app's identity and file ownership for template syncs.
 The template's extra toolbox pages remain available in source but are not

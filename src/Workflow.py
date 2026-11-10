@@ -1,5 +1,6 @@
 """NASEWEIS workflow: optional RNA decoys, NASE search and result inspection."""
 
+import json
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -7,6 +8,15 @@ from pathlib import Path
 import streamlit as st
 from streamlit.components.v1 import html
 
+from src.naseweis_lfq import (
+    FEATURE_FINDER_DEFAULTS,
+    LFQ_FEATURES,
+    LFQ_TABLE,
+    LFQ_TOOLS,
+    prepare_lfq,
+    read_lfq_table,
+    run_lfq,
+)
 from src.naseweis_results import coverage_html, match_table, read_mztab
 from src.naseweis_tools import (
     DECOY_INPUTS,
@@ -49,6 +59,30 @@ SEARCH_FLAGS = [
     "fdr:remove_decoys",
 ]
 DECOY_FLAGS = ["only_decoy"]
+
+
+def validate_lfq_spectra(path: str) -> str | None:
+    """Check mzML scan metadata without decoding peak arrays into memory.
+
+    Vendor formats use the native reader in FeatureFinderMetaboIdent, which
+    reports reader availability and missing MS1 scans in the run log.
+    """
+    if Path(path).suffix.lower() != ".mzml":
+        return None
+    import pyopenms as oms
+
+    try:
+        options = oms.PeakFileOptions()
+        options.setFillData(False)
+        reader = oms.MzMLFile()
+        reader.setOptions(options)
+        experiment = oms.MSExperiment()
+        reader.load(path, experiment)
+        if 1 not in experiment.getMSLevels():
+            return "LFQ requires MS1 scans in the original acquisition. This mzML has no MS1 scans; disable quantification or select an acquisition containing MS1 and MS2."
+    except (RuntimeError, OSError) as error:
+        return f"Cannot inspect the LFQ acquisition: {error}"
+    return None
 
 
 @st.cache_data(show_spinner=False)
@@ -101,8 +135,15 @@ class Workflow(WorkflowManager):
         advanced = st.toggle(
             "Advanced",
             key="advanced",
-            help="Show MVH scoring, MS1 precursor correction, MS2 deisotoping, filtering, reporting and database options. Hiding controls keeps their saved values.",
+            help="Show search, database and LFQ extraction options. Hiding controls keeps their saved values.",
         )
+        identification, quantification = st.tabs(["Identification", "Quantification"])
+        with identification:
+            self._configure_identification(advanced)
+        with quantification:
+            self._configure_quantification(advanced)
+
+    def _configure_identification(self, advanced: bool) -> None:
         self.ui.select_input_file(
             "mzML-files",
             name="MS/MS spectra",
@@ -235,6 +276,55 @@ class Workflow(WorkflowManager):
                 "RNA mode excludes protein-only entrapment and neighbor searches. The standalone DecoyDatabase page exposes the complete tool."
             )
 
+    def _configure_quantification(self, advanced: bool) -> None:
+        st.subheader("Label-free quantification")
+        st.write(
+            "Extract MS1 features for the oligonucleotides identified in this acquisition, following the RNA TOPPAS workflow."
+        )
+        self.ui.input_widget(
+            "enable-lfq",
+            False,
+            "Enable label-free quantification",
+            "Runs FeatureFinderMetaboIdent and TextExporter after a successful NASE search. Requires MS1 scans in the original acquisition.",
+            "checkbox",
+            reactive=True,
+        )
+        lfq_enabled = enabled(st.session_state.get(
+            f"{self.parameter_manager.param_prefix}enable-lfq",
+            self.params.get("enable-lfq", False),
+        ))
+        with st.container(border=True):
+            st.markdown("**NASE targets → MS1 feature extraction → feature table**")
+            st.caption(
+                "Uses the original acquisition and the identified oligo formulas, charges and retention times. Saves the target list, featureXML and a TSV with all feature metadata."
+            )
+        st.info(
+            "Each run produces raw feature intensities for one acquisition. This TOPPAS workflow does not align, link or normalize separate runs."
+        )
+        if not lfq_enabled:
+            st.caption("Enable quantification to add these steps to the next run.")
+            return
+        st.caption(
+            "Defaults follow pipeline2_fixed.toppas: full 50 ppm m/z and 240 s RT windows, isotope probability ≥ 0.05, and no elution-model fitting. Enable Advanced to adjust extraction and detection."
+        )
+        if advanced:
+            self.ui.input_TOPP(
+                "FeatureFinderMetaboIdent",
+                num_cols=3,
+                custom_defaults=FEATURE_FINDER_DEFAULTS,
+                include_parameters=[
+                    "extract:mz_window", "extract:rt_window", "extract:n_isotopes",
+                    "extract:isotope_pmin", "detect:peak_width",
+                    "detect:min_peak_width", "detect:signal_to_noise", "model:type",
+                ],
+                flag_parameters=tool_flags(
+                    self.parameter_manager.ini_dir / "FeatureFinderMetaboIdent.ini"
+                ),
+            )
+            st.caption(
+                "m/z windows ≥ 1 use ppm; values below 1 use Da. A positive isotope probability takes precedence over the isotope count. Automatic RT extraction needs a positive peak width. Model fitting options apply only when a model is selected."
+            )
+
     def execution(self) -> bool:
         """Run the tools and propagate failure; never save Streamlit state here."""
         cached_digest = self.params.get("database-source", "FASTA") == "Cached digest"
@@ -259,11 +349,14 @@ class Workflow(WorkflowManager):
                 )
                 return False
         needed = ["NucleicAcidSearchEngine"]
+        lfq_enabled = enabled(self.params.get("enable-lfq", False))
+        if lfq_enabled:
+            needed.extend(LFQ_TOOLS)
         if enabled(self.params.get("add-decoys", True)) and not cached_digest:
             needed.append("DecoyDatabase")
         if not all(shutil.which(tool) for tool in needed):
             self.logger.log(
-                "ERROR: Install OpenMS TOPP tools (DecoyDatabase and NucleicAcidSearchEngine) and add them to PATH."
+                "ERROR: Install the required OpenMS TOPP tools and add them to PATH: " + ", ".join(needed)
             )
             return False
 
@@ -293,11 +386,20 @@ class Workflow(WorkflowManager):
         calculate_fdr = enabled(
             params.get("estimate-fdr", params.get("add-decoys", True))
         )
-        exports = params.get("search-exports", ["id_out"])
+        exports = list(params.get("search-exports", ["id_out"]))
+        if lfq_enabled and "lfq_out" not in exports:
+            exports.append("lfq_out")
         error = validate_search_options(search, exports, cached_digest=cached_digest)
         if error:
             self.logger.log(f"ERROR: {error}")
             return False
+        if lfq_enabled:
+            error = prepare_lfq(params, self.parameter_manager, params["mzML-files"])
+            if error is None:
+                error = validate_lfq_spectra(params["mzML-files"])
+            if error:
+                self.logger.log(f"ERROR: {error}")
+                return False
         cutoff = float(params.get("FDR_cutoff", 0.05))
         if not 0 <= cutoff <= 1:
             self.logger.log("ERROR: Maximum q-value must be between 0 and 1.")
@@ -421,7 +523,11 @@ class Workflow(WorkflowManager):
             destination.parent.mkdir(parents=True, exist_ok=True)
             io[option] = [str(destination)]
         self.logger.log("Searching RNA oligonucleotides...")
-        return self.executor.run_topp("NucleicAcidSearchEngine", io)
+        if not self.executor.run_topp("NucleicAcidSearchEngine", io):
+            return False
+        if lfq_enabled:
+            return run_lfq(self, io["lfq_out"][0])
+        return True
 
     def results(self) -> None:
         # Legacy runs used extensionless names; retain access after migration.
@@ -447,8 +553,8 @@ class Workflow(WorkflowManager):
             matches["Sequence"].nunique() if not matches.empty else 0,
         )
         cols[2].metric("RNA accessions", len(tables.get("NUC", [])))
-        table_tab, coverage_tab, download_tab = st.tabs(
-            ["Matches", "Sequence coverage", "Export"]
+        table_tab, coverage_tab, lfq_tab, download_tab = st.tabs(
+            ["Matches", "Sequence coverage", "Quantification", "Export"]
         )
         with table_tab:
             if matches.empty:
@@ -482,6 +588,8 @@ class Workflow(WorkflowManager):
                     st.warning(f"Coverage is unavailable: {error}")
             else:
                 st.info("No RNA sequence coverage to display for this run.")
+        with lfq_tab:
+            self.quantification_results()
         with download_tab:
             st.caption(
                 "mzTab contains all result tables; idXML opens in TOPPView. Parameters record the settings used for this run."
@@ -530,3 +638,95 @@ class Workflow(WorkflowManager):
                     "naseweis-parameters.json",
                     "application/json",
                 )
+            log_path = (
+                self.runs.run_dir(self.run_id) if self.run_id else self.workflow_dir
+            ) / "logs" / "all.log"
+            if log_path.is_file():
+                st.download_button("Download run log", log_path.read_bytes(), "naseweis-run.log", "text/plain")
+
+    def select_run(self, label: str = "Run", key: str = "") -> str | None:
+        """Keep identification artifacts accessible if downstream LFQ fails."""
+        from src.workflow.run_widgets import run_label, selected_run_key
+
+        available = [
+            run for run in self.runs.list_runs()
+            if run["status"] == "finished" or (
+                run["status"] == "failed" and any(
+                    (self.runs.results_dir(run["id"]) / "mztab_results" / name).is_file()
+                    for name in ("search.mzTab", "tab_out")
+                )
+            )
+        ]
+        if not available:
+            return None
+        choices = {run["id"]: run for run in available}
+        shared = selected_run_key(self.runs)
+        widget = f"runs-{self.workflow_dir.name}-select-widget{key}"
+        selected = st.session_state.get(shared)
+        st.session_state[widget] = selected if selected in choices else available[0]["id"]
+
+        def store_selection():
+            st.session_state[shared] = st.session_state[widget]
+
+        run_id = st.selectbox(
+            label, list(choices), key=widget,
+            format_func=lambda value: run_label(choices[value]) + (
+                " · Failed / partial results" if choices[value]["status"] == "failed" else ""
+            ),
+            on_change=store_selection,
+            help="Choose a saved run. Failed runs with search artifacts remain available for inspecting partial outputs.",
+        )
+        store_selection()
+        self._use_run(run_id)
+        if choices[run_id]["status"] == "failed":
+            st.warning("This run failed. Available outputs may be incomplete; inspect this run's saved log on Export before interpreting them.")
+        return run_id
+
+    def quantification_results(self) -> None:
+        """Render the selected run's artifacts independently of live settings."""
+        st.subheader("MS1 feature intensities")
+        st.caption(
+            "Identification-guided extraction from the original acquisition. Intensities are native feature areas; separate runs have not been aligned, linked or normalized. Multiple charge states may produce separate features."
+        )
+        table_path = self.results_dir / LFQ_TABLE
+        features_path = self.results_dir / LFQ_FEATURES
+        if table_path.is_file():
+            try:
+                table = read_lfq_table(table_path)
+                if table.empty:
+                    st.info("No MS1 features were extracted for this run's identified targets. Review the target list, extraction windows and MS1 signal.")
+                else:
+                    cols = st.columns(2)
+                    cols[0].metric("Extracted features", len(table))
+                    if "label" in table:
+                        cols[1].metric("Oligonucleotide labels", table["label"].nunique())
+                    leading = [column for column in ("label", "charge", "intensity", "rt", "mz", "expected_rt", "sum_formula") if column in table]
+                    st.dataframe(
+                        table[leading + [column for column in table if column not in leading]],
+                        hide_index=True, use_container_width=True,
+                        column_config={
+                            "label": "Oligonucleotide", "charge": "Charge",
+                            "intensity": st.column_config.NumberColumn("Raw peak area", format="%.3g"),
+                            "rt": st.column_config.NumberColumn("RT (s)", format="%.2f"),
+                            "mz": st.column_config.NumberColumn("m/z", format="%.5f"),
+                            "expected_rt": st.column_config.NumberColumn("Expected RT (s)", format="%.2f"),
+                        },
+                    )
+            except (OSError, ValueError) as error:
+                st.error(f"Could not read this run's feature table: {error}")
+        else:
+            snapshot = self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
+            try:
+                saved = json.loads(snapshot.read_text())
+            except (OSError, ValueError):
+                saved = {}
+            if enabled(saved.get("enable-lfq", False)):
+                st.warning("Quantification has no completed feature table for this run. Check the run status and saved log on Export; identification outputs remain available.")
+            else:
+                st.info("Quantification was not enabled for this run. Enable it on Configure → Quantification and start a new run.")
+        for label, path, mime in [
+            ("Download LFQ features (featureXML)", features_path, "application/xml"),
+            ("Download LFQ feature table (TSV)", table_path, "text/tab-separated-values"),
+        ]:
+            if path.is_file():
+                st.download_button(label, path.read_bytes(), path.name, mime)

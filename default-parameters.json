@@ -3,5 +3,6 @@
     "mzML-files": null,
     "fasta-files": null,
     "add-decoys": true,
-    "FDR_cutoff": 0.05
+    "FDR_cutoff": 0.05,
+    "enable-lfq": false
 }

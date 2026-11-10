@@ -5,7 +5,7 @@ template:
 app:
   slug: naseweis
   name: NASEWEIS
-  description: RNA oligonucleotide identification with OpenMS NucleicAcidSearchEngine.
+  description: RNA oligonucleotide identification and optional MS1 label-free quantification with OpenMS.
   repository: poshul/nase-weis
   domain: other
   image: ghcr.io/poshul/nase-weis
@@ -41,6 +41,8 @@ workflows:
     steps:
       - {tool: DecoyDatabase, in: fasta-files, optional: true}
       - {tool: NucleicAcidSearchEngine, in: mzML-files}
+      - {tool: FeatureFinderMetaboIdent, in: mzML-files, optional: true}
+      - {tool: TextExporter, in: quantification/features.featureXML, optional: true}
     presets: false
   - name: Decoy Database
     class: src/DecoyWorkflow.py:DecoyWorkflow
@@ -50,6 +52,7 @@ workflows:
     presets: false
 results:
   - {role: table, workflow: NASEWEIS, title: Oligonucleotide spectrum matches, source: mztab_results}
+  - {role: table, workflow: NASEWEIS, title: MS1 feature intensities, source: quantification}
 pages:
   - content/quickstart.py
   - content/topp_workflow_file_upload.py
@@ -75,10 +78,12 @@ sync:
     - default-parameters.json
     - presets.json
     - README.md
+    - docs/lfq.md
     - content/*
     - src/Workflow.py
     - src/naseweis_results.py
     - src/naseweis_tools.py
+    - src/naseweis_lfq.py
     - src/DecoyWorkflow.py
     - openms-runtime.json
     - docker/Dockerfile.app
