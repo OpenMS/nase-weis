@@ -278,12 +278,17 @@ class Workflow(WorkflowManager):
             | params.get("_defaults", {}).get("DecoyDatabase", {})
             | params.get("DecoyDatabase", {})
         )
-        # File destinations and sources belong to the workspace selectors,
-        # never to an imported native parameter dictionary.
-        for key in SEARCH_INPUTS | set(SEARCH_EXPORTS) | {"out"}:
-            search.pop(key, None)
-        for key in DECOY_INPUTS | DECOY_OUTPUTS:
-            decoy.pop(key, None)
+        # The executor merges stored defaults again at dispatch. Clear file
+        # options from both layers so only the workspace selectors own paths.
+        for layer in (
+            search,
+            params.get("_defaults", {}).get("NucleicAcidSearchEngine", {}),
+        ):
+            for key in SEARCH_INPUTS | set(SEARCH_EXPORTS) | {"out"}:
+                layer.pop(key, None)
+        for layer in (decoy, params.get("_defaults", {}).get("DecoyDatabase", {})):
+            for key in DECOY_INPUTS | DECOY_OUTPUTS:
+                layer.pop(key, None)
         use_decoys = enabled(params.get("add-decoys", True)) and not cached_digest
         calculate_fdr = enabled(
             params.get("estimate-fdr", params.get("add-decoys", True))

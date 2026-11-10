@@ -40,11 +40,12 @@ RUN (type -p wget >/dev/null || (apt-get update && apt-get install wget -y)) \
 	&& apt-get update \
 	&& apt-get install gh -y
 
-# Download and install miniforge.
+# Install at the prefix used by PATH and the entrypoint, independently of
+# the base image's HOME (the pinned OpenMS image uses /app).
 ENV PATH="/root/miniforge3/bin:${PATH}"
 RUN wget -q \
     https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
-    && bash Miniforge3-Linux-x86_64.sh -b \
+    && bash Miniforge3-Linux-x86_64.sh -b -p /root/miniforge3 \
     && rm -f Miniforge3-Linux-x86_64.sh
 RUN mamba --version
 

@@ -89,8 +89,11 @@ class DecoyWorkflow(WorkflowManager):
             | params.get("_defaults", {}).get("DecoyDatabase", {})
             | params.get("DecoyDatabase", {})
         )
-        for key in DECOY_INPUTS | DECOY_OUTPUTS:
-            tool.pop(key, None)
+        # Defaults are merged again by the executor; neither stored layer may
+        # reintroduce file arguments after the workspace-owned input/output.
+        for layer in (tool, params.get("_defaults", {}).get("DecoyDatabase", {})):
+            for key in DECOY_INPUTS | DECOY_OUTPUTS:
+                layer.pop(key, None)
         neighbor = params.get("neighbor-files")
         if tool["type"] == "RNA" and (
             int(tool.get("entrapment_ratio", 0)) > 0 or neighbor

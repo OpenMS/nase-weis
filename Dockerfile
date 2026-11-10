@@ -245,13 +245,14 @@ ENV PATH="/openms/bin/:${PATH}"
 RUN cp -r openms-build/lib /openms/lib
 ENV LD_LIBRARY_PATH="/openms/lib/:/root/miniforge3/envs/streamlit-env/lib"
 
-# Copy share folder, add to PATH, remove source directory.
-RUN cp -r OpenMS/share/OpenMS /openms/share
-# Since OpenMS 3.6 the TOPP registry is generated in the build tree; the
-# source share directory alone cannot supply it. Preserve it before cleanup.
-RUN if [ -d openms-build/share/OpenMS/TOOLS ]; then \
-        cp -r openms-build/share/OpenMS/TOOLS /openms/share/; \
-    fi
+# Keep the source data (including older releases' examples), then merge the
+# installed share component: it also owns generated tool registries, Thermo
+# managed assemblies, and their licenses. These must survive build-tree cleanup.
+RUN cp -r OpenMS/share/OpenMS /openms/share && \
+    openms_share_stage=$(mktemp -d) && \
+    cmake --install /openms-build --component share --prefix "$openms_share_stage" && \
+    cp -a "$openms_share_stage/share/OpenMS/." /openms/share/ && \
+    rm -rf "$openms_share_stage"
 RUN rm -rf OpenMS
 ENV OPENMS_DATA_PATH="/openms/share/"
 
