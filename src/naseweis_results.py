@@ -110,6 +110,11 @@ def match_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
             "q-value (%)",
             q_values.where(q_values.ge(0)) * 100,
         )
+    # Keep native diagnostics (e.g. precursor intensity and scoring metadata)
+    # visible and downloadable instead of discarding new optional columns.
+    for column in matches.columns:
+        if column.startswith("opt_"):
+            result[column] = matches[column]
     return result
 
 

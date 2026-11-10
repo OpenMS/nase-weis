@@ -36,6 +36,10 @@ modify repository settings or publish anything to GitHub.
   every spectrum assignment, RNA/oligo sequence, charge, retention time,
   experimental/calculated m/z, score, q-value and mapping coordinate is compared
   with the pinned scientific reference.
+- All native NASE exports; cached digests producing identical assignments;
+  FLASH precursor correction and deisotoping, MVH scoring and report filters;
+  independent FDR/decoy generation, custom prefixes/suffixes, decoy-only export;
+  RNA/protein shuffling, ratios, protein entrapment and NeighborSearch outputs.
 - Invalid/missing/ambiguous input selections, invalid FDR cutoffs, missing
   TOPP tools, unreadable tool parameters and failing pipeline stages.
 - Explicit tolerance units, modifications, digestion, parameter precedence,
@@ -47,7 +51,7 @@ modify repository settings or publish anything to GitHub.
   controls staying usable when one artifact is missing or damaged.
 - Modified/terminal residues, HTML escaping, coverage coordinates/wrapping,
   result cache refresh and isolation between workspaces, runs and readers.
-- The container's TOPP registry repair and inherited framework behavior,
+- The container's native runtime and inherited framework behavior,
   including queued/local execution, cancellation, storage and workspace sync.
 
 Reference comparator tests deliberately remove a match or alter its charge,
@@ -74,26 +78,30 @@ OpenMS build. To run only the new behavioral tests while editing:
 
 The ordinary pytest invocation permits missing-tool skips for convenience;
 the strict regression gate fails instead. For a full reproducible check,
-use `--container`. In particular, development versions such as `3.6.0-pre-*`
-are rejected by `--naseweis-baseline`, even if the pyOpenMS version is `3.6.0`.
+use `--container`. `--naseweis-baseline` requires the exact nightly version
+and source revision recorded in the manifest, plus the pinned pyOpenMS version.
 
 ## Scientific references and intentional changes
 
-`tests/data/naseweis/manifest.json` records the engine/pyOpenMS versions,
+`tests/data/naseweis/nightly/manifest.json` records the engine/pyOpenMS versions,
+source revision and native image digest,
 input checksums and baseline settings. The six TSV files record the nucleotide,
 oligonucleotide and spectrum-match sections of two NME1 searches. They are
 readable review artifacts, not opaque hashes. Numeric comparisons allow
 `1e-9` relative/absolute rounding; assignments, row counts and sequence/position
 changes must match. Row ordering and runtime paths/timestamps are ignored.
 
-For OpenMS 3.6.0, default RNase T1 searches at 10 ppm and one thread produce:
+For pinned OpenMS nightly `0707508`, default RNase T1 searches at 10 ppm and one thread produce:
 
 | Mode | Spectrum matches | Oligonucleotide mappings |
 | --- | ---: | ---: |
 | FDR q ≤ 0.05 | 163 | 22 |
-| No FDR | 299 | 32 |
+| No FDR | 301 | 32 |
 
-The unfiltered mappings include 31 distinct oligonucleotide sequences.
+The unfiltered mappings include 31 distinct oligonucleotide sequences. The
+original OpenMS 3.6 references remain in the parent directory for comparison.
+See [the nightly comparison](naseweis-nightly.md) for changed scores and the
+two additional unfiltered matches.
 The reference generator parses the raw engine output using Python's CSV
 reader, independently of the app's parser. Reference generation is **never**
 part of CI or a normal regression run.
@@ -114,7 +122,7 @@ To propose an intentional scientific/runtime change:
      --entrypoint /root/miniforge3/envs/streamlit-env/bin/python \
      naseweis-regression-test:local \
      -m scripts.generate_naseweis_reference --output /candidate
-   diff -ru tests/data/naseweis .local/reference-candidate
+   diff -ru tests/data/naseweis/nightly .local/reference-candidate
    ```
 
 4. Review the changed matches, scores, q-values and coverage, rather than just
@@ -135,3 +143,8 @@ combined application statement/branch coverage. The production-entrypoint
 smoke test passed. An intentionally skipped probe exited with failure, and
 the baseline guard rejected the host's development OpenMS version.
 Existing RQ tests emit nine deprecation warnings; they do not affect the gate.
+
+
+The nightly upgrade's container gate passed **650 tests with no skips** and
+**99.57%** application coverage. Both search and database workflows and every
+registered page had 100% coverage. See the [nightly validation record](naseweis-nightly.md).

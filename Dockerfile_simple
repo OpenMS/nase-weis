@@ -7,9 +7,10 @@
 # debug container after build (comment out ENTRYPOINT) and run container with interactive /bin/bash shell
 # prune unused images/etc. to free disc space (e.g. might be needed on gitpod). Use with care.: docker system prune --all --force
 
-FROM ubuntu:22.04 AS stage1
+ARG OPENMS_NIGHTLY_IMAGE=ghcr.io/openms/openms-executables@sha256:8e3c559cc474a57e12eff10569e2aef033eb867783ab36d45df08e8279880c3d
+FROM ${OPENMS_NIGHTLY_IMAGE} AS stage1
 ARG OPENMS_REPO=https://github.com/OpenMS/OpenMS.git
-ARG OPENMS_BRANCH=develop
+ARG OPENMS_BRANCH=nightly
 ARG PORT=8501
 # GitHub repository whose latest release supplies the bundled Windows
 # installer. Empty: `github-user` and `repository-name` from settings.json,
@@ -39,11 +40,12 @@ RUN (type -p wget >/dev/null || (apt-get update && apt-get install wget -y)) \
 	&& apt-get update \
 	&& apt-get install gh -y
 
-# Download and install miniforge.
+# Install at the prefix used by PATH and the entrypoint, independently of
+# the base image's HOME (the pinned OpenMS image uses /app).
 ENV PATH="/root/miniforge3/bin:${PATH}"
 RUN wget -q \
     https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
-    && bash Miniforge3-Linux-x86_64.sh -b \
+    && bash Miniforge3-Linux-x86_64.sh -b -p /root/miniforge3 \
     && rm -f Miniforge3-Linux-x86_64.sh
 RUN mamba --version
 
@@ -106,6 +108,7 @@ COPY hooks/ /app/hooks
 COPY src/ /app/src
 COPY utils/ /app/utils
 COPY app.py /app/app.py
+COPY openms-runtime.json /app/openms-runtime.json
 COPY settings.json /app/settings.json
 COPY default-parameters.json /app/default-parameters.json
 COPY presets.json /app/presets.json

@@ -57,9 +57,9 @@ def test_example_search_in_fresh_worker(tmp_path, use_decoys, request):
     results_dir = runs.results_dir(run_id)
     tables = read_mztab(results_dir / "mztab_results/search.mzTab")
     if request.config.getoption("--naseweis-baseline"):
-        from naseweis_reference import assert_nme1_reference
+        from naseweis_reference import REFERENCE, assert_nme1_reference
 
-        assert_nme1_reference(tables, use_decoys)
+        assert_nme1_reference(tables, use_decoys, reference=REFERENCE / "nightly")
     matches = match_table(tables)
     assert len(matches) > 0
     assert "NME1" in tables["NUC"]["accession"].values

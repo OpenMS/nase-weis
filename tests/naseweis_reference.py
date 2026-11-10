@@ -7,10 +7,12 @@ import pandas as pd
 REFERENCE = Path(__file__).parent / "data/naseweis"
 
 
-def assert_nme1_reference(tables: dict, use_decoys: bool) -> None:
+def assert_nme1_reference(
+    tables: dict, use_decoys: bool, *, reference: Path = REFERENCE
+) -> None:
     name = "nme1-fdr" if use_decoys else "nme1-unfiltered"
     for section in ["NUC", "OLI", "OSM"]:
-        expected = pd.read_csv(REFERENCE / f"{name}.{section.lower()}.tsv", sep="\t")
+        expected = pd.read_csv(reference / f"{name}.{section.lower()}.tsv", sep="\t")
         columns = list(expected.columns)
         actual = tables[section][columns].copy()
         expected = expected.sort_values(columns).reset_index(drop=True)

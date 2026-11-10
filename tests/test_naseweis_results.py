@@ -195,3 +195,13 @@ def test_reference_without_any_hits_has_zero_coverage():
         "OLI": pd.DataFrame(columns=["accession", "sequence", "start", "end"]),
     }
     assert "0.0% sequence coverage" in coverage_html(tables, "rna")
+
+
+def test_native_optional_diagnostics_survive_display_and_csv(result_file):
+    tables = read_mztab(result_file)
+    tables["OSM"]["opt_precursor_percentage"] = "12.3"
+    tables["OSM"]["opt_future_diagnostic"] = "new metadata"
+    matches = match_table(tables)
+    assert matches.loc[0, "opt_precursor_percentage"] == "12.3"
+    assert matches.loc[0, "opt_future_diagnostic"] == "new metadata"
+    assert "opt_future_diagnostic" in matches.to_csv(index=False)
