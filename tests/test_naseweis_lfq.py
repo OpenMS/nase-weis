@@ -68,25 +68,43 @@ def test_herbert_defaults_and_actual_native_flags_are_recorded(manager, extensio
 def test_imported_paths_and_export_layout_cannot_override_the_workflow(manager):
     params = {
         "_defaults": {
-            LFQ_TOOLS[0]: {"in": "/outside/spectra", "lib_out": "/outside/library", "extract:mz_window": 25},
-            LFQ_TOOLS[1]: {"out": "/outside/export", "feature:add_metavalues": -1, "out_type": "csv"},
+            LFQ_TOOLS[0]: {"in": "/outside/spectra", "lib_out": "/outside/library", "log": "/outside/default-finder.log", "extract:mz_window": 25},
+            LFQ_TOOLS[1]: {"out": "/outside/export", "log": "/outside/default-exporter.log", "feature:add_metavalues": -1, "out_type": "csv"},
             "OtherTool": {"in": "keep-this-setting"},
         },
-        LFQ_TOOLS[0]: {"id": "/outside/targets", "out": "/outside/features", "extract:mz_window": "12.5", "model:each_trace": "true"},
-        LFQ_TOOLS[1]: {"in": "/outside/features", "consensus:elements": "/outside/elements", "quoting": "double", "no_ids": False, "feature:minimal": True, "debug": 2},
+        LFQ_TOOLS[0]: {"id": "/outside/targets", "out": "/outside/features", "log": "/outside/override-finder.log", "extract:mz_window": "12.5", "model:each_trace": "true"},
+        LFQ_TOOLS[1]: {"in": "/outside/features", "consensus:elements": "/outside/elements", "log": "/outside/override-exporter.log", "quoting": "double", "no_ids": False, "feature:minimal": True, "debug": 2},
     }
     assert prepare_lfq(params, manager, "spectra.mzML") is None
     assert params[LFQ_TOOLS[0]]["extract:mz_window"] == 12.5
     assert params[LFQ_TOOLS[0]]["model:each_trace"] is True
     assert params[LFQ_TOOLS[1]] == TEXT_EXPORTER_DEFAULTS | {"debug": 2}
     for tool, owned in [
-        (LFQ_TOOLS[0], FEATURE_FINDER_INPUTS | FEATURE_FINDER_OUTPUTS),
-        (LFQ_TOOLS[1], TEXT_EXPORTER_INPUTS | TEXT_EXPORTER_OUTPUTS),
+        (LFQ_TOOLS[0], FEATURE_FINDER_INPUTS | FEATURE_FINDER_OUTPUTS | {"log"}),
+        (LFQ_TOOLS[1], TEXT_EXPORTER_INPUTS | TEXT_EXPORTER_OUTPUTS | {"log"}),
     ]:
         assert not owned & params[tool].keys()
         assert not owned & params["_defaults"][tool].keys()
     assert params["_defaults"][LFQ_TOOLS[1]] == TEXT_EXPORTER_DEFAULTS
     assert params["_defaults"]["OtherTool"] == {"in": "keep-this-setting"}
+
+
+@pytest.mark.parametrize("tool", LFQ_TOOLS)
+@pytest.mark.parametrize("layer", ["defaults", "overrides"])
+def test_imported_native_log_paths_are_removed_from_each_layer(manager, tool, layer):
+    settings = {"log": "/outside/imported.log"}
+    params = {"_defaults": {tool: settings}} if layer == "defaults" else {tool: settings}
+    params.setdefault("_defaults", {}).setdefault("FeatureFinderMetaboIdent", {})[
+        "extract:mz_window"
+    ] = 15.0
+    params.setdefault("FeatureFinderMetaboIdent", {})["detect:peak_width"] = 45.0
+
+    assert prepare_lfq(params, manager, "spectra.mzML") is None
+
+    assert "log" not in params[tool]
+    assert "log" not in params["_defaults"][tool]
+    assert params["FeatureFinderMetaboIdent"]["extract:mz_window"] == 15.0
+    assert params["FeatureFinderMetaboIdent"]["detect:peak_width"] == 45.0
 
 
 def test_new_nightly_file_paths_are_also_sanitized(manager):

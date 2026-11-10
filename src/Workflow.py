@@ -373,14 +373,15 @@ class Workflow(WorkflowManager):
         )
         # The executor merges stored defaults again at dispatch. Clear file
         # options from both layers so only the workspace selectors own paths.
+        # Native log paths are strings in ParamXML; the executor captures logs.
         for layer in (
             search,
             params.get("_defaults", {}).get("NucleicAcidSearchEngine", {}),
         ):
-            for key in SEARCH_INPUTS | set(SEARCH_EXPORTS) | {"out"}:
+            for key in SEARCH_INPUTS | set(SEARCH_EXPORTS) | {"out", "log"}:
                 layer.pop(key, None)
         for layer in (decoy, params.get("_defaults", {}).get("DecoyDatabase", {})):
-            for key in DECOY_INPUTS | DECOY_OUTPUTS:
+            for key in DECOY_INPUTS | DECOY_OUTPUTS | {"log"}:
                 layer.pop(key, None)
         use_decoys = enabled(params.get("add-decoys", True)) and not cached_digest
         calculate_fdr = enabled(

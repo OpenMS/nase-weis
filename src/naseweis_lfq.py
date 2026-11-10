@@ -143,7 +143,9 @@ def prepare_lfq(params: dict, parameter_manager, spectra: str) -> str | None:
             return f"This {tool} installation lacks required LFQ inputs or outputs; use the pinned nightly runtime."
         # The executor merges defaults again, so remove file paths from both
         # stored layers, including newly added native file options in a nightly.
-        files = inputs | outputs | {
+        # OpenMS declares its log filename as a string rather than output-file;
+        # retain only the run-owned logs captured by the executor.
+        files = inputs | outputs | {"log"} | {
             key for key, entry in schema.items()
             if entry["type"] in {"input-file", "output-file"}
         }

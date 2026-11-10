@@ -216,13 +216,13 @@ def test_lfq_pipeline_stops_at_first_failed_tool(lfq_workflow, failed_stage):
     ][: failed_stage + 1]
 
 
-def test_lfq_file_options_in_both_layers_cannot_redirect_workspace_outputs(
+def test_lfq_file_and_log_options_in_both_layers_cannot_redirect_workspace_outputs(
     lfq_workflow,
 ):
     from src.workflow.CommandExecutor import CommandExecutor
 
     keys = {
-        tool: {
+        tool: {"log"} | {
             key
             for key, entry in tool_schema(SCHEMAS / f"{tool}.ini").items()
             if entry["type"] in {"input-file", "output-file"}
