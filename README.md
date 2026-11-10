@@ -107,6 +107,31 @@ resolution-based heuristics are removed: review these settings when reusing
 an old workspace. A q-value column appears only when the result file actually
 contains q-values, independently of the current configuration.
 
+## Interactive viewers
+
+The **Raw data viewer** uses the existing pyOpenMS-viz/Plotly viewers for MS1
+peak maps, individual MS1/MS2 spectra and overlaid TIC, BPC and extracted-ion
+chromatograms. Choose an uploaded or locally registered mzML file, then load it.
+Overview intensities are summed into display bins; spectra and XICs retain the
+original peak values. Indexed mzML files are read one spectrum at a time, and
+unindexed files use streaming reads.
+
+On **Results → Spectra**, choose a saved spectrum match to inspect its original
+scan and the RNA fragment assignments in NASE's idXML. Complete native spectrum
+IDs identify scans; retention time and array position are not substituted.
+RNA `a-B`, `d` and `w` ions are supported. Processed fragment masses absent from
+the acquired scan remain available in the assignment table.
+
+On **Results → Quantification**, open the LFQ feature viewer to inspect the
+feature map and an exact raw MS1 XIC for a selected feature, with its detected
+elution boundaries. View settings do not change saved quantification. All plots
+support zoom, hover, image export and self-contained HTML downloads.
+
+Result viewers use the selected run's input snapshot, independently of current
+search settings. Keep its original mzML available. Vendor acquisitions remain
+supported for searches; convert them to mzML for these viewers. See
+[viewer behavior and validation](docs/viewers.md).
+
 ## Development and verification
 
 Run the complete regression gate before merging future improvements:
@@ -138,7 +163,8 @@ cache isolation, framework parameters, run management and workspace sync.
 Some framework tests start localhost servers; run them with socket access.
 
 App-specific code lives in `src/Workflow.py`, `src/DecoyWorkflow.py`,
-`src/naseweis_tools.py`, `src/naseweis_results.py` and `src/naseweis_lfq.py`.
+`src/naseweis_tools.py`, `src/naseweis_results.py`, `src/naseweis_lfq.py` and
+the `src/naseweis_*` viewer modules.
 Navigation and user-facing pages live in `app.py` and `content/`.
 `app.yaml` records the app's identity and file ownership for template syncs.
 The template's extra toolbox pages remain available in source but are not

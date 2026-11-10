@@ -28,6 +28,7 @@ from src.naseweis_tools import (
     tool_schema,
     validate_search_options,
 )
+from src.naseweis_viewers import render_identification_viewer, render_lfq_viewer
 from src.workflow.WorkflowManager import WorkflowManager
 
 SEARCH_DEFAULTS = {
@@ -327,6 +328,11 @@ class Workflow(WorkflowManager):
 
     def execution(self) -> bool:
         """Run the tools and propagate failure; never save Streamlit state here."""
+        from src.naseweis_provenance import (
+            acquisition_fingerprint,
+            assert_acquisition_unchanged,
+        )
+
         cached_digest = self.params.get("database-source", "FASTA") == "Cached digest"
         for key, label in [
             ("mzML-files", "MS spectra"),
@@ -477,6 +483,16 @@ class Workflow(WorkflowManager):
                 )
                 return False
         # The manager points at this run's snapshot in both local and queue mode.
+        # Imported snapshots cannot claim provenance for the selected input.
+        params.pop("_acquisition_fingerprint", None)
+        acquisition_record = None
+        if Path(params["mzML-files"]).suffix.lower() == ".mzml":
+            try:
+                acquisition_record = acquisition_fingerprint(params["mzML-files"])
+            except (OSError, ValueError) as error:
+                self.logger.log(f"ERROR: {error}")
+                return False
+            params["_acquisition_fingerprint"] = acquisition_record
         self.parameter_manager.write_parameters(params)
         self.params = params
         database = [params["digest-files"] if cached_digest else params["fasta-files"]]
@@ -526,8 +542,21 @@ class Workflow(WorkflowManager):
         self.logger.log("Searching RNA oligonucleotides...")
         if not self.executor.run_topp("NucleicAcidSearchEngine", io):
             return False
+        if acquisition_record is not None:
+            try:
+                assert_acquisition_unchanged(params["mzML-files"], acquisition_record)
+            except ValueError as error:
+                self.logger.log(f"ERROR: {error}")
+                return False
         if lfq_enabled:
-            return run_lfq(self, io["lfq_out"][0])
+            if not run_lfq(self, io["lfq_out"][0]):
+                return False
+            if acquisition_record is not None:
+                try:
+                    assert_acquisition_unchanged(params["mzML-files"], acquisition_record)
+                except ValueError as error:
+                    self.logger.log(f"ERROR: {error}")
+                    return False
         return True
 
     def results(self) -> None:
@@ -554,8 +583,14 @@ class Workflow(WorkflowManager):
             matches["Sequence"].nunique() if not matches.empty else 0,
         )
         cols[2].metric("RNA accessions", len(tables.get("NUC", [])))
-        table_tab, coverage_tab, lfq_tab, download_tab = st.tabs(
-            ["Matches", "Sequence coverage", "Quantification", "Export"]
+        snapshot = (
+            self.runs.params_file(self.run_id)
+            if self.run_id
+            else self.parameter_manager.params_file
+        )
+        online = st.session_state.get("settings", {}).get("online_deployment", False)
+        table_tab, spectra_tab, coverage_tab, lfq_tab, download_tab = st.tabs(
+            ["Matches", "Spectra", "Sequence coverage", "Quantification", "Export"]
         )
         with table_tab:
             if matches.empty:
@@ -570,6 +605,11 @@ class Workflow(WorkflowManager):
                     "naseweis-matches.csv",
                     "text/csv",
                 )
+        with spectra_tab:
+            render_identification_viewer(
+                self.results_dir, snapshot, tables.get("OSM", matches),
+                self.workflow_dir, online,
+            )
         with coverage_tab:
             references = tables.get("NUC")
             if references is not None and not references.empty:
@@ -713,12 +753,19 @@ class Workflow(WorkflowManager):
                             "expected_rt": st.column_config.NumberColumn("Expected RT (s)", format="%.2f"),
                         },
                     )
+                    snapshot = self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
+                    render_lfq_viewer(
+                        self.results_dir, snapshot, table, self.workflow_dir,
+                        st.session_state.get("settings", {}).get("online_deployment", False),
+                    )
             except (OSError, ValueError) as error:
                 st.error(f"Could not read this run's feature table: {error}")
         else:
             snapshot = self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
             try:
                 saved = json.loads(snapshot.read_text())
+                if not isinstance(saved, dict):
+                    saved = {}
             except (OSError, ValueError):
                 saved = {}
             if enabled(saved.get("enable-lfq", False)):

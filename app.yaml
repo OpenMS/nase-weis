@@ -60,6 +60,7 @@ pages:
   - content/topp_workflow_execution.py
   - content/topp_workflow_results.py
   - content/decoy_database.py
+  - content/naseweis_raw_viewer.py
 deploy:
   k8s:
     enabled: false
@@ -79,11 +80,17 @@ sync:
     - presets.json
     - README.md
     - docs/lfq.md
+    - docs/viewers.md
     - content/*
     - src/Workflow.py
     - src/naseweis_results.py
     - src/naseweis_tools.py
     - src/naseweis_lfq.py
+    - src/naseweis_viewers.py
+    - src/naseweis_msdata.py
+    - src/naseweis_annotations.py
+    - src/naseweis_plots.py
+    - src/naseweis_provenance.py
     - src/DecoyWorkflow.py
     - openms-runtime.json
     - docker/Dockerfile.app

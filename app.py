@@ -31,6 +31,11 @@ pages = {
             title="Results",
             icon=":material/analytics:",
         ),
+        st.Page(
+            "content/naseweis_raw_viewer.py",
+            title="Raw data viewer",
+            icon=":material/query_stats:",
+        ),
     ],
     "Database tools": [
         st.Page(
