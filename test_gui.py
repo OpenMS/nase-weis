@@ -1,6 +1,7 @@
 """Smoke-test every NASEWEIS page and the complete example-data setup."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,32 @@ def app(tmp_path, monkeypatch):
     settings.update(workspaces_dir=str(tmp_path), test=False)
     test.session_state.settings = settings
     return test
+
+
+@pytest.fixture
+def topp_schemas(monkeypatch, request):
+    """Exercise parameter widgets even in the Python-only CI jobs.
+
+    The strict native gate still uses the installed tools' schemas. Lightweight
+    widget tests use the reviewed fixtures regardless of the host's OpenMS
+    version; no search execution is replaced.
+    """
+    from src.workflow.ParameterManager import ParameterManager
+
+    if request.config.getoption("--strict-regressions", default=False):
+        return
+
+    create_ini = ParameterManager.create_ini
+    schemas = Path(__file__).parent / "tests/data/naseweis/nightly"
+
+    def create_widget_ini(manager, tool):
+        schema = schemas / f"{tool}.ini"
+        destination = manager.ini_dir / f"{tool}.ini"
+        if schema.is_file() and not destination.exists():
+            shutil.copyfile(schema, destination)
+        return create_ini(manager, tool)
+
+    monkeypatch.setattr(ParameterManager, "create_ini", create_widget_ini)
 
 
 @pytest.mark.parametrize(
@@ -300,7 +327,9 @@ def test_all_available_search_artifacts_can_be_downloaded(app):
     assert "Download decoys.fasta" in downloads
 
 
-def test_database_page_shows_saved_counts_exports_and_parameter_snapshot(app):
+def test_database_page_shows_saved_counts_exports_and_parameter_snapshot(
+    app, topp_schemas
+):
     from src.workflow.RunManager import RunManager
 
     app.run(timeout=30)
@@ -362,7 +391,7 @@ def test_database_step_change_refreshes_files_added_on_upload(app):
     assert any("No finished runs" in info.value for info in app.info)
 
 
-def test_rnome_controls_require_advanced_and_keep_saved_values(app):
+def test_rnome_controls_require_advanced_and_keep_saved_values(app, topp_schemas):
     app.run(timeout=30)
     app.switch_page("content/naseweis.py").run(timeout=30)
     assert not app.toggle(key="advanced").value

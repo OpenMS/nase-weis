@@ -41,7 +41,7 @@ ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 # Install required Ubuntu packages. cmake is Ubuntu 24.04's 3.28 (OpenMS 3.5
 # needs 3.24, pyOpenMS 3.6 3.26).
 RUN apt-get -y update
-RUN apt-get install -y --no-install-recommends --no-install-suggests g++ autoconf automake patch libtool make cmake pkg-config git gpg wget ca-certificates curl jq libgtk2.0-dev openjdk-8-jdk cron
+RUN apt-get install -y --no-install-recommends --no-install-suggests g++ autoconf automake patch libtool make cmake pkg-config git gpg wget ca-certificates curl jq xz-utils libgtk2.0-dev openjdk-8-jdk cron
 RUN update-ca-certificates
 RUN apt-get install -y --no-install-recommends --no-install-suggests libsvm-dev libeigen3-dev coinor-libcbc-dev coinor-libcoinmp-dev libglpk-dev libzip-dev zlib1g-dev libzstd-dev libxerces-c-dev libbz2-dev libcurl4-openssl-dev libomp-dev libhdf5-dev
 RUN apt-get install -y --no-install-recommends --no-install-suggests libboost-date-time-dev \
