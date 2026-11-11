@@ -12,8 +12,8 @@ app:
 inputs:
   mzML-files:
     types: [mzML, raw, d]
-    multiple: false
-    description: One MS/MS acquisition (mzML, Thermo RAW or Bruker directory).
+    multiple: true
+    description: Selected MS/MS acquisitions (mzML, Thermo RAW or Bruker directories).
   fasta-files:
     types: [fasta, fa, faa]
     multiple: false
@@ -87,6 +87,9 @@ sync:
     - src/naseweis_results.py
     - src/naseweis_tools.py
     - src/naseweis_lfq.py
+    - src/naseweis_experiment.py
+    - src/naseweis_experiment_ui.py
+    - src/naseweis_comparison.py
     - src/naseweis_viewers.py
     - src/naseweis_msdata.py
     - src/naseweis_annotations.py

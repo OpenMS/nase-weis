@@ -134,6 +134,8 @@ def input_acquisitions(workflow_dir: Path, params: dict, online=False) -> list[s
     selected = params.get("mzML-files")
     if isinstance(selected, str) and selected:
         candidates.add(selected)
+    elif isinstance(selected, list):
+        candidates.update(value for value in selected if isinstance(value, str) and value)
     for folder in folders:
         if not folder.is_dir():
             continue
@@ -220,6 +222,8 @@ def render_raw_viewer(workflow_dir: Path, params: dict, online=False) -> None:
         )
         return
     selected = params.get("mzML-files")
+    if isinstance(selected, list):
+        selected = selected[0] if selected else None
     path = st.selectbox(
         "Acquisition",
         files,

@@ -19,9 +19,9 @@ with st.container(border=True):
         cols,
         ["1 · Add your data", "2 · Set up a search", "3 · Explore the evidence"],
         [
-            "Upload an MS/MS run and RNA FASTA or cached digest, or try the NME1 example.",
-            "Choose digestion, modifications and mass tolerances. Add decoys for FDR estimation and optional MS1 quantification.",
-            "Review matches, coverage and MS1 features. Export native results and the parameters for each run.",
+            "Add MS/MS acquisitions and an RNA FASTA or cached digest, or try the NME1 example.",
+            "Select samples, conditions and replicates. Configure the search and optionally enable comparative RNA LFQ.",
+            "Compare RNA abundances across samples and inspect individual matches, spectra and chromatograms.",
         ],
     ):
         col.markdown(f"**{title}**")
@@ -42,12 +42,12 @@ if st.button("Load example dataset", type="primary", icon=":material/science:"):
 
 with st.expander("Input formats and search guidance"):
     st.markdown("""
-- **Spectra:** one `.mzML` or Thermo `.raw` file, or a Bruker `.d` directory. Upload `.d` directories as ZIP archives, or import them from a local folder. Vendor readers depend on the OpenMS build and platform.
+- **Spectra:** select the `.mzML`, Thermo `.raw` or Bruker `.d` acquisitions to analyze on Configure. Assign each selected file a condition and biological replicate. Upload `.d` directories as ZIP archives, or import them from a local folder. Vendor readers depend on the OpenMS build and platform.
 - **Sequences:** one RNA FASTA database (`.fasta`, `.fa`, `.faa`), or a reusable NASE `.oms` digest. Use A, U, C and G; put MODOMICS short names for modified residues in brackets, such as `AU[Am]C[m5C]G`.
 - **Digestion:** select the enzyme used in your experiment, or **no cleavage** for intact oligonucleotides.
 - **Mass accuracy:** enter precursor and fragment tolerances and their units directly. The defaults are 10 ppm; adjust them for your instrument and acquisition method.
 - **Advanced search:** use **All parameters** for FLASH precursor correction/deisotoping, MVH scoring, fragment coverage, peak filters, modification ambiguity resolution and bedRMod reference metadata. Choose optional output files on Configure.
-- **Quantification:** enable LFQ on **Configure → Quantification** to extract MS1 features for identified oligonucleotides, following the RNA TOPPAS workflow. The original acquisition must contain MS1 scans. Advanced exposes extraction and fitting settings; Results retains raw feature intensities, featureXML, TSV and the NASE target list for each run. Separate runs are not aligned, linked or normalized.
+- **Quantification:** LFQ is off by default. Enable it on **Configure → Quantification** with at least two selected acquisitions containing MS1 scans. Native extraction follows the RNA TOPPAS workflow for each sample; the combined modified-RNA matrix supports total-area normalization and condition comparisons. Advanced exposes extraction, fitting and area-measure settings, including the saved fitted-area RNA preset. Results retain each sample's targets, featureXML, TSV and parameter snapshot. Missing measurements remain missing; no identification transfer, RT alignment, imputation or statistical significance tests are applied.
 - **Viewers:** explore mzML spectra, MS1 peak maps and TIC/BPC/XIC traces on **Raw data viewer**. Open **Results → Spectra** for native RNA fragment assignments or the LFQ feature viewer on **Results → Quantification**. Viewer settings do not change saved search or quantification results.
 - **Database preparation:** the **Decoy Database** page runs the complete tool independently, including multi-FASTA input, decoy ratios, protein entrapment and neighbor searches.
 - **FDR:** generation and estimation are independent: turn generation off for a database that already includes decoys. The default target-decoy search retains matches at q ≤ 0.05. A small example database illustrates the workflow; it does not establish a reliable FDR estimate for an experiment.

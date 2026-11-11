@@ -26,6 +26,9 @@ include =
     src/naseweis_tools.py
     src/naseweis_results.py
     src/naseweis_lfq.py
+    src/naseweis_experiment.py
+    src/naseweis_experiment_ui.py
+    src/naseweis_comparison.py
     src/naseweis_viewers.py
     src/naseweis_msdata.py
     src/naseweis_annotations.py

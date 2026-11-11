@@ -2,12 +2,18 @@
 
 import json
 import shutil
-from copy import deepcopy
+from copy import copy, deepcopy
 from pathlib import Path
 
 import streamlit as st
 from streamlit.components.v1 import html
 
+from src.naseweis_experiment import run_experiment, sample_results, sample_snapshot
+from src.naseweis_experiment_ui import (
+    configure_comparison,
+    configure_experiment_inputs,
+    render_experiment_results,
+)
 from src.naseweis_lfq import (
     FEATURE_FINDER_DEFAULTS,
     LFQ_FEATURES,
@@ -100,6 +106,38 @@ class Workflow(WorkflowManager):
     def __init__(self) -> None:
         super().__init__("NASEWEIS", st.session_state["workspace"])
 
+    def start_workflow(self) -> None:
+        try:
+            super().start_workflow()
+        except (OSError, ValueError) as error:
+            st.error(f"Cannot start this analysis: {error}")
+
+    def _new_run(self) -> None:
+        """Freeze the selected sample design together with the run parameters."""
+        from src.naseweis_experiment import validate_design_source
+        from src.workflow.ExperimentalDesign import design_path, load_design
+
+        params = self.parameter_manager.read_parameters_strict()
+        selected = params.get("mzML-files")
+        if isinstance(selected, list):
+            paths = [path for path in selected if isinstance(path, str)]
+            source = design_path(self.workflow_dir)
+            if source.is_file():
+                validate_design_source(source.read_bytes())
+            design = load_design(self.workflow_dir, paths)
+            params["_sample_design"] = [
+                {
+                    "file": path,
+                    "condition": str(row["condition"]),
+                    "replicate": int(row["replicate"]),
+                    "fraction": int(row["fraction"]),
+                }
+                for path, (_, row) in zip(paths, design.iterrows())
+            ]
+            self.parameter_manager.write_parameters(params)
+            self.params = params
+        super()._new_run()
+
     def load_example_data(self) -> None:
         """Copy and select the paired NME1 dataset without replacing user files."""
         params = self.parameter_manager.read_parameters_strict()
@@ -150,12 +188,7 @@ class Workflow(WorkflowManager):
             self._configure_quantification(advanced)
 
     def _configure_identification(self, advanced: bool) -> None:
-        self.ui.select_input_file(
-            "mzML-files",
-            name="MS/MS spectra",
-            multiple=False,
-            upload={"file_types": ["mzML", "raw", "d"]},
-        )
+        configure_experiment_inputs(self)
         if advanced:
             self.ui.input_widget(
                 "database-source",
@@ -285,7 +318,7 @@ class Workflow(WorkflowManager):
     def _configure_quantification(self, advanced: bool) -> None:
         st.subheader("Label-free quantification")
         st.write(
-            "Extract MS1 features for the oligonucleotides identified in this acquisition, following the RNA TOPPAS workflow."
+            "Compare modified RNA abundances across the selected acquisitions using native NASE-guided MS1 extraction."
         )
         self.ui.input_widget(
             "enable-lfq",
@@ -300,20 +333,30 @@ class Workflow(WorkflowManager):
             self.params.get("enable-lfq", False),
         ))
         with st.container(border=True):
-            st.markdown("**NASE targets → MS1 feature extraction → feature table**")
+            st.markdown("**NASE targets per sample → MS1 areas → combined RNA abundance matrix**")
             st.caption(
                 "Uses the original acquisition and the identified oligo formulas, charges and retention times. Saves the target list, featureXML and a TSV with all feature metadata."
             )
         st.info(
-            "Each run produces raw feature intensities for one acquisition. This TOPPAS workflow does not align, link or normalize separate runs."
+            "Select at least two acquisitions for LFQ. One analysis extracts each sample independently, "
+            "then combines modified RNA abundances across samples for relative comparison. "
+            "The sample design and quantification settings are saved with the analysis."
         )
         if not lfq_enabled:
             st.caption("Enable quantification to add these steps to the next run.")
             return
+        configure_comparison(self)
         st.caption(
             "Defaults follow pipeline2_fixed.toppas: full 50 ppm m/z and 240 s RT windows, isotope probability ≥ 0.05, and no elution-model fitting. Enable Advanced to adjust extraction and detection."
         )
         if advanced:
+            if st.button(
+                "Use fitted-area RNA comparison preset",
+                key="naseweis-rna-comparison-preset",
+                help="Apply the saved RNA KNIME extraction settings and total-area normalization.",
+                on_click=self._apply_rna_comparison_preset,
+            ):
+                st.rerun()
             self.ui.input_TOPP(
                 "FeatureFinderMetaboIdent",
                 num_cols=3,
@@ -331,7 +374,34 @@ class Workflow(WorkflowManager):
                 "m/z windows ≥ 1 use ppm; values below 1 use Da. A positive isotope probability takes precedence over the isotope count. Automatic RT extraction needs a positive peak width. Model fitting options apply only when a model is selected."
             )
 
+    def _apply_rna_comparison_preset(self) -> None:
+        """Apply the recovered RNA comparison settings only after an explicit click."""
+        params = self.parameter_manager.read_parameters_strict()
+        settings = params.get("FeatureFinderMetaboIdent", {})
+        if not isinstance(settings, dict):
+            settings = {}
+        params["FeatureFinderMetaboIdent"] = settings | {
+            "model:type": "symmetric",
+            "extract:mz_window": 10.0,
+            "extract:rt_window": 0.0,
+            "detect:peak_width": 60.0,
+            "extract:n_isotopes": 5,
+            "extract:isotope_pmin": 0.0,
+            "EMGScoring:init_mom": False,
+        }
+        params["lfq-measure"] = "model_area"
+        params["lfq-normalization"] = "total"
+        self.parameter_manager.write_parameters(params)
+        self.parameter_manager.clear_parameter_session_state()
+        self.params = params
+
     def execution(self) -> bool:
+        """Execute a selected experiment, retaining scalar legacy-run support."""
+        if isinstance(self.params.get("mzML-files"), list):
+            return run_experiment(self, Workflow._execute_single)
+        return self._execute_single()
+
+    def _execute_single(self) -> bool:
         """Run the tools and propagate failure; never save Streamlit state here."""
         from src.naseweis_provenance import (
             acquisition_fingerprint,
@@ -407,6 +477,10 @@ class Workflow(WorkflowManager):
             return False
         if lfq_enabled:
             error = prepare_lfq(params, self.parameter_manager, params["mzML-files"])
+            if error is None and params.get("lfq-measure") == "model_area" and (
+                params["FeatureFinderMetaboIdent"]["model:type"] == "none"
+            ):
+                error = "Fitted model areas require symmetric or asymmetric elution-model fitting. Choose a fitted model under Advanced or use native feature areas."
             if error is None:
                 error = validate_lfq_spectra(params["mzML-files"])
             if error:
@@ -501,7 +575,14 @@ class Workflow(WorkflowManager):
         self.parameter_manager.write_parameters(params)
         self.params = params
         database = [params["digest-files"] if cached_digest else params["fasta-files"]]
-        if use_decoys:
+        shared_database = getattr(self, "_shared_database", None)
+        if use_decoys and shared_database is not None:
+            if not Path(shared_database).is_file():
+                self.logger.log("ERROR: The experiment's shared target-decoy database is unavailable.")
+                return False
+            database = [str(shared_database)]
+            self.logger.log("Reusing the experiment's target-decoy RNA database...")
+        elif use_decoys:
             output = self.file_manager.get_files(
                 "decoys.fasta"
                 if enabled(decoy.get("only_decoy", False))
@@ -523,6 +604,11 @@ class Workflow(WorkflowManager):
                 database = [str(combined)]
             else:
                 database = output
+        if use_decoys:
+            self._generated_database = database[0]
+        if hasattr(self, "_experiment_sample_id"):
+            params["_database_used"] = database[0]
+            self.parameter_manager.write_parameters(params)
         tab_out = self.file_manager.get_files(
             "search.mzTab", set_results_dir="mztab_results"
         )
@@ -565,6 +651,23 @@ class Workflow(WorkflowManager):
         return True
 
     def results(self) -> None:
+        if not render_experiment_results(self, self._render_sample_results):
+            self._single_results()
+
+    def _render_sample_results(self, sample: dict) -> None:
+        """Reuse saved-run viewers with this sample's own parameters and evidence."""
+        child = copy(self)
+        child.results_dir = sample_results(self.results_dir, sample["id"])
+        child._sample_snapshot = sample_snapshot(self.results_dir, sample["id"])
+        child._sample_log_dir = child._sample_snapshot.parent / "logs"
+        child._single_results()
+
+    def _result_snapshot(self) -> Path:
+        if hasattr(self, "_sample_snapshot"):
+            return self._sample_snapshot
+        return self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
+
+    def _single_results(self) -> None:
         # Legacy runs used extensionless names; retain access after migration.
         result_file = self.results_dir / "mztab_results" / "search.mzTab"
         if not result_file.exists():
@@ -588,11 +691,7 @@ class Workflow(WorkflowManager):
             matches["Sequence"].nunique() if not matches.empty else 0,
         )
         cols[2].metric("RNA accessions", len(tables.get("NUC", [])))
-        snapshot = (
-            self.runs.params_file(self.run_id)
-            if self.run_id
-            else self.parameter_manager.params_file
-        )
+        snapshot = self._result_snapshot()
         online = st.session_state.get("settings", {}).get("online_deployment", False)
         table_tab, spectra_tab, coverage_tab, lfq_tab, download_tab = st.tabs(
             ["Matches", "Spectra", "Sequence coverage", "Quantification", "Export"]
@@ -672,11 +771,7 @@ class Workflow(WorkflowManager):
                         artifact.name,
                         "text/plain",
                     )
-            snapshot = (
-                self.runs.params_file(self.run_id)
-                if self.run_id
-                else self.parameter_manager.params_file
-            )
+            snapshot = self._result_snapshot()
             if snapshot.is_file():
                 st.download_button(
                     "Download search parameters",
@@ -684,9 +779,10 @@ class Workflow(WorkflowManager):
                     "naseweis-parameters.json",
                     "application/json",
                 )
-            log_path = (
-                self.runs.run_dir(self.run_id) if self.run_id else self.workflow_dir
-            ) / "logs" / "all.log"
+            log_dir = getattr(self, "_sample_log_dir", None)
+            if log_dir is None:
+                log_dir = (self.runs.run_dir(self.run_id) if self.run_id else self.workflow_dir) / "logs"
+            log_path = log_dir / "all.log"
             if log_path.is_file():
                 st.download_button("Download run log", log_path.read_bytes(), "naseweis-run.log", "text/plain")
 
@@ -697,10 +793,10 @@ class Workflow(WorkflowManager):
         available = [
             run for run in self.runs.list_runs()
             if run["status"] == "finished" or (
-                run["status"] == "failed" and any(
+                run["status"] == "failed" and ((self.runs.results_dir(run["id"]) / "experiment.json").is_file() or any(
                     (self.runs.results_dir(run["id"]) / "mztab_results" / name).is_file()
                     for name in ("search.mzTab", "tab_out")
-                )
+                ))
             )
         ]
         if not available:
@@ -758,7 +854,7 @@ class Workflow(WorkflowManager):
                             "expected_rt": st.column_config.NumberColumn("Expected RT (s)", format="%.2f"),
                         },
                     )
-                    snapshot = self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
+                    snapshot = self._result_snapshot()
                     render_lfq_viewer(
                         self.results_dir, snapshot, table, self.workflow_dir,
                         st.session_state.get("settings", {}).get("online_deployment", False),
@@ -766,7 +862,7 @@ class Workflow(WorkflowManager):
             except (OSError, ValueError) as error:
                 st.error(f"Could not read this run's feature table: {error}")
         else:
-            snapshot = self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
+            snapshot = self._result_snapshot()
             try:
                 saved = json.loads(snapshot.read_text())
                 if not isinstance(saved, dict):

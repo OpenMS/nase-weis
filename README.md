@@ -1,12 +1,14 @@
 # NASEWEIS
 
 Search RNA oligonucleotides in MS/MS data with the OpenMS
-**NucleicAcidSearchEngine**. Upload an MS/MS run and an RNA FASTA database or cached digest,
+**NucleicAcidSearchEngine**. Select MS/MS acquisitions and an RNA FASTA database or cached digest,
 configure digestion, modifications and mass tolerances, then inspect spectrum
 matches and reference sequence coverage. Optional label-free quantification follows
 the RNA TOPPAS chain: NASE targets → FeatureFinderMetaboIdent on the original
-acquisition → TextExporter. It retains raw per-acquisition feature intensities,
-featureXML and a TSV with all metadata; it does not link or normalize runs.
+acquisition → TextExporter. LFQ is off by default. When enabled for multiple
+selected samples, it produces a combined modified-RNA abundance matrix,
+optional total-area normalization and relative condition comparisons. Native
+feature areas, featureXML, metadata and viewer evidence are retained per sample.
 
 Built on [OpenMS/streamlit-template](https://github.com/OpenMS/streamlit-template),
 with Streamlit 1.54, pinned **OpenMS nightly 3.7** command-line tools and pyOpenMS **3.7.0.dev20261110** from the official nightly wheel index. The framework is merged from `main`, so
@@ -100,7 +102,8 @@ not require Redis or a CAPTCHA.
    tolerances. Enable **Advanced** for MVH scoring, FLASH MS1 precursor correction,
    MS2 deisotoping, filters, mass-accuracy weighting, reporting and export options.
    Settings are saved automatically; hiding Advanced preserves their saved values.
-   On the **Quantification** tab, optionally enable LFQ for acquisitions containing
+   Select the acquisitions to analyze and assign their conditions and replicates.
+   On the **Quantification** tab, optionally enable LFQ for at least two acquisitions containing
    MS1 scans. Its extraction settings are under Advanced and default to the saved
    Herbert TOPPAS workflow. See [LFQ settings and provenance](docs/lfq.md).
 3. On **Run**, optionally enter a run name, then select **Start Workflow**.
