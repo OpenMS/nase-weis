@@ -129,7 +129,7 @@ class Workflow(WorkflowManager):
                 ["csv"],
             ),
         ]:
-            with st.expander(label, expanded=True):
+            with st.expander(label, expanded=key in {"mzML-files", "fasta-files"}):
                 self.ui.upload_widget(key=key, name=label, file_types=extensions)
 
     def configure(self) -> None:
