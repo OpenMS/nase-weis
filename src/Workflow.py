@@ -130,7 +130,12 @@ class Workflow(WorkflowManager):
             ),
         ]:
             with st.expander(label, expanded=key in {"mzML-files", "fasta-files"}):
-                self.ui.upload_widget(key=key, name=label, file_types=extensions)
+                self.ui.upload_widget(
+                    key=key,
+                    name=label,
+                    file_types=extensions,
+                    manual_import_sources=("pride",) if key == "bedrmod-mapping-files" else (),
+                )
 
     def configure(self) -> None:
         advanced = st.toggle(
@@ -271,7 +276,7 @@ class Workflow(WorkflowManager):
                 "bedrmod-mapping-files",
                 name="Custom modification mapping (optional)",
                 multiple=False,
-                upload={"file_types": ["csv"]},
+                upload={"file_types": ["csv"], "manual_import_sources": ("pride",)},
             )
             st.caption(
                 "RNA mode excludes protein-only entrapment and neighbor searches. The standalone DecoyDatabase page exposes the complete tool."

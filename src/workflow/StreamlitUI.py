@@ -201,6 +201,7 @@ class StreamlitUI:
         fallback: Union[List, str] = None,
         suggest_folders: bool = False,
         list_files: bool = True,
+        manual_import_sources: tuple[str, ...] = (),
     ) -> None:
         """
         Handles file uploads through the Streamlit interface, supporting both direct
@@ -222,6 +223,9 @@ class StreamlitUI:
                 as conditions.
             list_files (bool, optional): Show the current files below the
                 upload. ``select_input_file(upload=...)`` lists them itself.
+            manual_import_sources (tuple[str, ...], optional): Import sources
+                such as ``"pride"`` that require an explicit destination for
+                this input instead of matching its extension automatically.
         """
         files_dir = Path(self.workflow_dir, "input-files", key)
 
@@ -249,6 +253,7 @@ class StreamlitUI:
             "file_types": list(file_types),
             "dir": str(files_dir),
             "fallback": [str(Path(f).resolve()) for f in ([fallback] if isinstance(fallback, str) else fallback or [])],
+            "manual_import_sources": list(manual_import_sources),
         }
 
         local_mode = st.session_state.location == "local"
