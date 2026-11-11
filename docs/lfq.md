@@ -74,6 +74,12 @@ floating-point areas.
 For a condition comparison, technical acquisitions sharing a condition and
 biological replicate are averaged first. The app reports biological-replicate
 means, standard deviations, observation counts, ratios and log2 fold changes.
+An interactive scatter plots denominator means on x and numerator means on y,
+with an equality diagonal and optional RNA labels. It uses the saved area
+measure and normalization, and offers logarithmic or linear axes. Unpaired or
+nonpositive measurements are excluded explicitly, never placed at zero. SVG
+and offline HTML exports retain the plotted values. A single-condition
+experiment can compare two individual acquisitions instead of condition means.
 Ratios require positive measurements in both conditions. Fractionated experiments
 are not supported by this RNA aggregation yet; use fraction 1. Duplicate
 acquisition paths or ambiguous duplicate basenames are rejected.

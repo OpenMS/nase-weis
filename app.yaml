@@ -90,6 +90,9 @@ sync:
     - src/naseweis_experiment.py
     - src/naseweis_experiment_ui.py
     - src/naseweis_comparison.py
+    - src/naseweis_comparison_plots.py
+    - src/naseweis_coverage.py
+    - src/naseweis_result_plots_ui.py
     - src/naseweis_viewers.py
     - src/naseweis_msdata.py
     - src/naseweis_annotations.py

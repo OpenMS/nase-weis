@@ -229,8 +229,9 @@ def test_saved_experiment_shows_full_matrices_missing_cells_and_condition_compar
     app = app_for(folder, mode="results")
     app.run(timeout=30)
     assert not app.exception
-    assert [tab.label for tab in app.tabs][:3] == [
+    assert [tab.label for tab in app.tabs][:4] == [
         "Experiment summary",
+        "Sequence coverage",
         "Quantification",
         "Sample details",
     ]

@@ -38,6 +38,17 @@ explanation where an MS1 view is unavailable.
 
 ## Identification evidence
 
+Open **Results → Sequence coverage** for an experiment overview, with or without
+LFQ. The wrapped reference sequence has packed oligonucleotide bars grouped by
+condition or acquisition, a shared spectrum-count color scale and markers for
+native RNA modifications, including bracketed bases and D/I/Y codes. Hover shows exact sequences, coordinates
+and counts. Terminal phosphate groups are not modification sites. Counts pool
+identification evidence across acquisitions; they are not normalized abundances.
+Ambiguous mappings retain shared evidence at each native position. Conflicting
+reference sequences cannot share a coverage axis. Coverage is also available
+for each individual sample and older single-acquisition runs. Download the
+self-contained HTML or vector SVG; neither requires the original acquisition.
+
 Open **Results → Spectra** for the selected saved run. The acquisition path
 comes only from that run's parameter snapshot. Missing source data or an
 unreadable snapshot produces a clear message; the current search input is
@@ -71,6 +82,17 @@ theoretical spectra or pair experimental/theoretical debug exports by position;
 those files can contain pre-filter candidates and parallel output ordering.
 
 ## LFQ evidence
+
+Multi-sample **Results → Quantification** includes a condition-versus-condition
+RNA abundance scatter, with the denominator on x, numerator on y and an equality
+diagonal. It uses the same biological-replicate means, area measure and
+normalization as the saved comparison table. Both logarithmic and linear views
+omit targets without positive measurements in both groups, with the omitted
+count stated explicitly. Open markers are unmodified RNAs; filled markers have
+native modification or ambiguity annotations. Select identities to
+label, hover for means and replicate counts, and export SVG from the camera
+button or download the offline HTML. Experiments with one condition can instead
+compare two individual acquisitions; those values are not condition means.
 
 Open **Results → Quantification → Open LFQ feature viewer**. Each feature
 retains its native charge, label, RT, m/z and raw area; coincident features are

@@ -62,6 +62,8 @@ def test_native_nme1_cohort_shares_database_and_recovers_twofold_ms1_signal(
     import pyopenms as oms
 
     from src.naseweis_comparison import compare_conditions, load_comparison
+    from src.naseweis_comparison_plots import condition_scatter
+    from src.naseweis_coverage import build_coverage, render_coverage_svg
     from src.naseweis_experiment import load_manifest, sample_results, sample_snapshot
     from src.naseweis_lfq import read_lfq_table
     from src.naseweis_results import read_mztab
@@ -127,7 +129,7 @@ def test_native_nme1_cohort_shares_database_and_recovers_twofold_ms1_signal(
     assert tools.count("DecoyDatabase") == 1
     for tool in ["NucleicAcidSearchEngine", "FeatureFinderMetaboIdent", "TextExporter"]:
         assert tools.count(tool) == 2
-    databases, identifications = [], []
+    databases, identifications, coverage_groups = [], [], []
     for sample, acquisition in zip(manifest["samples"], files):
         assert sample["status"] == "finished"
         snapshot = json.loads(sample_snapshot(results, sample["id"]).read_text())
@@ -143,9 +145,9 @@ def test_native_nme1_cohort_shares_database_and_recovers_twofold_ms1_signal(
         assert (directory / "quantification/features.featureXML").is_file()
         table = read_lfq_table(directory / "quantification/features.tsv")
         assert not table.empty and (table["charge"] < 0).all()
-        identifications.append(
-            read_mztab(directory / "mztab_results/search.mzTab")["OSM"]
-        )
+        tables = read_mztab(directory / "mztab_results/search.mzTab")
+        identifications.append(tables["OSM"])
+        coverage_groups.append((sample["condition"], tables))
     assert databases[0] == databases[1]
     assert Path(databases[0]).is_relative_to(results)
     native_searches = [
@@ -161,6 +163,20 @@ def test_native_nme1_cohort_shares_database_and_recovers_twofold_ms1_signal(
         identifications[0][columns].sort_values(columns).reset_index(drop=True),
         identifications[1][columns].sort_values(columns).reset_index(drop=True),
     )
+    accession = coverage_groups[0][1]["NUC"].iloc[0]["accession"]
+    coverage = build_coverage(coverage_groups, accession)
+    control_hits, treatment_hits = [group["hits"] for group in coverage["groups"]]
+    assert control_hits == treatment_hits
+    expected_positions = {
+        position
+        for row in coverage_groups[0][1]["OLI"].to_dict("records")
+        if row["accession"] == accession
+        for position in range(int(row["start"]), int(row["end"]) + 1)
+    }
+    assert coverage["covered_bases"] == len(expected_positions)
+    native_counts = identifications[0].drop_duplicates(["sequence", "spectra_ref"])["sequence"].value_counts()
+    assert all(hit["count"] == native_counts[hit["sequence"]] for hit in control_hits)
+    assert '<svg xmlns="http://www.w3.org/2000/svg"' in render_coverage_svg(coverage)
 
     comparison = load_comparison(results)
     raw, relative = comparison["raw"], comparison["abundances"]
@@ -182,6 +198,16 @@ def test_native_nme1_cohort_shares_database_and_recovers_twofold_ms1_signal(
         summary.loc[abundant, "numerator_n"]
         == summary.loc[abundant, "denominator_n"]
         == 1
+    )
+    scatter = condition_scatter(summary, "treatment", "control")
+    plotted = {
+        row[0]: (x, y)
+        for trace in scatter.data[1:]
+        for x, y, row in zip(trace.x, trace.y, trace.customdata)
+    }
+    assert plotted[abundant] == (
+        summary.loc[abundant, "denominator_mean"],
+        summary.loc[abundant, "numerator_mean"],
     )
 
 

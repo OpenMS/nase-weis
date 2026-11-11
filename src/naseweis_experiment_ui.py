@@ -9,6 +9,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src.naseweis_result_plots_ui import (
+    render_acquisition_scatter,
+    render_experiment_coverage,
+    render_lfq_scatter,
+)
 from src.naseweis_tools import enabled
 from src.workflow.ExperimentalDesign import (
     default_design,
@@ -251,53 +256,55 @@ def _render_comparison(root, samples, prefix):
     for warning in metadata.get("warnings", []):
         st.warning(str(warning))
     labels = _sample_labels(samples)
-    st.markdown("**RNA abundance matrix**")
-    st.dataframe(matrix.rename(columns=labels), use_container_width=True)
-    with st.expander("Raw extracted areas"):
+    with st.expander("Abundance tables and downloads"):
+        st.markdown("**RNA abundance matrix**")
+        st.dataframe(matrix.rename(columns=labels), use_container_width=True)
+        st.markdown("**Raw extracted areas**")
         st.dataframe(raw.rename(columns=labels), use_container_width=True)
-    _download_frame(
-        "Download abundance matrix (TSV)", matrix, "abundances.tsv", index_label="label"
-    )
-    _download_frame(
-        "Download raw areas (TSV)", raw, "raw-abundances.tsv", index_label="label"
-    )
-    _download_frame(
-        "Download sample design (TSV)",
-        design,
-        "sample-design.tsv",
-        index_label="sample_id",
-    )
-    st.download_button(
-        "Download comparison settings (JSON)",
-        json.dumps(metadata, indent=2).encode(),
-        "comparison.json",
-        "application/json",
-    )
+        _download_frame(
+            "Download abundance matrix (TSV)", matrix, "abundances.tsv", index_label="label"
+        )
+        _download_frame(
+            "Download raw areas (TSV)", raw, "raw-abundances.tsv", index_label="label"
+        )
+        _download_frame(
+            "Download sample design (TSV)",
+            design,
+            "sample-design.tsv",
+            index_label="sample_id",
+        )
+        st.download_button(
+            "Download comparison settings (JSON)",
+            json.dumps(metadata, indent=2).encode(),
+            "comparison.json",
+            "application/json",
+        )
     if matrix.empty:
         st.info("No quantified RNA targets are available for comparison.")
         return
-    target = st.selectbox(
-        "RNA oligonucleotide", list(matrix.index), key=f"{prefix}-target"
-    )
-    values = matrix.loc[target]
-    figure = go.Figure(
-        go.Bar(
-            x=[labels.get(column, column) for column in matrix.columns],
-            y=[None if pd.isna(value) else float(value) for value in values],
-            name=str(target),
+    with st.expander("Individual oligonucleotide abundances"):
+        target = st.selectbox(
+            "RNA oligonucleotide", list(matrix.index), key=f"{prefix}-target"
         )
-    )
-    figure.update_layout(
-        title=str(target),
-        xaxis_title="Acquisition",
-        yaxis_title=(
-            "Relative RNA abundance"
-            if normalization == "total"
-            else MEASURES.get(measure, measure)
-        ),
-        showlegend=False,
-    )
-    st.plotly_chart(figure, use_container_width=True, key=f"{prefix}-abundance")
+        values = matrix.loc[target]
+        figure = go.Figure(
+            go.Bar(
+                x=[labels.get(column, column) for column in matrix.columns],
+                y=[None if pd.isna(value) else float(value) for value in values],
+                name=str(target),
+            )
+        )
+        figure.update_layout(
+            title=str(target),
+            xaxis_title="Acquisition",
+            yaxis_title=(
+                "Relative RNA abundance"
+                if normalization == "total"
+                else MEASURES.get(measure, measure)
+            ),
+            showlegend=False,
+        )
+        st.plotly_chart(figure, use_container_width=True, key=f"{prefix}-abundance")
     conditions = sorted(
         {
             str(value).strip()
@@ -308,6 +315,9 @@ def _render_comparison(root, samples, prefix):
     if len(conditions) < 2:
         st.info(
             "Assign at least two conditions to compare biological replicate abundances."
+        )
+        render_acquisition_scatter(
+            matrix, design, labels, prefix, measure=measure, normalization=normalization
         )
         return
     st.markdown("**Condition comparison**")
@@ -332,6 +342,10 @@ def _render_comparison(root, samples, prefix):
     except (ValueError, KeyError) as error:
         st.error(f"Could not compare these conditions: {error}")
         return
+    render_lfq_scatter(
+        contrasts, numerator, denominator, prefix,
+        measure=measure, normalization=normalization,
+    )
     leading = ["log2_fold_change", "ratio"]
     st.dataframe(
         contrasts[leading + [column for column in contrasts if column not in leading]],
@@ -384,8 +398,8 @@ def render_experiment_results(workflow, render_sample):
     prefix = (
         "experiment-" + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
     )
-    summary, quantification, details = st.tabs(
-        ["Experiment summary", "Quantification", "Sample details"]
+    summary, coverage, quantification, details = st.tabs(
+        ["Experiment summary", "Sequence coverage", "Quantification", "Sample details"]
     )
     with summary:
         finished = sum(sample["status"] == "finished" for sample in samples)
@@ -407,6 +421,8 @@ def render_experiment_results(workflow, render_sample):
             st.warning(
                 "This experiment has incomplete acquisitions. Review their statuses and available sample results below."
             )
+    with coverage:
+        render_experiment_coverage(root, samples, prefix)
     with quantification:
         if not manifest.get("lfq_enabled", False):
             st.info(

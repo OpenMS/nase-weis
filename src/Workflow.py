@@ -6,7 +6,6 @@ from copy import copy, deepcopy
 from pathlib import Path
 
 import streamlit as st
-from streamlit.components.v1 import html
 
 from src.naseweis_experiment import run_experiment, sample_results, sample_snapshot
 from src.naseweis_experiment_ui import (
@@ -23,7 +22,8 @@ from src.naseweis_lfq import (
     read_lfq_table,
     run_lfq,
 )
-from src.naseweis_results import coverage_html, match_table, read_mztab
+from src.naseweis_result_plots_ui import render_coverage_groups
+from src.naseweis_results import match_table, read_mztab
 from src.naseweis_tools import (
     DECOY_INPUTS,
     DECOY_OUTPUTS,
@@ -715,24 +715,9 @@ class Workflow(WorkflowManager):
                 self.workflow_dir, online,
             )
         with coverage_tab:
-            references = tables.get("NUC")
-            if references is not None and not references.empty:
-                accession = st.selectbox(
-                    "RNA accession", references["accession"].dropna().unique()
-                )
-                try:
-                    plot = coverage_html(tables, accession)
-                    html(plot, height=550, scrolling=True)
-                    st.download_button(
-                        "Download coverage (HTML)",
-                        plot,
-                        "naseweis-coverage.html",
-                        "text/html",
-                    )
-                except (ValueError, KeyError, IndexError) as error:
-                    st.warning(f"Coverage is unavailable: {error}")
-            else:
-                st.info("No RNA sequence coverage to display for this run.")
+            render_coverage_groups(
+                [("This acquisition", tables)], f"coverage-{self.results_dir}"
+            )
         with lfq_tab:
             self.quantification_results()
         with download_tab:
