@@ -332,7 +332,24 @@ def _render_comparison(root, samples, prefix):
     except (ValueError, KeyError) as error:
         st.error(f"Could not compare these conditions: {error}")
         return
-    st.dataframe(contrasts, use_container_width=True)
+    leading = ["log2_fold_change", "ratio"]
+    st.dataframe(
+        contrasts[leading + [column for column in contrasts if column not in leading]],
+        use_container_width=True,
+        column_config={
+            "_index": "RNA oligonucleotide",
+            "log2_fold_change": st.column_config.NumberColumn(
+                "Log2 fold change", format="%.3g"
+            ),
+            "ratio": st.column_config.NumberColumn("Ratio", format="%.3g"),
+            "numerator_mean": f"{numerator} mean",
+            "numerator_std": f"{numerator} SD",
+            "numerator_n": f"{numerator} replicates",
+            "denominator_mean": f"{denominator} mean",
+            "denominator_std": f"{denominator} SD",
+            "denominator_n": f"{denominator} replicates",
+        },
+    )
     exported = contrasts.copy()
     for field, value in reversed(
         [

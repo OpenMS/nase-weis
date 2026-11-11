@@ -3129,6 +3129,10 @@ Started: {status.get('started_at', 'N/A')}""")
             cleaned_dict = {}
 
             for key, value in d.items():
+                # Run evidence (including structured sample designs) is saved
+                # separately; only scientific defaults belong in this summary.
+                if key.startswith("_") and key != "_defaults":
+                    continue
                 if isinstance(value, dict):
                     # Recursively clean nested dictionaries
                     nested_cleaned = remove_full_paths(value)

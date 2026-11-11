@@ -248,6 +248,15 @@ def test_saved_experiment_shows_full_matrices_missing_cells_and_condition_compar
         for element in app.dataframe
         if "log2_fold_change" in element.value.columns
     )
+    assert list(contrast.columns[:2]) == ["log2_fold_change", "ratio"]
+    displayed = next(
+        element
+        for element in app.dataframe
+        if "log2_fold_change" in element.value.columns
+    )
+    labels = json.loads(displayed.proto.columns)
+    assert labels["log2_fold_change"]["label"] == "Log2 fold change"
+    assert labels["ratio"]["label"] == "Ratio"
     assert contrast.loc["ACGU", "ratio"] == 2
     assert contrast.loc["ACGU", "log2_fold_change"] == 1
     assert contrast.loc["ACGU", "numerator_n"] == 2
@@ -500,6 +509,8 @@ def test_downloaded_contrast_keeps_selected_direction_and_area_settings(
     app.run(timeout=30)
     assert not app.exception
     table = pd.read_csv(io.BytesIO(captured["tsv"]), sep="\t")
+    assert list(table.columns[-2:]) == ["ratio", "log2_fold_change"]
+    assert table.loc[table["label"] == "ACGU", "ratio"].item() == 2
     assert table["numerator_condition"].eq("treated").all()
     assert table["denominator_condition"].eq("control").all()
     assert table["measure"].eq("intensity").all()

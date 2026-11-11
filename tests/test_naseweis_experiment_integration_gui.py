@@ -71,6 +71,24 @@ def test_full_configure_selection_deselection_and_clear_keep_lfq_off(app, topp_s
     assert not any(box.key == "naseweis-param-lfq-measure" for box in app.selectbox)
 
 
+def test_configure_and_method_summary_work_after_experiment_design_snapshot(app, topp_schemas):
+    folder, paths = seed_inputs(app)
+    params_file = folder / "params.json"
+    params = json.loads(params_file.read_text())
+    params["mzML-files"] = paths
+    params["_sample_design"] = [
+        {"file": path, "condition": "control", "replicate": number, "fraction": 1}
+        for number, path in enumerate(paths, 1)
+    ]
+    params_file.write_text(json.dumps(params))
+    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    configure(app)
+    assert app.multiselect(key="naseweis-param-mzML-files").value == paths
+    assert app.checkbox(key="naseweis-param-enable-lfq").value is False
+    assert any(button.label == "📑 Method summary" for button in app.get("download_button"))
+    assert json.loads(params_file.read_text())["_sample_design"] == params["_sample_design"]
+
+
 def test_explicit_fitted_preset_persists_and_hiding_controls_does_not_enable_lfq(
     app, topp_schemas
 ):
