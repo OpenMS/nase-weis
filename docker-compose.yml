@@ -10,9 +10,14 @@ services:
     environment:
       WORKSPACES_DIR: /workspaces-streamlit-template
       LOCAL_WORKSPACES_DIR: /workspaces-streamlit-template
+      LOCAL_DATA_HOST_DIR: ${NASEWEIS_DATA_DIR:-./data}
       STREAMLIT_SERVER_COUNT: "1"
     volumes:
       - naseweis-workspaces:/workspaces-streamlit-template
+      - type: bind
+        source: ${NASEWEIS_DATA_DIR:-./data}
+        target: /data
+        read_only: true
     healthcheck:
       test: ["CMD", "/root/miniforge3/envs/streamlit-env/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')"]
       interval: 10s

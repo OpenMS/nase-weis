@@ -79,6 +79,7 @@ sync:
     - default-parameters.json
     - presets.json
     - README.md
+    - docker-compose.yml
     - docs/lfq.md
     - docs/viewers.md
     - content/*
@@ -110,6 +111,7 @@ sync:
     - tests/data/naseweis/*
     - src/python-tools/*
     - example-data/*
+    - data/.gitkeep
     - assets/*
     - k8s/overlays/*
     - k8s/argocd/*

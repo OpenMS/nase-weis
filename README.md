@@ -26,6 +26,26 @@ Open [http://localhost:8501](http://localhost:8501). The service binds to
 loopback and stores workspaces in the `naseweis-workspaces` named volume.
 `docker compose down` stops the app without deleting its data.
 
+Put your input files in the **`data` folder beside `docker-compose.yml`**. You can
+move or copy mzML, FASTA, cached digest and other supported inputs there, including
+subfolders. In the app's file browser, choose **Data folder**, select
+**Refresh folder** after adding files, then select the files for your workflow.
+This folder is mounted read-only at `/data`; results stay in the workspace volume.
+Keep the selected inputs in place so saved runs can reopen their original data in
+the spectrum and LFQ viewers. Files in `data` are excluded from Git and container
+builds.
+
+To use an existing host folder instead, create a local `.env` file beside
+`docker-compose.yml` containing its absolute path:
+
+```dotenv
+NASEWEIS_DATA_DIR=/absolute/path/to/ms-data
+```
+
+Create the folder if needed, then run `docker compose up -d` to apply the mount.
+The app shows this host folder in its file browser. The local `.env` file is ignored
+by Git and container builds.
+
 ```bash
 docker compose ps
 docker compose logs --tail=100 naseweis
