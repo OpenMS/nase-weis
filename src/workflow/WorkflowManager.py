@@ -321,10 +321,10 @@ class WorkflowManager:
             try:
                 pid = int(pid_file.name)
                 os.kill(pid, signal.SIGTERM)
-                pid_file.unlink()
+                pid_file.unlink(missing_ok=True)
                 stopped = True
             except (ValueError, ProcessLookupError, PermissionError):
-                pid_file.unlink()  # Clean up stale PID file
+                pid_file.unlink(missing_ok=True)  # Polling may already have cleaned it up.
 
         # Clean up the pid directory
         shutil.rmtree(pid_dir, ignore_errors=True)

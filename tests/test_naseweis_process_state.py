@@ -1,6 +1,9 @@
 """Restart-orphaned PID files must not block valid UI recovery."""
 
 import importlib
+import os
+import signal
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -220,3 +223,85 @@ def test_ui_does_not_override_explicit_idle_status_with_a_pid_marker(markers, mo
     assert not any(button.label == "Stop Workflow" for button in app.button)
     lookup.assert_not_called()
     assert marker.exists()
+
+
+@pytest.mark.parametrize("returncode", [0, 3])
+@pytest.mark.parametrize("remove_directory", [False, True])
+def test_polling_finished_child_before_executor_cleanup_preserves_native_outcome(
+    tmp_path, monkeypatch, returncode, remove_directory
+):
+    """Poll a real exited child at the exact race boundary, without sleeps."""
+    cls = importlib.import_module("src.workflow.CommandExecutor").CommandExecutor
+    logger_cls = importlib.import_module("src.workflow.Logger").Logger
+    progress_module = importlib.import_module("src.workflow.progress")
+    executor = cls(tmp_path, logger_cls(tmp_path), SimpleNamespace())
+    executor.pid_dir.mkdir()
+    step = executor.progress.start_step("NativeChild", ["sample.mzML"])
+    stream_output = executor._stream_output
+    polls = []
+
+    def stream_then_poll(process, stderr_buffer, stdout_tail):
+        stream_output(process, stderr_buffer, stdout_tail)
+        assert process.wait(timeout=10) == returncode
+        marker = executor.pid_dir / str(process.pid)
+        assert marker.is_file()
+        # This is the same liveness check performed by the Run page. The
+        # child has exited but run_command has not reached its cleanup yet.
+        polls.append(local_workflow_running(executor.pid_dir))
+        assert not marker.exists()
+        if remove_directory:
+            executor.pid_dir.rmdir()
+
+    monkeypatch.setattr(executor, "_stream_output", stream_then_poll)
+    script = (
+        "import sys; print('native stdout', flush=True); "
+        "print('native diagnostic', file=sys.stderr, flush=True); "
+        f"sys.exit({returncode})"
+    )
+    assert executor.run_command([sys.executable, "-c", script], task=(step, 0)) is (returncode == 0)
+    assert polls == [False]
+    assert not list(executor.pid_dir.glob("*"))
+    state = progress_module.read_progress(tmp_path)
+    entry = state["steps"][step]["files"][0]
+    assert entry["status"] == ("done" if returncode == 0 else "failed")
+    assert entry["ended"] >= entry["started"]
+    errors = progress_module.failures(state)
+    if returncode == 0:
+        assert errors == []
+    else:
+        assert len(errors) == 1
+        assert errors[0]["returncode"] == returncode
+        assert errors[0]["context"] == "While running NativeChild on (sample.mzML)"
+        assert set(errors[0]["output"]) == {"native stdout", "native diagnostic"}
+        log = (tmp_path / "logs/minimal.log").read_text()
+        assert "ERROR: Command failed with exit code 3:" in log
+        assert "While running NativeChild on (sample.mzML) (exit code 3)" in log
+        assert "native diagnostic" in log
+
+
+@pytest.mark.parametrize("already_exited", [False, True])
+def test_stop_tolerates_marker_pruned_after_listing(
+    manager, markers, monkeypatch, already_exited
+):
+    """Cancellation can race the same UI poll in either kill outcome."""
+    folder, marker = markers
+    manager.logger = Mock()
+    evidence = folder.parent / "result.txt"
+    evidence.write_text("saved sample evidence")
+    kills = []
+
+    def kill_and_prune(pid, sig):
+        kills.append((pid, sig))
+        marker.unlink()
+        if already_exited:
+            raise ProcessLookupError("The child exited before cancellation")
+
+    monkeypatch.setattr(os, "kill", kill_and_prune)
+    assert manager._stop_local_workflow() is (not already_exited)
+    assert kills == [(54321, signal.SIGTERM)]
+    assert not folder.exists()
+    assert evidence.read_text() == "saved sample evidence"
+    if already_exited:
+        manager.logger.log.assert_not_called()
+    else:
+        manager.logger.log.assert_called_once_with("WORKFLOW CANCELLED")

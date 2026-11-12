@@ -229,8 +229,8 @@ class CommandExecutor:
         # Wait for process completion
         process.wait()
 
-        # Cleanup PID file
-        pid_file_path.unlink()
+        # Status polling can already have pruned this exited process's marker.
+        pid_file_path.unlink(missing_ok=True)
 
         end_time = time.time()
         execution_time = end_time - start_time
