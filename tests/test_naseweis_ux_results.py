@@ -150,6 +150,7 @@ def test_partial_experiment_keeps_sample_evidence_but_hides_complete_cohort_comp
     manifest["samples"][1].update(status="failed" if outcome == "failed" else "running", error="MS1 extraction interrupted")
     manifest_path.write_text(json.dumps(manifest))
     runs = RunManager(root.parents[2])
+    runs.finish(root.parent.name, "running")
     runs.finish(root.parent.name, outcome)
     _results_page(app)
     assert any("incomplete experiment" in item.value for item in app.warning)
@@ -167,7 +168,11 @@ def test_partial_experiment_keeps_sample_evidence_but_hides_complete_cohort_comp
 @pytest.mark.parametrize("outcome", ["failed", "cancelled", "running"])
 def test_nonfinished_run_does_not_publish_a_stale_complete_comparison(experiment_results, outcome):
     app, root, _inputs, _snapshots = experiment_results
-    RunManager(root.parents[2]).finish(root.parent.name, outcome)
+    runs = RunManager(root.parents[2])
+    # The worker can write comparison artifacts before finalizing its parent
+    # run. Cancellation must occur while that parent is still active.
+    runs.finish(root.parent.name, "running")
+    runs.finish(root.parent.name, outcome)
     before = (root / "experiment.json").read_bytes()
     _results_page(app)
     assert "Download matches (CSV)" in _downloads(app)

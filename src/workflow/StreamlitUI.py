@@ -69,6 +69,17 @@ def _txt(value) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
 
 
+def _read_workflow_log(path: Path):
+    """Read content and timestamp from one open file during log rotation."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            created = os.fstat(handle.fileno()).st_ctime
+            return created, handle.readlines()
+    except FileNotFoundError:
+        # Starting a workflow replaces its logs; the next poll can read them.
+        return None
+
+
 def _tags(param, key) -> list[str]:
     """A parameter's tags as str, whichever pyOpenMS gave them."""
     return [_txt(t) for t in param.getTags(key)]
@@ -2721,20 +2732,31 @@ class StreamlitUI:
             )
 
         with cols[2]:
+            import_key = f"{self.workflow_dir.resolve()}-parameter-import"
+            generation = st.session_state.get(import_key, 0)
             up = st.file_uploader(
                 "⬆️ Import parameters",
                 help="Import previously exported parameters.",
-                key="param_import_uploader"
+                key=f"{import_key}-{generation}",
             )
             if up is not None:
-                # encoding="utf-8" explicitly: the payload is decoded as utf-8
-                # just above, and writing it back in the platform codepage
-                # produced a params.json that no later utf-8 read could decode.
-                with open(self.parameter_manager.params_file, "w", encoding="utf-8") as f:
-                    f.write(up.read().decode("utf-8"))
-                self.parameter_manager.clear_parameter_session_state()
-                st.toast("Parameters imported")
-                st.rerun()
+                if self._import_parameters(up):
+                    self.parameter_manager.clear_parameter_session_state()
+                    st.session_state[import_key] = generation + 1
+                    st.toast("Parameters imported")
+                    st.rerun()
+
+    def _import_parameters(self, upload) -> bool:
+        """Validate imports before atomically replacing the saved settings."""
+        try:
+            params = json.loads(upload.getvalue().decode("utf-8"))
+            if not isinstance(params, dict):
+                raise ValueError("Parameters must be a JSON object.")
+            self.parameter_manager.write_parameters(params)
+        except (OSError, ValueError) as error:
+            st.error(f"Could not import parameters: {error} Existing settings were kept.")
+            return False
+        return True
 
     def execution_section(
         self,
@@ -2778,7 +2800,6 @@ class StreamlitUI:
             job_status = "running"
 
         log_path = Path(self.workflow_dir, "logs", log_level.replace(" ", "-") + ".log")
-        log_exists = log_path.exists()
 
         # Show queue status if available (online mode)
         if status.get("job_id"):
@@ -2804,6 +2825,11 @@ class StreamlitUI:
         # view's trailing elements on the page.
         status_area = st.empty()
         with status_area.container():
+            try:
+                log_snapshot = _read_workflow_log(log_path)
+            except (OSError, UnicodeError) as error:
+                log_snapshot = None
+                st.info(f"Workflow log is temporarily unavailable: {error}")
             if is_running:
                 # Real-time display during execution
                 spinner_text = "**Workflow running...**"
@@ -2814,9 +2840,8 @@ class StreamlitUI:
                 if job_status != "queued":
                     self._show_run_progress()
                 with st.spinner(spinner_text):
-                    if log_exists:
-                        with open(log_path, "r", encoding="utf-8") as f:
-                            lines = f.readlines()
+                    if log_snapshot is not None:
+                        _, lines = log_snapshot
                         if log_lines_count == "all":
                             display_lines = lines
                         else:
@@ -2830,13 +2855,12 @@ class StreamlitUI:
                     time.sleep(1)
                     st.rerun()
 
-            elif log_exists:
+            elif log_snapshot is not None:
                 # Static display after completion
+                created, lines = log_snapshot
                 st.markdown(
-                    f"**Workflow log file: {datetime.fromtimestamp(log_path.stat().st_ctime).strftime('%Y-%m-%d %H:%M')} CET**"
+                    f"**Workflow log file: {datetime.fromtimestamp(created).strftime('%Y-%m-%d %H:%M')} CET**"
                 )
-                with open(log_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
                 content = "".join(lines)
                 outcome = classify_log_outcome(content)
                 if outcome == "finished":

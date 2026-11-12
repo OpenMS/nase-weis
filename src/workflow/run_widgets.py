@@ -189,22 +189,38 @@ def run_manager_section(
 
         prepared = f"_runs-{slug}-zip-{run_id}"
         zip_path = Path(runs.workflow_dir, "downloads", f"{run_id}.zip")
-        if st.session_state.get(prepared) and zip_path.exists():
-            with open(zip_path, "rb") as f:
-                b_download.download_button(
-                    "⬇️", data=f, file_name=f"{run.get('name', run_id)}.zip",
-                    mime="application/zip", key=f"runs-{slug}-dl-{run_id}",
-                    help="Download the ZIP", width="stretch", type="primary",
-                )
+        archive = None
+        if st.session_state.get(prepared):
+            try:
+                # Another session may remove or replace a prepared archive.
+                # Bind the download to one complete read, not an earlier check.
+                archive = zip_path.read_bytes()
+            except FileNotFoundError:
+                st.session_state[prepared] = False
+                row.info("The prepared ZIP is no longer available. Prepare it again to download this run.")
+            except OSError as error:
+                st.session_state[prepared] = False
+                row.error(f"Could not read this run's ZIP: {error} Try preparing it again.")
+        if archive is not None:
+            b_download.download_button(
+                "⬇️", data=archive, file_name=f"{run.get('name', run_id)}.zip",
+                mime="application/zip", key=f"runs-{slug}-dl-{run_id}",
+                help="Download the ZIP", width="stretch", type="primary",
+            )
         elif b_download.button(
             "📦", key=f"runs-{slug}-zip-{run_id}", width="stretch",
             help="Pack results, parameters and logs of this run into a ZIP",
             disabled=status == RUNNING,
         ):
-            with st.spinner("Compressing..."):
-                runs.zip(run_id, exclude=exclude)
-            st.session_state[prepared] = True
-            st.rerun()
+            try:
+                with st.spinner("Compressing..."):
+                    runs.zip(run_id, exclude=exclude)
+            except OSError as error:
+                st.session_state[prepared] = False
+                row.error(f"Could not prepare this run's ZIP: {error} Refresh the run list or try again.")
+            else:
+                st.session_state[prepared] = True
+                st.rerun()
 
         with b_delete.popover(
             "🗑️", help="Delete", width="stretch", disabled=status == RUNNING,

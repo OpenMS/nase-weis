@@ -40,6 +40,7 @@ include =
     src/naseweis_provenance.py
     src/workflow/host_paths.py
     src/workflow/process_state.py
+    src/workflow/file_lock.py
     src/plot_full_coverage.py
 fail_under = 95
 precision = 2

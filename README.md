@@ -117,6 +117,8 @@ not require Redis or a CAPTCHA.
    before a run is created. The run name is kept while you return to Configure
    to correct the setup. Removing a selected database does not select another
    database automatically.
+   A workflow accepts one active analysis at a time, including across browser
+   tabs. After Stop, another analysis waits until tracked processes have exited.
 4. On **Results**, choose a completed run. Inspect matches and sequence
    coverage, plus the **Quantification** tab for LFQ results; download the selected
    native artifacts, CSV, coverage HTML and search parameters.
@@ -124,6 +126,10 @@ not require Redis or a CAPTCHA.
 Failed, cancelled or interrupted runs with saved identification artifacts also
 remain available as partial results. A complete LFQ comparison requires every
 acquisition to finish; partial evidence is not presented as a complete cohort.
+Run names and completion status are updated together safely when multiple tabs
+are open. If another tab removes a run or download, refresh and prepare the
+download again. Parameter imports validate the complete JSON before replacing
+saved settings; an invalid import leaves the previous settings intact.
 
 The example contains 512 MS1 and 2,116 MS2 spectra. With the tested OpenMS
 3.7 nightly container and default RNase T1 / 10 ppm settings, the example yields 163
