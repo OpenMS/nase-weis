@@ -6,7 +6,7 @@ from .CommandExecutor import CommandExecutor
 from .StreamlitUI import StreamlitUI
 from .FileManager import FileManager
 from .RunManager import RunManager, FINISHED, FAILED, CANCELLED, RUNNING
-from .process_state import local_workflow_running, pid_markers, prune_exited_marker
+from .process_state import local_workflow_running, owned_workflow_running, pid_markers, prune_exited_marker, register_process_marker, signal_owned_process
 from .file_lock import file_lock
 import multiprocessing
 import streamlit as st
@@ -128,23 +128,30 @@ class WorkflowManager:
 
     def _start_workflow_queued(self) -> None:
         """Submit workflow to Redis queue (online mode)"""
+        from .QueueManager import QueueStateUnavailableError
         from .tasks import execute_workflow
 
         # Same-named workflows in different workspaces can start together.
         job_id = f"workflow-{self.workflow_dir.name}-{uuid.uuid4().hex}"
 
         # Submit job to queue
-        submitted_id = self._queue_manager.submit_job(
-            func=execute_workflow,
-            kwargs={
-                "workflow_dir": str(self.workflow_dir),
-                "workflow_class": self.__class__.__name__,
-                "workflow_module": self.__class__.__module__,
-                "run_id": self.run_id if self.multi_run else None,
-            },
-            job_id=job_id,
-            description=f"Workflow: {self.name}"
-        )
+        try:
+            submitted_id = self._queue_manager.submit_job(
+                func=execute_workflow,
+                kwargs={
+                    "workflow_dir": str(self.workflow_dir),
+                    "workflow_class": self.__class__.__name__,
+                    "workflow_module": self.__class__.__module__,
+                    "run_id": self.run_id if self.multi_run else None,
+                },
+                job_id=job_id,
+                description=f"Workflow: {self.name}"
+            )
+        except QueueStateUnavailableError:
+            # The queue may have accepted the job before its acknowledgement
+            # was lost. Retain its ID and never start a duplicate locally.
+            self._queue_manager.store_job_id(self.workflow_dir, job_id)
+            raise
 
         if submitted_id:
             # Store job ID for status checking
@@ -189,7 +196,7 @@ class WorkflowManager:
             )
 
         try:
-            Path(self.executor.pid_dir, str(workflow_process.pid)).touch()
+            register_process_marker(Path(self.executor.pid_dir, str(workflow_process.pid)), workflow_process.pid)
         except OSError:
             if ended():
                 # A very fast worker can remove its tracking directory first.
@@ -262,15 +269,30 @@ class WorkflowManager:
             - queue_length: total jobs in queue, None if not queued
         """
         # Check queue status first (online mode)
-        if self._queue_manager and self._queue_manager.is_available:
+        if self._queue_manager:
+            from .QueueManager import QueueStateUnavailableError
+
             job_id = self._queue_manager.load_job_id(self.workflow_dir)
             if job_id:
-                job_info = self._queue_manager.get_job_info(job_id)
+                try:
+                    if not self._queue_manager.is_available:
+                        raise QueueStateUnavailableError("The queue is unavailable; the existing job cannot be confirmed stopped.")
+                    job_info = self._queue_manager.get_job_info(job_id)
+                except QueueStateUnavailableError as error:
+                    return {
+                        "running": True, "status": "unknown", "progress": None,
+                        "current_step": "Waiting for the queue to confirm the existing job status.",
+                        "job_id": job_id, "queue_position": None, "queue_length": None,
+                        "error": str(error),
+                    }
                 if job_info:
                     is_running = job_info.status.value in ["queued", "started"]
+                    state = job_info.status.value
+                    if not is_running and owned_workflow_running(self.executor.pid_dir):
+                        is_running, state = True, "stopping"
                     return {
                         "running": is_running,
-                        "status": job_info.status.value,
+                        "status": state,
                         "progress": job_info.progress,
                         "current_step": job_info.current_step,
                         "job_id": job_id,
@@ -283,7 +305,7 @@ class WorkflowManager:
                     }
                 else:
                     # Job not found, clear the stored job ID
-                    self._queue_manager.clear_job_id(self.workflow_dir)
+                    self._queue_manager.clear_job_id(self.workflow_dir, expected_job_id=job_id)
 
         # Fallback: check PID files (local mode)
         if local_workflow_running(self.executor.pid_dir):
@@ -331,12 +353,25 @@ class WorkflowManager:
             with file_lock(self.workflow_dir / ".locks" / "execution.lock", blocking=False):
                 acquired = True
                 # Try to cancel queue job first (online mode).
-                if self._queue_manager and self._queue_manager.is_available:
+                if self._queue_manager:
+                    from .QueueManager import QueueStateUnavailableError
+
                     job_id = self._queue_manager.load_job_id(self.workflow_dir)
-                    if job_id and self._queue_manager.cancel_job(job_id):
+                    if job_id:
+                        if not self._queue_manager.is_available or not self._queue_manager.cancel_job(job_id):
+                            self.logger.log("The queued job could not be confirmed cancelled. Its tracking was retained; retry when the queue is available.")
+                            return False
                         self.logger.log("WORKFLOW CANCELLED")
-                        shutil.rmtree(self.executor.pid_dir, ignore_errors=True)
                         self._mark_running_runs_cancelled()
+                        try:
+                            job_info = self._queue_manager.get_job_info(job_id)
+                        except QueueStateUnavailableError:
+                            job_info = None
+                        if job_info and job_info.status.value not in {"queued", "started"}:
+                            # RQ has acknowledged the stop. Any locally owned
+                            # leftovers can now be signalled without racing its
+                            # controller's work-horse termination/classification.
+                            self._stop_local_workflow(queued=True)
                         return True
                 stopped = self._stop_local_workflow()
                 if stopped:
@@ -354,9 +389,8 @@ class WorkflowManager:
             for run in self.runs.list_runs(RUNNING):
                 self.runs.finish(run["id"], CANCELLED)
 
-    def _stop_local_workflow(self) -> bool:
+    def _stop_local_workflow(self, *, queued=False) -> bool:
         """Stop locally running workflow process"""
-        import os
         import signal
 
         pid_dir = self.executor.pid_dir
@@ -368,9 +402,10 @@ class WorkflowManager:
 
         stopped = False
         for pid_file in markers:
+            pid = int(pid_file.name)
             try:
-                pid = int(pid_file.name)
-                os.kill(pid, signal.SIGTERM)
+                if not signal_owned_process(pid_file, signal.SIGTERM, prune_stale=not queued):
+                    continue
                 stopped = True
                 # Sending a signal does not mean the process has exited. Keep
                 # live tracking so another start cannot overlap its shutdown.

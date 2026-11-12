@@ -1,7 +1,7 @@
 """Restart-orphaned PID files must not block valid UI recovery."""
 
 import importlib
-import os
+import json
 import signal
 import sys
 from pathlib import Path
@@ -12,7 +12,7 @@ import psutil
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from src.workflow.process_state import local_workflow_running
+from src.workflow.process_state import local_workflow_running, process_namespace
 
 
 @pytest.fixture
@@ -172,7 +172,10 @@ def test_queue_status_remains_authoritative(manager, markers, monkeypatch, state
     monkeypatch.setattr("src.workflow.process_state.psutil.Process", lookup)
     assert manager.get_workflow_status()["running"] is expected
     assert markers[1].exists()
-    lookup.assert_not_called()
+    if expected:
+        lookup.assert_not_called()
+    else:
+        lookup.assert_called_once_with(54321)
 
 
 HARNESS = """
@@ -289,14 +292,20 @@ def test_stop_tolerates_marker_pruned_after_listing(
     evidence = folder.parent / "result.txt"
     evidence.write_text("saved sample evidence")
     kills = []
+    marker.write_text(json.dumps({"schema": 1, "pid": 54321, "create_time": 100.0, "namespace": process_namespace()}))
+    process = Mock()
+    process.create_time.return_value = 100.0
+    process.is_running.return_value = True
+    process.status.return_value = psutil.STATUS_SLEEPING
 
-    def kill_and_prune(pid, sig):
-        kills.append((pid, sig))
+    def kill_and_prune(sig):
+        kills.append((54321, sig))
         marker.unlink()
         if already_exited:
-            raise ProcessLookupError("The child exited before cancellation")
+            raise psutil.NoSuchProcess(54321)
 
-    monkeypatch.setattr(os, "kill", kill_and_prune)
+    process.send_signal.side_effect = kill_and_prune
+    monkeypatch.setattr("src.workflow.process_state.psutil.Process", Mock(return_value=process))
     assert manager._stop_local_workflow() is (not already_exited)
     assert kills == [(54321, signal.SIGTERM)]
     assert not folder.exists()

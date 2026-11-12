@@ -188,4 +188,3 @@ def test_filter_changes_do_not_apply_old_selected_row_positions_to_other_ions(ap
     assert rendered[-1] != old_key
     assert _selected_trace(app) is None
     assert _assignment_table(app)["observed_mz"].tolist() == [200.0]
-

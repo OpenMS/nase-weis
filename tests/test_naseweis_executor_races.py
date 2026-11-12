@@ -14,12 +14,15 @@ from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import psutil
 import pytest
 
 from src.workflow.process_state import (
     local_workflow_running,
     pid_markers,
+    process_namespace,
     prune_exited_marker,
+    register_process_marker,
 )
 
 
@@ -27,6 +30,20 @@ from src.workflow.process_state import (
 def executor(tmp_path):
     cls = importlib.import_module('src.workflow.CommandExecutor').CommandExecutor
     return cls(tmp_path, Mock(), SimpleNamespace(get_parameters_from_json=dict))
+
+
+def owned_process(marker, monkeypatch):
+    """Represent an owned process, including the birth recorded at spawn."""
+    pid = int(marker.name)
+    marker.write_text(json.dumps({'schema': 1, 'pid': pid, 'create_time': 100.0, 'namespace': process_namespace()}))
+    process = Mock()
+    process.pid = pid
+    process.create_time.return_value = 100.0
+    process.is_running.return_value = True
+    process.status.return_value = psutil.STATUS_SLEEPING
+    lookup = Mock(return_value=process)
+    monkeypatch.setattr(psutil, 'Process', lookup)
+    return process, lookup
 
 
 @pytest.mark.parametrize('failure', ['registration', 'stream'])
@@ -42,15 +59,11 @@ def test_failure_after_spawn_reaps_real_child_and_retains_original_error(executo
 
     monkeypatch.setattr(module.subprocess, 'Popen', record_child)
     if failure == 'registration':
-        native_touch = Path.touch
+        def cannot_register(_marker, _pid):
+            shutil.rmtree(executor.pid_dir)
+            raise FileNotFoundError('tracking directory removed during cancellation')
 
-        def touch(path, *args, **kwargs):
-            if path.parent == executor.pid_dir:
-                shutil.rmtree(executor.pid_dir)
-                raise FileNotFoundError('tracking directory removed during cancellation')
-            return native_touch(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, 'touch', touch)
+        monkeypatch.setattr(module, 'register_process_marker', cannot_register)
     else:
         monkeypatch.setattr(executor, '_stream_output', Mock(side_effect=RuntimeError('monitor failure')))
     step = executor.progress.start_step('NativeChild', ['sample.mzML'])
@@ -115,17 +128,18 @@ def test_stop_ignores_unowned_entries_and_tolerates_disappeared_markers(executor
     native_is_symlink = Path.is_symlink
     monkeypatch.setattr(Path, 'is_symlink', lambda path: path == link or native_is_symlink(path))
     marker = folder / '54321'
-    marker.touch()
+    process, lookup = owned_process(marker, monkeypatch)
     calls = []
 
-    def kill(pid, sig):
-        calls.append((pid, sig))
+    def kill():
+        calls.append((process.pid, 9))
         marker.unlink()
-        raise ProcessLookupError('exited while stopping')
+        raise psutil.NoSuchProcess(process.pid)
 
-    monkeypatch.setattr('src.workflow.CommandExecutor.os.kill', kill)
+    process.kill.side_effect = kill
     executor.stop()
     assert calls == [(54321, 9)]
+    assert all(call.args == (54321,) for call in lookup.call_args_list)
     assert notes.read_text() == 'preserve'
     assert (folder / '0').is_file()
     assert directory.is_dir() and link.is_symlink()
@@ -147,9 +161,11 @@ def test_unresponsive_untracked_child_is_killed_and_reaped(executor):
 def test_stop_retains_live_marker_if_signalling_is_denied(executor, monkeypatch):
     executor.pid_dir.mkdir()
     marker = executor.pid_dir / '54321'
-    marker.touch()
-    monkeypatch.setattr('src.workflow.CommandExecutor.os.kill', Mock(side_effect=PermissionError('cannot signal')))
+    process, _lookup = owned_process(marker, monkeypatch)
+    process.kill.side_effect = PermissionError('cannot signal')
     executor.stop()
+    process.kill.assert_called_once_with()
+    process.send_signal.assert_not_called()
     assert marker.is_file()
     messages = [call.args[0] for call in executor.logger.log.call_args_list]
     assert 'Some processes are still stopping or could not be stopped.' in messages
@@ -285,7 +301,7 @@ def test_signal_delivery_does_not_prune_a_real_child_that_has_not_exited(executo
     process = subprocess.Popen([sys.executable, '-c', script], stdout=subprocess.PIPE, text=True)
     executor.pid_dir.mkdir()
     marker = executor.pid_dir / str(process.pid)
-    marker.touch()
+    register_process_marker(marker, process.pid)
     try:
         assert process.stdout.readline().strip() == 'ready'
         process.send_signal(signal.SIGTERM)
@@ -303,17 +319,12 @@ def test_signal_delivery_does_not_prune_a_real_child_that_has_not_exited(executo
 
 
 def test_successful_stop_signal_retains_marker_until_process_exits(executor, monkeypatch):
-    import psutil
-
     executor.pid_dir.mkdir()
     marker = executor.pid_dir / '54321'
-    marker.touch()
-    process = Mock()
-    process.is_running.return_value = True
-    process.status.return_value = psutil.STATUS_SLEEPING
-    monkeypatch.setattr('src.workflow.process_state.psutil.Process', Mock(return_value=process))
-    monkeypatch.setattr('src.workflow.CommandExecutor.os.kill', Mock())
+    process, _lookup = owned_process(marker, monkeypatch)
     executor.stop()
+    process.kill.assert_called_once_with()
+    process.send_signal.assert_not_called()
     assert marker.is_file()
     assert local_workflow_running(executor.pid_dir)
     process.is_running.return_value = False

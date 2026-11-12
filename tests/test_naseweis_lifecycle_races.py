@@ -1,5 +1,6 @@
 """Force start, registration and cancellation races without timing sleeps."""
 
+import json
 import os
 import signal
 import subprocess
@@ -10,9 +11,11 @@ from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import psutil
 import pytest
 
 from src.workflow.file_lock import file_lock
+from src.workflow.process_state import process_namespace, register_process_marker
 from src.workflow.RunManager import RunManager
 from src.workflow.WorkflowManager import WorkflowManager
 
@@ -31,6 +34,20 @@ def manager(tmp_path):
     instance.run_id = None
     instance.multi_run = False
     return instance
+
+
+def owned_process(marker, monkeypatch):
+    """Use an explicit birth token rather than trusting a numeric filename."""
+    pid = int(marker.name)
+    marker.write_text(json.dumps({"schema": 1, "pid": pid, "create_time": 100.0, "namespace": process_namespace()}))
+    process = Mock()
+    process.pid = pid
+    process.create_time.return_value = 100.0
+    process.is_running.return_value = True
+    process.status.return_value = psutil.STATUS_SLEEPING
+    lookup = Mock(return_value=process)
+    monkeypatch.setattr(psutil, "Process", lookup)
+    return process, lookup
 
 
 def test_simultaneous_start_and_stop_cannot_enter_launch_in_another_session(manager):
@@ -113,15 +130,11 @@ def test_registration_failure_terminates_and_reaps_the_real_untracked_worker(man
         children.append(child)
         return child
 
-    touch = Path.touch
-
-    def cannot_track(path, *args, **kwargs):
-        if path.parent == manager.executor.pid_dir:
-            raise PermissionError("PID storage unavailable")
-        return touch(path, *args, **kwargs)
+    def cannot_track(_marker, _pid):
+        raise PermissionError("PID storage unavailable")
 
     monkeypatch.setattr(subprocess, "Popen", launch)
-    monkeypatch.setattr(Path, "touch", cannot_track)
+    monkeypatch.setitem(WorkflowManager._start_workflow_local.__globals__, "register_process_marker", cannot_track)
     try:
         with pytest.raises(PermissionError, match="PID storage unavailable"):
             manager._start_workflow_local()
@@ -155,7 +168,7 @@ def test_worker_ending_before_marker_registration_is_a_safe_noop(manager, monkey
         manager.executor.pid_dir.rmdir()
         raise FileNotFoundError("worker cleaned up")
 
-    monkeypatch.setattr(Path, "touch", already_cleaned)
+    monkeypatch.setitem(WorkflowManager._start_workflow_local.__globals__, "register_process_marker", already_cleaned)
     manager._start_workflow_local()
     assert not manager.executor.pid_dir.exists()
 
@@ -188,11 +201,15 @@ def test_cancellation_ignores_unowned_files_and_process_group_zero(manager, monk
     symbolic = folder / "54323"
     symbolic.symlink_to(files[1])
     valid = folder / "54321"
-    valid.touch()
-    kill = Mock()
-    monkeypatch.setattr(os, "kill", kill)
+    process, lookup = owned_process(valid, monkeypatch)
+
+    def kill(_sig):
+        process.is_running.return_value = False
+
+    process.send_signal.side_effect = kill
     assert manager._stop_local_workflow() is True
-    kill.assert_called_once_with(54321, signal.SIGTERM)
+    process.send_signal.assert_called_once_with(signal.SIGTERM)
+    assert all(call.args == (54321,) for call in lookup.call_args_list)
     assert all(path.read_text() == "keep" for path in files)
     assert directory.is_dir() and symbolic.is_symlink()
     assert not valid.exists()
@@ -202,10 +219,10 @@ def test_permission_denied_on_stop_keeps_process_tracking_and_does_not_cancel_ru
     folder = manager.executor.pid_dir
     folder.mkdir()
     marker = folder / "54321"
-    marker.touch()
+    process, _lookup = owned_process(marker, monkeypatch)
     manager.multi_run = True
     manager._mark_running_runs_cancelled = Mock()
-    monkeypatch.setattr(os, "kill", Mock(side_effect=PermissionError("denied")))
+    process.send_signal.side_effect = PermissionError("denied")
     assert manager.stop_workflow() is False
     assert marker.is_file()
     manager._mark_running_runs_cancelled.assert_not_called()
@@ -215,13 +232,14 @@ def test_permission_denied_on_stop_keeps_process_tracking_and_does_not_cancel_ru
 def test_cancellation_does_not_remove_child_registered_after_snapshot(manager, monkeypatch):
     folder = manager.executor.pid_dir
     folder.mkdir()
-    (folder / "54321").touch()
+    process, _lookup = owned_process(folder / "54321", monkeypatch)
     late_child = folder / "54322"
 
     def signal_parent(*_args):
         late_child.touch()
+        process.is_running.return_value = False
 
-    monkeypatch.setattr(os, "kill", signal_parent)
+    process.send_signal.side_effect = signal_parent
     assert manager._stop_local_workflow() is True
     assert late_child.is_file()
 
@@ -231,7 +249,7 @@ def test_delayed_process_exit_keeps_start_blocked_until_shutdown_finishes(manage
     folder = manager.executor.pid_dir
     folder.mkdir()
     marker = folder / str(child.pid)
-    marker.touch()
+    register_process_marker(marker, child.pid)
     manager._start_workflow_local = Mock()
     try:
         # Deliberately delay delivery: the OS can accept a termination request

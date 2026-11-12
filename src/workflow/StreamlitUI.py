@@ -2836,6 +2836,10 @@ class StreamlitUI:
                 if job_status == "queued":
                     pos = status.get("queue_position", "?")
                     spinner_text = f"**Waiting in queue (position {pos})...**"
+                elif job_status == "unknown":
+                    spinner_text = "**Waiting for queue status...**"
+                elif job_status == "stopping":
+                    spinner_text = "**Waiting for workflow processes to exit...**"
 
                 if job_status != "queued":
                     self._show_run_progress()
@@ -2972,6 +2976,8 @@ class StreamlitUI:
             "finished": ("Completed", "success"),
             "failed": ("Failed", "error"),
             "canceled": ("Cancelled", "warning"),
+            "unknown": ("Waiting for queue status", "warning"),
+            "stopping": ("Stopping", "warning"),
         }
 
         label, msg_type = status_display.get(job_status, ("Unknown", "info"))
@@ -3007,6 +3013,9 @@ class StreamlitUI:
 
         elif job_status == "canceled":
             st.warning(f"**Status: {label}** - Workflow was cancelled.")
+        elif job_status in {"unknown", "stopping"}:
+            detail = status.get("error") or status.get("current_step") or "Wait for confirmation before starting another analysis."
+            st.warning(f"**Status: {label}** - {detail}")
 
         # Expandable job details
         with st.expander("Job Details", expanded=False):

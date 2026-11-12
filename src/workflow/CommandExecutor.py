@@ -14,7 +14,7 @@ import importlib.util
 import json
 import tempfile
 import streamlit as st
-from .process_state import pid_markers, prune_exited_marker
+from .process_state import pid_markers, prune_exited_marker, register_process_marker, signal_owned_process
 
 class CommandExecutor:
     """
@@ -226,7 +226,7 @@ class CommandExecutor:
         stdout_tail: deque = deque(maxlen=OUTPUT_TAIL)
 
         try:
-            pid_file_path.touch()
+            register_process_marker(pid_file_path, child_pid)
             # Real-time output capture, followed by reaping the child.
             self._stream_output(process, stderr_buffer, stdout_tail)
             process.wait()
@@ -550,7 +550,7 @@ class CommandExecutor:
         incomplete = False
         for marker in pid_markers(self.pid_dir):
             try:
-                os.kill(int(marker.name), 9)
+                signal_owned_process(marker, 9)
             except ProcessLookupError:
                 pass
             except (OSError, OverflowError) as error:
