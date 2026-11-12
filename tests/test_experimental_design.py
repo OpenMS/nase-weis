@@ -33,6 +33,26 @@ def test_default_design_does_not_guess_conditions():
     assert list(design["replicate"]) == [1, 2, 3, 4]
 
 
+def test_fresh_empty_selection_loads_and_can_be_selected_then_cleared(tmp_path):
+    empty = load_design(tmp_path, [])
+    assert empty.empty
+    assert list(empty.columns) == COLUMNS
+    assert empty["file"].dtype == default_design(FILES)["file"].dtype
+    selected = align_design(empty, FILES[:1])
+    assert selected.to_dict("records") == [
+        {"file": "ctrl_1.mzML", "condition": "", "replicate": 1, "fraction": 1}
+    ]
+    assert align_design(selected, []).empty
+
+
+def test_clearing_selection_does_not_change_the_stored_design(tmp_path):
+    path = save_design(tmp_path, _design(), FILES)
+    before = path.read_bytes()
+    assert load_design(tmp_path, []).empty
+    assert path.read_bytes() == before
+    pd.testing.assert_frame_equal(load_design(tmp_path, FILES), _design())
+
+
 def test_openms_design_round_trip_and_loads_in_pyopenms(tmp_path):
     text = to_openms_design(_design(), FILES)
     path = tmp_path / "design.tsv"

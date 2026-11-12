@@ -9,6 +9,26 @@ from test_naseweis_lfq_workflow import lfq_workflow  # noqa: F401
 from test_naseweis_workflow import workflow  # noqa: F401
 
 
+@pytest.mark.parametrize("selected", [None, "", "   ", [], [None], ["/data/one.mzML", None], {"bad": "selection"}])
+def test_invalid_selection_cannot_create_a_run_or_rewrite_the_design(workflow, monkeypatch, selected):  # noqa: F811
+    import streamlit as st
+
+    from src.workflow.ExperimentalDesign import design_path
+    from src.workflow.RunManager import RunManager
+
+    workflow.params["mzML-files"] = selected
+    workflow.parameter_manager.write_parameters(workflow.params)
+    before = workflow.parameter_manager.params_file.read_bytes()
+    workflow.runs = RunManager(workflow.workflow_dir)
+    monkeypatch.setattr(st, "session_state", {})
+    with pytest.raises(ValueError, match="Select.*Configure"):
+        workflow._new_run()
+    assert workflow.runs.list_runs() == []
+    assert not design_path(workflow.workflow_dir).exists()
+    assert workflow.parameter_manager.params_file.read_bytes() == before
+    workflow.executor.run_topp.assert_not_called()
+
+
 def test_start_snapshots_the_design_in_selected_file_order(workflow, monkeypatch):  # noqa: F811
     import streamlit as st
 

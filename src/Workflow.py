@@ -111,6 +111,9 @@ class Workflow(WorkflowManager):
             super().start_workflow()
         except (OSError, ValueError) as error:
             st.error(f"Cannot start this analysis: {error}")
+            # Keep validation visible instead of entering the generic start
+            # spinner and immediately rerunning the page after a failed start.
+            st.stop()
 
     def _new_run(self) -> None:
         """Freeze the selected sample design together with the run parameters."""
@@ -119,8 +122,19 @@ class Workflow(WorkflowManager):
 
         params = self.parameter_manager.read_parameters_strict()
         selected = params.get("mzML-files")
+        if not selected or (isinstance(selected, str) and not selected.strip()):
+            raise ValueError(
+                "Select at least one MS/MS acquisition on Configure → Identification before starting the analysis."
+            )
+        if not isinstance(selected, (str, list)) or (
+            isinstance(selected, list)
+            and any(not isinstance(path, str) or not path.strip() for path in selected)
+        ):
+            raise ValueError(
+                "The saved MS/MS acquisition selection is invalid. Select the files again on Configure → Identification."
+            )
         if isinstance(selected, list):
-            paths = [path for path in selected if isinstance(path, str)]
+            paths = list(selected)
             source = design_path(self.workflow_dir)
             if source.is_file():
                 validate_design_source(source.read_bytes())

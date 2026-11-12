@@ -5,6 +5,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import streamlit as st
@@ -38,6 +39,22 @@ def seed_inputs(app):
     configure(app)
     first = folder / "input-files/mzML-files/NME1.mzML"
     return folder, [str(first), str(second)]
+
+
+def test_start_without_selected_acquisitions_keeps_guidance_visible_and_creates_no_run(app, monkeypatch):
+    from src.workflow.RunManager import RunManager
+
+    worker = Mock()
+    monkeypatch.setattr("src.workflow.WorkflowManager.WorkflowManager._start_workflow_local", worker)
+    app.run(timeout=30)
+    app.switch_page("content/topp_workflow_execution.py").run(timeout=30)
+    assert not app.exception
+    next(button for button in app.button if button.label == "Start Workflow").click().run(timeout=30)
+    assert not app.exception
+    assert any("Select at least one MS/MS acquisition" in error.value for error in app.error)
+    assert not any("float64" in error.value for error in app.error)
+    assert RunManager(Path(app.session_state.workspace) / "naseweis").list_runs() == []
+    worker.assert_not_called()
 
 
 def test_full_configure_selection_deselection_and_clear_keep_lfq_off(app, topp_schemas):
