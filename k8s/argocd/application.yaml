@@ -8,7 +8,7 @@
 # secret. See docs/kubernetes-deployment.md, "GitOps with Argo CD".
 #
 # First apply on a cluster that already runs the app: remove the `automated`
-# block, check `argocd app diff streamlit-template`, sync once by hand, then apply this
+# block, check `argocd app diff naseweis`, sync once by hand, then apply this
 # file unchanged.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -18,7 +18,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/poshul/nase-weis.git
+    repoURL: https://github.com/OpenMS/nase-weis.git
     targetRevision: main
     path: k8s/overlays/prod
   destination:

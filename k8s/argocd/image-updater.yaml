@@ -1,7 +1,7 @@
 # Argo CD Image Updater: deploys every new release of this app. It watches
-# ghcr.io/poshul/nase-weis for release images (`^v[0-9]+(\.[0-9]+)*-full$`; the per-commit,
+# ghcr.io/openms/nase-weis for release images (`^v[0-9]+(\.[0-9]+)*-full$`; the per-commit,
 # `-simple`, `-amd64`/`-arm64` and moving tags never match), picks the most
-# recently built one, and sets it on the `streamlit-template` Application (write-back
+# recently built one, and sets it on the `naseweis` Application (write-back
 # `argocd`, so nothing is committed to the repo). Needs Image Updater >= 1.0
 # (the ImageUpdater CRD) installed in the argocd namespace.
 #
@@ -20,10 +20,10 @@ spec:
   writeBackConfig:
     method: argocd
   applicationRefs:
-    - namePattern: streamlit-template
+    - namePattern: naseweis
       images:
         - alias: app
-          imageName: ghcr.io/poshul/nase-weis
+          imageName: ghcr.io/openms/nase-weis
           commonUpdateSettings:
             updateStrategy: newest-build
             allowTags: 'regexp:^v[0-9]+(\.[0-9]+)*-full$'

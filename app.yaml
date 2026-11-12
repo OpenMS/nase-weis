@@ -6,9 +6,9 @@ app:
   slug: naseweis
   name: NASEWEIS
   description: RNA oligonucleotide identification and optional MS1 label-free quantification with OpenMS.
-  repository: poshul/nase-weis
+  repository: OpenMS/nase-weis
   domain: other
-  image: ghcr.io/poshul/nase-weis
+  image: ghcr.io/openms/nase-weis
 inputs:
   mzML-files:
     types: [mzML, raw, d]
