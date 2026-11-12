@@ -19,7 +19,7 @@ future template updates retain their Git history.
 Docker and Docker Compose are sufficient; OpenMS and Python are included.
 
 ```bash
-git clone https://github.com/poshul/nase-weis.git
+git clone https://github.com/OpenMS/nase-weis.git
 cd nase-weis
 docker compose up -d --build
 ```

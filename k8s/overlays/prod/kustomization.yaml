@@ -19,7 +19,7 @@ commonLabels:
 
 images:
   - name: openms-streamlit
-    newName: ghcr.io/poshul/nase-weis
+    newName: ghcr.io/openms/nase-weis
     newTag: main-full
 
 patches:

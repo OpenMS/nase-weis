@@ -55,5 +55,5 @@ with st.expander("Input formats and search guidance"):
 Parameters, input files and completed runs are kept in your workspace. Each new run keeps its own results and parameter snapshot.
 """)
 st.caption(
-    "Powered by OpenMS and pyOpenMS · [NucleicAcidSearchEngine publication](https://doi.org/10.1038/s41467-020-14665-7) · [Source code](https://github.com/poshul/nase-weis)"
+    "Powered by OpenMS and pyOpenMS · [NucleicAcidSearchEngine publication](https://doi.org/10.1038/s41467-020-14665-7) · [Source code](https://github.com/OpenMS/nase-weis)"
 )
