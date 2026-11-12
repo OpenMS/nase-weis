@@ -99,12 +99,28 @@ def configure_experiment_inputs(workflow):
     if selected is None or selected == "":
         selected = []
     if not isinstance(selected, list) or any(
-        not isinstance(path, str) for path in selected
+        not isinstance(path, str) or not path.strip() for path in selected
     ):
         st.error(
             "The saved acquisition selection is invalid. Select the input files again."
         )
+        if st.button("Reset acquisition selection", key=f"{widget}-reset"):
+            params = workflow.parameter_manager.read_parameters_strict()
+            params[key] = []
+            workflow.parameter_manager.write_parameters(params)
+            st.session_state[widget] = []
+            st.session_state.pop(f"_pending-{widget}", None)
+            st.rerun()
         return
+    available = set(workflow.ui._input_file_options(key))
+    unavailable = [path for path in selected if path not in available]
+    if unavailable:
+        st.warning(
+            "Previously selected acquisitions are no longer available in this workspace: "
+            + ", ".join(Path(path).name for path in unavailable)
+            + ". Add them again with Browse or select other inputs."
+        )
+        selected = [path for path in selected if path in available]
     if value != selected or workflow.params.get(key) != selected:
         st.session_state[widget] = selected
         if not workflow.parameter_manager.save_parameters():
@@ -118,7 +134,7 @@ def configure_experiment_inputs(workflow):
         reactive=True,
         upload={"file_types": ["mzML", "raw", "d"]},
     )
-    selected = st.session_state.get(widget, selected)
+    selected = st.session_state.get(widget, workflow.ui.params.get(key, []))
     workflow.params[key] = list(selected)
     workflow.ui.params[key] = list(selected)
     st.caption(
@@ -395,6 +411,17 @@ def render_experiment_results(workflow, render_sample):
     if manifest is None:
         return False
     samples = manifest["samples"]
+    partial_run = getattr(workflow, "_result_run_status", None) in {
+        "failed", "cancelled", "interrupted"
+    }
+
+    def displayed_status(sample):
+        # A stopped worker cannot finalize its manifest. Retain the saved file,
+        # but do not present its unfinished steps as currently running.
+        if partial_run and sample["status"] in {"pending", "running"}:
+            return "not completed"
+        return sample["status"]
+
     prefix = (
         "experiment-" + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
     )
@@ -414,6 +441,7 @@ def render_experiment_results(workflow, render_sample):
             "error",
         ]
         table = pd.DataFrame(samples).reindex(columns=columns)
+        table["status"] = [displayed_status(sample) for sample in samples]
         st.dataframe(
             table.dropna(axis=1, how="all"), hide_index=True, use_container_width=True
         )
@@ -429,7 +457,8 @@ def render_experiment_results(workflow, render_sample):
                 "This is an identification-only experiment. Label-free quantification was not enabled for this run."
             )
         elif (
-            manifest.get("status") != "finished"
+            partial_run
+            or manifest.get("status") != "finished"
             or manifest.get("comparison_status") != "finished"
             or not all(sample["status"] == "finished" for sample in samples)
         ):
@@ -448,7 +477,7 @@ def render_experiment_results(workflow, render_sample):
                 "Acquisition details",
                 list(by_id),
                 format_func=lambda sample_id: (
-                    f"{labels[sample_id]} · {by_id[sample_id]['status']}"
+                    f"{labels[sample_id]} · {displayed_status(by_id[sample_id])}"
                 ),
                 key=f"{prefix}-sample",
             )

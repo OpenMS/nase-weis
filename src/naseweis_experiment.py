@@ -145,7 +145,12 @@ def _selected_paths(params: dict) -> list[Path]:
             raise ValueError(
                 "Each selected acquisition must be one existing file path."
             )
-        path = Path(value).resolve(strict=True)
+        try:
+            path = Path(value).resolve(strict=True)
+        except OSError as error:
+            raise ValueError(
+                f"Selected acquisition is unavailable: {Path(value).name}. Select an existing acquisition on Configure."
+            ) from error
         suffix = path.suffix.lower()
         if suffix not in {".mzml", ".raw", ".d"} or not (
             path.is_file() if suffix != ".d" else path.is_dir()
@@ -227,16 +232,17 @@ def _design_samples(params: dict, paths: list[Path], lfq: bool) -> list[dict]:
     ]
 
 
-def _preflight(params: dict) -> tuple[list[dict], bool]:
+def preflight_experiment(params: dict) -> tuple[list[dict], bool]:
+    """Validate selection, immutable design and comparison choices before work."""
     paths = _selected_paths(params)
     lfq = enabled(params.get("enable-lfq", False))
     if lfq and len(paths) < 2:
         raise ValueError("Relative LFQ requires at least two selected acquisitions.")
     samples = _design_samples(params, paths, lfq)
     if lfq:
-        if params.get("lfq-measure", "intensity") not in {"intensity", "model_area"}:
+        if params.get("lfq-measure", "intensity") not in ("intensity", "model_area"):
             raise ValueError("Choose LFQ measure intensity or model_area.")
-        if params.get("lfq-normalization", "total") not in {"total", "none"}:
+        if params.get("lfq-normalization", "total") not in ("total", "none"):
             raise ValueError("Choose LFQ normalization total or none.")
         if params.get("lfq-measure", "intensity") == "model_area":
             defaults = params.get("_defaults", {})
@@ -249,7 +255,7 @@ def _preflight(params: dict) -> tuple[list[dict], bool]:
             ):
                 raise ValueError("Invalid saved feature extraction settings.")
             model = (model_defaults | model_overrides).get("model:type", "none")
-            if model not in {"symmetric", "asymmetric"}:
+            if model not in ("symmetric", "asymmetric"):
                 raise ValueError(
                     "Fitted model_area requires a symmetric or asymmetric elution model."
                 )
@@ -377,7 +383,7 @@ def run_experiment(workflow, execute_sample) -> bool:
     directory is shared so the existing cancellation controls still apply.
     """
     try:
-        samples, lfq = _preflight(workflow.params)
+        samples, lfq = preflight_experiment(workflow.params)
     except (OSError, ValueError, TypeError) as error:
         workflow.logger.log(f"ERROR: Cannot start experiment: {error}")
         return False

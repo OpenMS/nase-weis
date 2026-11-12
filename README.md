@@ -113,9 +113,17 @@ not require Redis or a CAPTCHA.
    MS1 scans. Its extraction settings are under Advanced and default to the saved
    Herbert TOPPAS workflow. See [LFQ settings and provenance](docs/lfq.md).
 3. On **Run**, optionally enter a run name, then select **Start Workflow**.
+   Missing inputs, deleted selections and incompatible LFQ settings are checked
+   before a run is created. The run name is kept while you return to Configure
+   to correct the setup. Removing a selected database does not select another
+   database automatically.
 4. On **Results**, choose a completed run. Inspect matches and sequence
    coverage, plus the **Quantification** tab for LFQ results; download the selected
    native artifacts, CSV, coverage HTML and search parameters.
+
+Failed, cancelled or interrupted runs with saved identification artifacts also
+remain available as partial results. A complete LFQ comparison requires every
+acquisition to finish; partial evidence is not presented as a complete cohort.
 
 The example contains 512 MS1 and 2,116 MS2 spectra. With the tested OpenMS
 3.7 nightly container and default RNase T1 / 10 ppm settings, the example yields 163

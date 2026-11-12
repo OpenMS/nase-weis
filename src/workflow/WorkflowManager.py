@@ -6,6 +6,7 @@ from .CommandExecutor import CommandExecutor
 from .StreamlitUI import StreamlitUI
 from .FileManager import FileManager
 from .RunManager import RunManager, FINISHED, FAILED, CANCELLED, RUNNING
+from .process_state import local_workflow_running
 import multiprocessing
 import streamlit as st
 import shutil
@@ -94,10 +95,11 @@ class WorkflowManager:
 
     def _new_run(self) -> None:
         """Create the run this start writes into, and show it on the results pages."""
-        from .run_widgets import run_name_key, set_selected_run
+        from .run_widgets import clear_run_name, pending_run_name, set_selected_run
 
-        name = st.session_state.pop(run_name_key(self.runs), "")
+        name = pending_run_name(self.runs)
         self.run_id = self.runs.new_run(name, Path(self.workflow_dir, "params.json"))
+        clear_run_name(self.runs)
         self._use_run(self.run_id)
         set_selected_run(self.runs, self.run_id)
 
@@ -243,8 +245,7 @@ class WorkflowManager:
                     self._queue_manager.clear_job_id(self.workflow_dir)
 
         # Fallback: check PID files (local mode)
-        pid_dir = self.executor.pid_dir
-        if pid_dir.exists() and list(pid_dir.iterdir()):
+        if local_workflow_running(self.executor.pid_dir):
             return {
                 "running": True,
                 "status": "running",

@@ -34,6 +34,7 @@ from src.naseweis_tools import (
     tool_schema,
     validate_search_options,
 )
+from src.naseweis_validation import validate_startup
 from src.naseweis_viewers import render_identification_viewer, render_lfq_viewer
 from src.workflow.WorkflowManager import WorkflowManager
 
@@ -117,7 +118,7 @@ class Workflow(WorkflowManager):
 
     def _new_run(self) -> None:
         """Freeze the selected sample design together with the run parameters."""
-        from src.naseweis_experiment import validate_design_source
+        from src.naseweis_experiment import preflight_experiment, validate_design_source
         from src.workflow.ExperimentalDesign import design_path, load_design
 
         params = self.parameter_manager.read_parameters_strict()
@@ -133,23 +134,26 @@ class Workflow(WorkflowManager):
             raise ValueError(
                 "The saved MS/MS acquisition selection is invalid. Select the files again on Configure → Identification."
             )
-        if isinstance(selected, list):
-            paths = list(selected)
-            source = design_path(self.workflow_dir)
-            if source.is_file():
-                validate_design_source(source.read_bytes())
-            design = load_design(self.workflow_dir, paths)
-            params["_sample_design"] = [
-                {
-                    "file": path,
-                    "condition": str(row["condition"]),
-                    "replicate": int(row["replicate"]),
-                    "fraction": int(row["fraction"]),
-                }
-                for path, (_, row) in zip(paths, design.iterrows())
-            ]
-            self.parameter_manager.write_parameters(params)
-            self.params = params
+        paths = list(selected) if isinstance(selected, list) else [selected]
+        source = design_path(self.workflow_dir)
+        if source.is_file():
+            validate_design_source(source.read_bytes())
+        design = load_design(self.workflow_dir, paths)
+        params["mzML-files"] = paths
+        params["_sample_design"] = [
+            {
+                "file": path,
+                "condition": str(row["condition"]),
+                "replicate": int(row["replicate"]),
+                "fraction": int(row["fraction"]),
+            }
+            for path, (_, row) in zip(paths, design.iterrows())
+        ]
+        preflight_experiment(params)
+        for path in paths:
+            validate_startup(self, params | {"mzML-files": path}, Workflow._execute_single)
+        self.parameter_manager.write_parameters(params)
+        self.params = params
         super()._new_run()
 
     def load_example_data(self) -> None:
@@ -415,14 +419,30 @@ class Workflow(WorkflowManager):
             return run_experiment(self, Workflow._execute_single)
         return self._execute_single()
 
-    def _execute_single(self) -> bool:
+    def _execute_single(self, *, validate_only: bool = False) -> bool:
         """Run the tools and propagate failure; never save Streamlit state here."""
         from src.naseweis_provenance import (
             acquisition_fingerprint,
             assert_acquisition_unchanged,
         )
 
-        cached_digest = self.params.get("database-source", "FASTA") == "Cached digest"
+        defaults = self.params.get("_defaults", {})
+        if not isinstance(defaults, dict) or not isinstance(self.params.get("_flag_params", {}), dict):
+            self.logger.log("ERROR: Invalid saved parameter defaults or flags. Repair the imported parameters or load defaults on Configure.")
+            return False
+        for tool in ("NucleicAcidSearchEngine", "DecoyDatabase"):
+            if not isinstance(defaults.get(tool, {}), dict) or not isinstance(self.params.get(tool, {}), dict):
+                self.logger.log(f"ERROR: Invalid saved {tool} settings. Repair the imported parameters or load defaults on Configure.")
+                return False
+        exports = self.params.get("search-exports", ["id_out"])
+        if not isinstance(exports, list) or any(not isinstance(option, str) for option in exports):
+            self.logger.log("ERROR: Select valid additional output files on Configure.")
+            return False
+        source = self.params.get("database-source", "FASTA")
+        if source not in ("FASTA", "Cached digest"):
+            self.logger.log("ERROR: Choose FASTA or Cached digest as the search database source on Configure.")
+            return False
+        cached_digest = source == "Cached digest"
         for key, label in [
             ("mzML-files", "MS spectra"),
             ("digest-files", "cached RNA digest")
@@ -500,7 +520,10 @@ class Workflow(WorkflowManager):
             if error:
                 self.logger.log(f"ERROR: {error}")
                 return False
-        cutoff = float(params.get("FDR_cutoff", 0.05))
+        try:
+            cutoff = float(params.get("FDR_cutoff", 0.05))
+        except (TypeError, ValueError, OverflowError):
+            cutoff = float("nan")
         if not 0 <= cutoff <= 1:
             self.logger.log("ERROR: Maximum q-value must be between 0 and 1.")
             return False
@@ -575,6 +598,12 @@ class Workflow(WorkflowManager):
                     f"ERROR: This NASE installation cannot generate {SEARCH_EXPORTS[option][0]}; use the pinned nightly runtime."
                 )
                 return False
+        mapping = params.get("bedrmod-mapping-files")
+        if mapping and (not isinstance(mapping, str) or not Path(mapping).is_file()):
+            self.logger.log("ERROR: The selected custom modification mapping no longer exists. Choose an existing mapping on Configure or clear its selection.")
+            return False
+        if validate_only:
+            return True
         # The manager points at this run's snapshot in both local and queue mode.
         # Imported snapshots cannot claim provenance for the selected input.
         params.pop("_acquisition_fingerprint", None)
@@ -786,13 +815,26 @@ class Workflow(WorkflowManager):
                 st.download_button("Download run log", log_path.read_bytes(), "naseweis-run.log", "text/plain")
 
     def select_run(self, label: str = "Run", key: str = "") -> str | None:
-        """Keep identification artifacts accessible if downstream LFQ fails."""
+        """Keep saved evidence accessible after failed, cancelled or interrupted runs."""
         from src.workflow.run_widgets import run_label, selected_run_key
 
+        runs = self.runs.list_runs()
+        workflow_running = (
+            self.get_workflow_status().get("running", False)
+            if any(run["status"] == "running" for run in runs) else False
+        )
+        statuses = {
+            run["id"]: (
+                "interrupted" if run["status"] == "running" and not workflow_running
+                else run["status"]
+            )
+            for run in runs
+        }
         available = [
-            run for run in self.runs.list_runs()
+            run for run in runs
             if run["status"] == "finished" or (
-                run["status"] == "failed" and ((self.runs.results_dir(run["id"]) / "experiment.json").is_file() or any(
+                statuses[run["id"]] in {"failed", "cancelled", "interrupted"}
+                and ((self.runs.results_dir(run["id"]) / "experiment.json").is_file() or any(
                     (self.runs.results_dir(run["id"]) / "mztab_results" / name).is_file()
                     for name in ("search.mzTab", "tab_out")
                 ))
@@ -812,15 +854,21 @@ class Workflow(WorkflowManager):
         run_id = st.selectbox(
             label, list(choices), key=widget,
             format_func=lambda value: run_label(choices[value]) + (
-                " · Failed / partial results" if choices[value]["status"] == "failed" else ""
+                f" · {statuses[value].capitalize()} / partial results"
+                if statuses[value] != "finished" else ""
             ),
             on_change=store_selection,
-            help="Choose a saved run. Failed runs with search artifacts remain available for inspecting partial outputs.",
+            help="Choose a saved run. Stopped or failed runs with saved artifacts remain available for inspecting partial outputs.",
         )
         store_selection()
         self._use_run(run_id)
-        if choices[run_id]["status"] == "failed":
-            st.warning("This run failed. Available outputs may be incomplete; inspect this run's saved log on Export before interpreting them.")
+        self._result_run_status = statuses[run_id]
+        if statuses[run_id] != "finished":
+            state = (
+                "failed" if statuses[run_id] == "failed"
+                else f"was {statuses[run_id]}"
+            )
+            st.warning(f"This run {state}. Available outputs may be incomplete; inspect this run's saved log on Export before interpreting them.")
         return run_id
 
     def quantification_results(self) -> None:

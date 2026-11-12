@@ -6,6 +6,7 @@ from pathlib import Path
 import streamlit as st
 
 from src.naseweis_tools import DECOY_INPUTS, DECOY_OUTPUTS, tool_flags, tool_schema
+from src.naseweis_validation import validate_startup
 from src.workflow.WorkflowManager import WorkflowManager
 
 
@@ -16,6 +17,18 @@ class DecoyWorkflow(WorkflowManager):
 
     def __init__(self):
         super().__init__("Decoy Database", st.session_state["workspace"])
+
+    def start_workflow(self) -> None:
+        try:
+            super().start_workflow()
+        except (OSError, ValueError) as error:
+            st.error(f"Cannot start this database build: {error}")
+            st.stop()
+
+    def _new_run(self) -> None:
+        params = self.parameter_manager.read_parameters_strict()
+        validate_startup(self, params, DecoyWorkflow.execution)
+        super()._new_run()
 
     def upload(self):
         self.ui.upload_widget(
@@ -69,7 +82,7 @@ class DecoyWorkflow(WorkflowManager):
                     upload={"file_types": ["fasta", "fa", "faa"]},
                 )
 
-    def execution(self) -> bool:
+    def execution(self, *, validate_only: bool = False) -> bool:
         files = self.params.get("database-files", [])
         if (
             not isinstance(files, list)
@@ -77,6 +90,15 @@ class DecoyWorkflow(WorkflowManager):
             or not all(isinstance(p, str) and Path(p).is_file() for p in files)
         ):
             self.logger.log("ERROR: Select at least one existing FASTA database.")
+            return False
+        defaults = self.params.get("_defaults", {})
+        if (
+            not isinstance(defaults, dict)
+            or not isinstance(defaults.get("DecoyDatabase", {}), dict)
+            or not isinstance(self.params.get("DecoyDatabase", {}), dict)
+            or not isinstance(self.params.get("_flag_params", {}), dict)
+        ):
+            self.logger.log("ERROR: Invalid saved DecoyDatabase settings. Repair the imported parameters or load defaults on Configure.")
             return False
         if not self.parameter_manager.create_ini("DecoyDatabase"):
             self.logger.log(
@@ -125,6 +147,8 @@ class DecoyWorkflow(WorkflowManager):
         params.setdefault("_flag_params", {})["DecoyDatabase"] = tool_flags(
             self.parameter_manager.ini_dir / "DecoyDatabase.ini", ["only_decoy"]
         )
+        if validate_only:
+            return True
         self.parameter_manager.write_parameters(params)
         io = {
             "in": [files],

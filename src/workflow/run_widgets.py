@@ -281,19 +281,54 @@ def run_import(runs: RunManager, expanded: bool = False) -> None:
 
 
 def run_name_key(runs: RunManager) -> str:
-    """Session-state key of the name typed for the next run."""
+    """Widget key of the name typed for the next run."""
     return f"runs-{_slug(runs)}-next-name"
+
+
+def _run_name_draft_key(runs: RunManager) -> str:
+    """A non-widget draft survives page changes and belongs to one workspace."""
+    return f"_runs-{runs.workflow_dir.resolve()}-next-name-draft"
+
+
+def pending_run_name(runs: RunManager) -> str:
+    """Read the current draft without consuming it before a run exists."""
+    widget = run_name_key(runs)
+    owner = st.session_state.get(f"_{widget}-owner")
+    if owner is None or owner == str(runs.workflow_dir.resolve()):
+        return st.session_state.get(widget, st.session_state.get(_run_name_draft_key(runs), ""))
+    return st.session_state.get(_run_name_draft_key(runs), "")
+
+
+def clear_run_name(runs: RunManager) -> None:
+    """Clear the consumed draft only after RunManager accepted the new run."""
+    st.session_state.pop(_run_name_draft_key(runs), None)
+    widget = run_name_key(runs)
+    if st.session_state.get(f"_{widget}-owner") in (None, str(runs.workflow_dir.resolve())):
+        st.session_state.pop(widget, None)
 
 
 def run_name_input(runs: RunManager, disabled: bool = False) -> None:
     """Name field for the next run, shown above the Start button."""
+    widget, draft = run_name_key(runs), _run_name_draft_key(runs)
+    owner_key = f"_{widget}-owner"
+    owner = str(runs.workflow_dir.resolve())
+    previous_owner = st.session_state.get(owner_key)
+    if widget not in st.session_state or previous_owner not in (None, owner):
+        st.session_state[widget] = st.session_state.get(draft, "")
+    st.session_state[owner_key] = owner
+
+    def keep_draft():
+        st.session_state[draft] = st.session_state[widget]
+
     st.text_input(
         "Run name",
-        key=run_name_key(runs),
+        key=widget,
         max_chars=MAX_NAME_LENGTH,
         placeholder=runs.default_name(),
         disabled=disabled,
+        on_change=keep_draft,
         help="Every run is kept as its own result set. Earlier runs stay "
         "available; switch between them on the results pages and rename, "
         "download or delete them on the Download page.",
     )
+    keep_draft()

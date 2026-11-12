@@ -55,6 +55,7 @@ from src.workflow.ExperimentalDesign import (
 )
 from src.workflow.vendor_files import extract_bruker_zip, has_type
 from src.workflow.host_paths import folder_reference
+from src.workflow.process_state import local_workflow_running
 from src.data_import import ui as data_import_ui
 from src.workflow.ParameterManager import (
     InvalidParameterFileError,
@@ -1090,7 +1091,7 @@ class StreamlitUI:
             value = st.session_state.pop(pending)
             st.session_state[widget] = (
                 [v for v in value if v in options] if multiple
-                else (value if value in options else (options[0] if options else None))
+                else (value if value in options else None)
             )
             self.params[key] = st.session_state[widget]
         if upload is None and not Path(self.workflow_dir, "input-files", key).exists():
@@ -1100,11 +1101,21 @@ class StreamlitUI:
             self.params[key] = [f for f in self.params[key] if f in options]
         if upload is not None:
             # A selected file can be gone (an example replaced by own files).
-            current = st.session_state.get(widget)
+            current = st.session_state.get(widget, self.params.get(key))
             if isinstance(current, list):
                 st.session_state[widget] = [f for f in current if f in options]
             elif current is not None and current not in options:
-                del st.session_state[widget]
+                st.warning(
+                    f"The selected {name.replace('*', '')} is no longer available: {Path(str(current)).name}. Choose a file again."
+                )
+                st.session_state[widget] = None
+                self.params[key] = None
+                self.parameter_manager.save_parameters()
+            elif not multiple and current is None and key in self.params:
+                # A cleared or removed file must not become the first remaining
+                # option when this page is revisited.
+                if widget not in st.session_state:
+                    st.session_state[widget] = None
 
         widget_type = "multiselect" if multiple else "selectbox"
         if multiple:
@@ -2760,9 +2771,9 @@ class StreamlitUI:
         is_running = status.get("running", False)
         job_status = status.get("status", "idle")
 
-        # Fallback to PID check for backward compatibility
-        pid_exists = self.executor.pid_dir.exists() and list(self.executor.pid_dir.iterdir())
-        if not is_running and pid_exists:
+        # A supplied queue/local status is authoritative. Legacy callers that
+        # omit it can still use PID files, after checking process liveness.
+        if "running" not in status and local_workflow_running(self.executor.pid_dir):
             is_running = True
             job_status = "running"
 
@@ -3125,6 +3136,23 @@ Started: {status.get('started_at', 'N/A')}""")
     def non_default_params_summary(self):
         # Display a summary of non-default TOPP parameters and all others (custom and python scripts)
 
+        def path_exists(value):
+            try:
+                return Path(str(value)).exists()
+            except (OSError, ValueError):
+                return False
+
+        def list_item(value):
+            # Imported JSON may have mixed or nested values. Keep them readable
+            # without treating dictionaries/numbers as paths or modifying data.
+            if isinstance(value, dict):
+                return remove_full_paths(value)
+            if isinstance(value, list):
+                return [list_item(item) for item in value]
+            if isinstance(value, str) and path_exists(value):
+                return Path(value).name
+            return value
+
         def remove_full_paths(d: dict) -> dict:
             # Create a copy to avoid modifying the original dictionary
             cleaned_dict = {}
@@ -3141,13 +3169,13 @@ Started: {status.get('started_at', 'N/A')}""")
                         cleaned_dict[key] = nested_cleaned
                 elif isinstance(value, list):
                     # Filter out existing paths from the list
-                    filtered_list = [
-                        item if not Path(str(item)).exists() else Path(str(item)).name
-                        for item in value
-                    ]
+                    filtered_list = [list_item(item) for item in value]
                     if filtered_list:  # Only add non-empty lists
-                        cleaned_dict[key] = ", ".join(filtered_list)
-                elif not Path(str(value)).exists():
+                        cleaned_dict[key] = ", ".join(
+                            item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+                            for item in filtered_list
+                        )
+                elif not path_exists(value):
                     # Add entries that are not existing paths
                     cleaned_dict[key] = value
 
@@ -3176,7 +3204,13 @@ Started: {status.get('started_at', 'N/A')}""")
 
         # Merge _defaults into topp so summary shows custom defaults + user overrides
         defaults = params.get("_defaults", {})
+        if not isinstance(defaults, dict):
+            general["_defaults (invalid format)"] = defaults
+            defaults = {}
         for tool_name, default_vals in defaults.items():
+            if not isinstance(default_vals, dict):
+                topp[f"{tool_name} defaults (invalid format)"] = default_vals
+                continue
             if tool_name not in topp:
                 topp[tool_name] = {}
             topp[tool_name] = {**default_vals, **topp.get(tool_name, {})}
