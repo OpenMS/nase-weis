@@ -9,6 +9,7 @@ import pytest
 from src.naseweis_annotations import (
     ANNOTATION_COLUMNS,
     annotate_peaks,
+    fragment_assignment_table,
     match_annotations,
     native_spectrum_id,
     read_annotations,
@@ -287,37 +288,134 @@ def test_empty_spectra_or_assignments_still_have_valid_viewer_tables():
     assert unmatched.empty
 
 
+@pytest.mark.parametrize("matcher", [annotate_peaks, fragment_assignment_table])
 @pytest.mark.parametrize("tolerance", [-1, float("inf"), float("nan"), True, "invalid"])
-def test_invalid_matching_tolerances_never_guess_peak_labels(tolerance):
+def test_invalid_matching_tolerances_never_guess_peak_labels(tolerance, matcher):
     with pytest.raises(ValueError, match="Annotation tolerance"):
-        annotate_peaks(
+        matcher(
             pd.DataFrame({"mz": [100.0], "intensity": [1.0]}),
             pd.DataFrame({"mz": [100.0], "ion": ["w1"]}),
             tolerance_da=tolerance,
         )
 
 
+@pytest.mark.parametrize("matcher", [annotate_peaks, fragment_assignment_table])
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), 0.0, -100.0])
-def test_invalid_peak_coordinates_are_reported(value):
+def test_invalid_peak_coordinates_are_reported(value, matcher):
     with pytest.raises(ValueError, match="Spectrum m/z"):
-        annotate_peaks(
+        matcher(
             pd.DataFrame({"mz": [value], "intensity": [1.0]}),
             pd.DataFrame({"mz": [100.0], "ion": ["w1"]}),
         )
 
 
-def test_missing_columns_and_nonfinite_raw_intensities_are_actionable():
+@pytest.mark.parametrize("matcher", [annotate_peaks, fragment_assignment_table])
+def test_missing_columns_and_nonfinite_raw_intensities_are_actionable(matcher):
     with pytest.raises(ValueError, match="missing columns intensity"):
-        annotate_peaks(
+        matcher(
             pd.DataFrame({"mz": [100.0]}), pd.DataFrame({"mz": [100.0], "ion": ["w1"]})
         )
     with pytest.raises(ValueError, match="missing columns ion"):
-        annotate_peaks(
+        matcher(
             pd.DataFrame({"mz": [100.0], "intensity": [1.0]}),
             pd.DataFrame({"mz": [100.0]}),
         )
     with pytest.raises(ValueError, match="Spectrum intensity"):
-        annotate_peaks(
+        matcher(
             pd.DataFrame({"mz": [100.0], "intensity": [float("nan")]}),
             pd.DataFrame({"mz": [100.0], "ion": ["w1"]}),
         )
+
+
+def test_assignment_table_links_raw_signal_without_changing_native_assignments():
+    peaks = pd.DataFrame(
+        {"mz": [400.0, 100.0, 200.0], "intensity": [10000.0, 250.0, 1000.0]},
+        index=["same", "same", "last"],
+    )
+    assignments = pd.DataFrame(
+        {
+            "mz": [200.0, 100.0, 100.000001, 900.0],
+            "intensity": [0.9, 0.2, 0.2, 0.1],
+            "ion": ["a2-B", "c1", "w1", "d4"],
+            "fragment_charge": [-1, -1, -2, -1],
+            "identification_index": [2, 2, 2, 2],
+            "hit_index": [0, 0, 0, 0],
+        },
+        index=["id", "id", "other", "missing"],
+    )
+    original_peaks, original_assignments = peaks.copy(deep=True), assignments.copy(deep=True)
+    table = fragment_assignment_table(peaks, assignments)
+    pd.testing.assert_frame_equal(table[assignments.columns], original_assignments)
+    pd.testing.assert_frame_equal(peaks, original_peaks)
+    pd.testing.assert_frame_equal(assignments, original_assignments)
+    assert table["peak_index"].iloc[:3].tolist() == [2, 1, 1]
+    assert table["peak_index"].dtype == pd.Int64Dtype()
+    assert pd.isna(table["peak_index"].iloc[3])
+    assert table["observed_mz"].iloc[:3].tolist() == [200.0, 100.0, 100.0]
+    assert table["observed_intensity"].iloc[:3].tolist() == [1000.0, 250.0, 250.0]
+    # The most intense full-scan peak is unassigned, but remains the denominator.
+    assert table["relative_intensity"].iloc[:3].tolist() == [10.0, 2.5, 2.5]
+    assert table["match_status"].tolist() == ["matched"] * 3 + ["no matching peak"]
+    assert table.iloc[3][["observed_mz", "observed_intensity", "relative_intensity"]].isna().all()
+    table.iloc[0, table.columns.get_loc("ion")] = "changed"
+    pd.testing.assert_frame_equal(assignments, original_assignments)
+
+
+def test_assignment_table_leaves_ambiguous_and_unobserved_ions_unplaced():
+    peaks = pd.DataFrame(
+        {"mz": [100.0, 100.000015, 200.0, 200.0], "intensity": [1, 9, 2, 3]}
+    )
+    assignments = pd.DataFrame({"mz": [100.000008, 200.0, 900.0], "ion": ["d1", "w3", "c4"]})
+    table = fragment_assignment_table(peaks, assignments)
+    _, unmatched = annotate_peaks(peaks, assignments)
+    assert table["peak_index"].isna().all()
+    assert table[["observed_mz", "observed_intensity", "relative_intensity"]].isna().all().all()
+    assert table["match_status"].tolist() == [
+        "ambiguous peak match", "ambiguous peak match", "no matching peak"
+    ]
+    assert table["match_status"].tolist() == unmatched["match_status"].tolist()
+
+
+@pytest.mark.parametrize("intensity", [0.0, 1e308])
+def test_assignment_table_relative_intensity_is_finite_for_zero_or_large_signal(intensity):
+    table = fragment_assignment_table(
+        pd.DataFrame({"mz": [100.0], "intensity": [intensity]}),
+        pd.DataFrame({"mz": [100.0], "ion": ["w1"]}),
+    )
+    assert table.loc[0, "observed_intensity"] == intensity
+    assert table.loc[0, "relative_intensity"] == (0.0 if intensity == 0 else 100.0)
+
+
+def test_assignment_table_empty_scans_and_empty_assignments_have_typed_columns():
+    peaks = pd.DataFrame(columns=["mz", "intensity"])
+    assignments = pd.DataFrame({"mz": [100.0], "ion": ["w1"]})
+    table = fragment_assignment_table(peaks, assignments)
+    assert table["match_status"].tolist() == ["no matching peak"]
+    assert table[["observed_mz", "observed_intensity", "relative_intensity", "peak_index"]].isna().all().all()
+    empty = fragment_assignment_table(peaks, assignments.iloc[:0])
+    assert empty.empty
+    assert empty["peak_index"].dtype == pd.Int64Dtype()
+    assert empty["observed_mz"].dtype == np.dtype("float64")
+    assert empty["observed_intensity"].dtype == np.dtype("float64")
+    assert empty["relative_intensity"].dtype == np.dtype("float64")
+
+
+def test_assignment_table_respects_serialization_tolerance_and_exact_mode():
+    peaks = pd.DataFrame({"mz": [100.0], "intensity": [1000.0]})
+    assignments = pd.DataFrame({"mz": [100.000009, 100.0], "ion": ["c2", "w2"]})
+    assert fragment_assignment_table(peaks, assignments)["peak_index"].tolist() == [0, 0]
+    exact = fragment_assignment_table(peaks, assignments, tolerance_da=0)
+    assert pd.isna(exact.loc[0, "peak_index"])
+    assert exact.loc[1, "peak_index"] == 0
+    assert exact["match_status"].tolist() == ["no matching peak", "matched"]
+
+
+@pytest.mark.parametrize("assignments,message", [
+    (pd.DataFrame({"mz": [float("nan")], "ion": ["w1"]}), "Annotated m/z"),
+    (pd.DataFrame({"mz": [100.0], "ion": [""]}), "ion label"),
+    (pd.DataFrame({"mz": [100.0], "ion": [None]}), "ion label"),
+    (pd.DataFrame([[100.0, "w1", "c1"]], columns=["mz", "ion", "ion"]), "duplicate columns"),
+])
+def test_assignment_table_invalid_native_assignments_are_actionable(assignments, message):
+    with pytest.raises(ValueError, match=message):
+        fragment_assignment_table(pd.DataFrame({"mz": [100.0], "intensity": [1.0]}), assignments)

@@ -23,6 +23,7 @@ ION_COLORS = {
     "z": "#999999",
 }
 UNKNOWN_ION_COLOR = "#6B7280"
+SELECTED_ION_COLOR = "#C58B00"
 TRACE_COLORS = {"TIC": "#0072B2", "BPC": "#009E73", "XIC": "#D55E00"}
 
 
@@ -59,7 +60,8 @@ def _frame(data, columns: tuple[str, ...], context: str) -> pd.DataFrame:
     return frame
 
 
-def _ion_series(ion: str) -> str:
+def ion_series(ion: str) -> str:
+    """Identify a native RNA ion series without changing the assignment text."""
     # OpenMS labels a-B ions both as a-B1 and a1-B, depending on their source.
     if re.match(r"^a(?:\d+)?-B", ion):
         return "a-B"
@@ -77,21 +79,25 @@ def _spectrum(data: pd.DataFrame, context: str) -> pd.DataFrame:
     frame = frame[["mz", "intensity", "ion"]].copy()
     # The backend overwrites a column literally named 'color'; use our own.
     frame["_naseweis_color"] = frame["ion"].map(
-        lambda ion: ION_COLORS.get(_ion_series(ion), UNKNOWN_ION_COLOR)
+        lambda ion: ION_COLORS.get(ion_series(ion), UNKNOWN_ION_COLOR)
     )
     frame["_naseweis_ion"] = frame["ion"].map(_text)
     return frame.sort_values("mz", kind="stable").reset_index(drop=True)
 
 
 def spectrum_figure(
-    peaks: pd.DataFrame, title: str, reference: pd.DataFrame | None = None
+    peaks: pd.DataFrame, title: str, reference: pd.DataFrame | None = None,
+    *, highlighted_mz=None,
 ) -> go.Figure:
     """Plot unbinned peaks, optionally mirrored, with explicit RNA ion colors.
 
     Each spectrum is normalized to its own maximum; only the display changes.
     Supplied ion annotations retain their exact peak m/z coordinates.
+    Highlights identify exact, unambiguous acquired peak masses; no peak is
+    snapped to a nearby mass or relabelled as an assigned ion.
     """
     spectrum = _spectrum(peaks, "Spectrum peaks")
+    selected = _highlighted_peaks(spectrum, highlighted_mz)
     mirror = None if reference is None else _spectrum(reference, "Reference peaks")
     figure = spectrum.plot(
         backend="ms_plotly", kind="spectrum", x="mz", y="intensity",
@@ -119,10 +125,48 @@ def spectrum_figure(
                 x=row.mz, y=sign * row.intensity / maximum * 100,
                 text=_text(row.ion), showarrow=False, xanchor="center",
                 yanchor="bottom" if sign > 0 else "top",
-                font={"color": ION_COLORS.get(_ion_series(row.ion), UNKNOWN_ION_COLOR), "size": 11},
+                font={"color": ION_COLORS.get(ion_series(row.ion), UNKNOWN_ION_COLOR), "size": 11},
             )
+    if not selected.empty:
+        height = selected["intensity"] / spectrum["intensity"].max() * 100
+        # An open marker preserves the underlying series color and exact stick
+        # height. A narrow translucent line makes weak selected ions visible.
+        for mz, intensity in zip(selected["mz"], height):
+            figure.add_shape(
+                type="line", x0=mz, x1=mz, y0=0, y1=intensity,
+                line={"color": SELECTED_ION_COLOR, "width": 6},
+                opacity=0.35, layer="below",
+            )
+        figure.add_trace(go.Scatter(
+            x=selected["mz"], y=height, mode="markers",
+            name="Selected ion", text=selected["_naseweis_ion"],
+            marker={"symbol": "circle-open", "size": 14,
+                    "color": SELECTED_ION_COLOR, "line": {"width": 3}},
+            hovertemplate="%{text}<br>m/z: %{x}<br>Relative intensity: %{y:.2f}%<extra>Selected ion</extra>",
+        ))
     figure.update_layout(title=_text(title), xaxis_title="m/z", yaxis_title="Relative intensity (%)")
     return figure
+
+
+def _highlighted_peaks(spectrum: pd.DataFrame, highlighted_mz) -> pd.DataFrame:
+    """Resolve display selections without mass tolerance or changing signal."""
+    if highlighted_mz is None:
+        return spectrum.iloc[:0]
+    try:
+        values = list(highlighted_mz)
+        if isinstance(highlighted_mz, (str, bytes)) or any(
+            isinstance(value, (bool, np.bool_)) for value in values
+        ):
+            raise ValueError
+        masses = np.asarray(values, dtype=float)
+        if masses.ndim != 1 or not np.isfinite(masses).all() or (masses <= 0).any():
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Highlighted m/z values must be positive finite numbers.") from None
+    for mass in masses:
+        if (spectrum["mz"] == mass).sum() != 1:
+            raise ValueError("Each highlighted m/z must identify exactly one acquired peak.")
+    return spectrum.loc[spectrum["mz"].isin(masses)]
 
 
 def chromatogram_figure(points: pd.DataFrame, title: str) -> go.Figure:

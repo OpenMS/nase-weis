@@ -8,9 +8,11 @@ from pandas.testing import assert_frame_equal
 
 from src.naseweis_plots import (
     ION_COLORS,
+    SELECTED_ION_COLOR,
     UNKNOWN_ION_COLOR,
     chromatogram_figure,
     feature_map_figure,
+    ion_series,
     peakmap_figure,
     spectrum_figure,
 )
@@ -84,6 +86,78 @@ def test_unannotated_spectrum_has_no_invented_ions(peaks):
     figure = spectrum_figure(peaks.drop(columns="ion"), "Raw MS2")
     assert not figure.layout.annotations
     assert {trace.line.color for trace in figure.data} == {UNKNOWN_ION_COLOR}
+
+
+def test_selected_ions_emphasize_exact_acquired_peaks_without_changing_signal(peaks):
+    before = peaks.copy(deep=True)
+    plain = spectrum_figure(peaks, "RNA match")
+    selected = spectrum_figure(peaks, "RNA match", highlighted_mz=[200.5, 300.75, 200.5])
+    overlay = selected.data[-1]
+
+    assert overlay.name == "Selected ion"
+    assert list(overlay.x) == [200.5, 300.75]
+    assert list(overlay.y) == [50, 100]
+    assert overlay.marker.symbol == "circle-open"
+    assert overlay.marker.color == SELECTED_ION_COLOR
+    assert json.loads(selected.to_json())["data"][:-1] == json.loads(plain.to_json())["data"]
+    assert selected.layout.annotations == plain.layout.annotations
+    assert selected.layout.shapes[:-2] == plain.layout.shapes
+    assert [(shape.x0, shape.x1, shape.y0, shape.y1) for shape in selected.layout.shapes[-2:]] == [
+        (200.5, 200.5, 0, 50), (300.75, 300.75, 0, 100)
+    ]
+    assert_frame_equal(peaks, before)
+
+
+def test_selection_highlight_does_not_change_mirror_normalization(peaks):
+    reference = pd.DataFrame({"mz": [101.25], "intensity": [1000.0], "ion": ["w1-"]})
+    figure = spectrum_figure(peaks, "Mirror", reference, highlighted_mz=[100.25])
+    assert list(figure.data[-1].y) == [25]
+    assert any(-100 in trace.y for trace in figure.data[:-1])
+    assert peak_vertices(figure) == peak_vertices(spectrum_figure(peaks, "Mirror", reference))
+
+
+def test_zero_height_selected_peak_remains_visible_without_inventing_intensity(peaks):
+    figure = spectrum_figure(peaks, "Zero height", highlighted_mz=[400.125])
+    assert list(figure.data[-1].x) == [400.125]
+    assert list(figure.data[-1].y) == [0]
+
+
+def test_empty_selection_keeps_existing_figure_unchanged(peaks):
+    assert spectrum_figure(peaks, "RNA", highlighted_mz=[]).to_json() == spectrum_figure(peaks, "RNA").to_json()
+
+
+@pytest.mark.parametrize("selected", [
+    [float("nan")], [float("inf")], [0], [-1], [True], ["bad"],
+    "100.25", 100.25, [[100.25]], [100.2500001], [999.0],
+])
+def test_invalid_or_unobserved_highlights_are_not_snapped_to_a_peak(peaks, selected):
+    with pytest.raises(ValueError, match="Highlighted|highlighted"):
+        spectrum_figure(peaks, "Invalid selection", highlighted_mz=selected)
+
+
+def test_ambiguous_duplicate_mass_cannot_highlight_an_arbitrary_peak(peaks):
+    duplicate = pd.concat([peaks, peaks.iloc[[0]]], ignore_index=True)
+    with pytest.raises(ValueError, match="exactly one acquired peak"):
+        spectrum_figure(duplicate, "Ambiguous", highlighted_mz=[100.25])
+
+
+@pytest.mark.parametrize("label,series", [
+    ("a1-B", "a-B"), ("a-B2-", "a-B"), ("d2-", "d"),
+    ("w3^2-", "w"), ("y1-H2O", "y"), ("precursor", ""),
+])
+def test_ion_series_uses_native_rna_labels(label, series):
+    assert ion_series(label) == series
+
+
+def test_offline_export_keeps_selected_ion_evidence_and_escapes_its_label(peaks):
+    peaks.loc[1, "ion"] = '</script><img src=x onerror=alert(1)>'
+    figure = spectrum_figure(peaks, "RNA", highlighted_mz=[200.5])
+    html = figure.to_html(include_plotlyjs=True, full_html=True)
+    assert "Selected ion" in html
+    assert SELECTED_ION_COLOR in html
+    assert '</script><img src=x' not in html
+    assert '&lt;/script&gt;' in figure.data[-1].text[0]
+    assert 'src="https://cdn.plot.ly' not in html
 
 
 def test_chromatogram_traces_overlay_without_replacing_or_rescaling_each_other():

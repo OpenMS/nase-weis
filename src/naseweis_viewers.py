@@ -16,6 +16,7 @@ import streamlit as st
 from src.common.common import follow_app_theme
 from src.naseweis_annotations import (
     annotate_peaks,
+    fragment_assignment_table,
     match_annotations,
     native_spectrum_id,
     read_annotations,
@@ -30,6 +31,7 @@ from src.naseweis_msdata import (
 from src.naseweis_plots import (
     chromatogram_figure,
     feature_map_figure,
+    ion_series,
     peakmap_figure,
     spectrum_figure,
 )
@@ -380,6 +382,60 @@ def _xic_controls(key, mz, tolerance, unit):
     return mz, tolerance, selected_unit
 
 
+def _fragment_assignment_controls(peaks, annotations, key):
+    """Link visible native assignments to exact peaks in the acquired scan."""
+    series = annotations["ion"].map(lambda ion: ion_series(ion) or "Other")
+    options = list(dict.fromkeys(series))
+    selected_series = st.multiselect(
+        "Ion series", options, default=options, key=f"{key}-series",
+        help="Filter the displayed native assignments and their peak labels. Search results are unchanged.",
+    )
+    shown = annotations.loc[series.isin(selected_series)]
+    labelled, _ = annotate_peaks(peaks, shown)
+    table = fragment_assignment_table(peaks, shown)
+    st.subheader("Assigned fragment ions")
+    st.caption(
+        "Select rows using the checkboxes to highlight their peaks in gold. "
+        "Intensities below come from the original acquired scan."
+    )
+    if table.empty:
+        st.info("No assigned ions in the selected series. Choose an ion series to show its assignments.")
+        return labelled, []
+    located = table["match_status"].eq("matched")
+    st.caption(
+        f"{len(table)} assignments · {table.loc[located, 'peak_index'].nunique()} located raw peaks · "
+        f"{int((~located).sum())} unplaced assignments"
+    )
+    # Row positions belong to the displayed table. Changing its filter or
+    # native assignments must not apply a previous selection to different ions.
+    selection_key = f"{key}-ions-{viewer_key(table.to_csv(index=False))}"
+    event = st.dataframe(
+        table,
+        column_order=["ion", "fragment_charge", "mz", "observed_mz", "observed_intensity", "relative_intensity", "match_status"],
+        column_config={
+            "ion": st.column_config.TextColumn("Ion"),
+            "fragment_charge": st.column_config.NumberColumn("Charge", format="%d"),
+            "mz": st.column_config.NumberColumn("Assigned m/z", format="%.6f"),
+            "observed_mz": st.column_config.NumberColumn("Raw m/z", format="%.6f"),
+            "observed_intensity": st.column_config.NumberColumn("Raw intensity", format="%.2f"),
+            "relative_intensity": st.column_config.NumberColumn("Relative intensity (%)", format="%.2f"),
+            "match_status": st.column_config.TextColumn("Raw peak match"),
+        },
+        hide_index=True, width="stretch", height=300,
+        on_select="rerun", selection_mode="multi-row", key=selection_key,
+    )
+    chosen = table.iloc[event["selection"]["rows"]]
+    placed = chosen.loc[chosen["match_status"].eq("matched")]
+    if not chosen.empty:
+        st.caption("Selected ions: " + ", ".join(chosen["ion"].astype(str)))
+    if len(placed) < len(chosen):
+        st.info(
+            "Some selected assignments have no unique peak in the original scan and cannot be highlighted. "
+            "NASE may have scored a deisotoped or decharged spectrum."
+        )
+    return labelled, placed["observed_mz"].drop_duplicates().tolist()
+
+
 def render_identification_viewer(
     results_dir: Path,
     snapshot: Path,
@@ -387,7 +443,7 @@ def render_identification_viewer(
     workflow_dir: Path,
     online=False,
 ):
-    st.subheader("Matched MS/MS spectra")
+    st.subheader("RNA identification viewer")
     if matches.empty or "spectra_ref" not in matches:
         st.info("No spectrum references are available for this run.")
         return
@@ -414,11 +470,25 @@ def render_identification_viewer(
         # Hash only after the viewer is opened; the Matches tab stays cheap for
         # large acquisitions while every displayed scan still verifies identity.
         revision = saved_acquisition_revision(params, workflow_dir, online)
+        query = st.text_input(
+            "Find identification", key=f"{key}-find",
+            placeholder="RNA sequence or native spectrum ID",
+        ).strip().casefold()
+        choices = list(range(len(matches)))
+        if query:
+            choices = [
+                position for position in choices
+                if query in str(matches.iloc[position].get("sequence", "")).casefold()
+                or query in str(matches.iloc[position]["spectra_ref"]).casefold()
+            ]
+        if not choices:
+            st.info("No identifications match this filter. Clear or change the search to choose another identification.")
+            return
         index = st.selectbox(
             "Spectrum match",
-            list(range(len(matches))),
+            choices,
             format_func=lambda value: (
-                f"{matches.iloc[value].get('sequence', '')} · z={matches.iloc[value].get('charge', '')} · {matches.iloc[value].get('retention_time', '')} s"
+                f"{matches.iloc[value].get('sequence', '')} · z={matches.iloc[value].get('charge', '')} · {matches.iloc[value].get('retention_time', '')} s · {native_spectrum_id(str(matches.iloc[value]['spectra_ref']))}"
             ),
             key=f"{key}-match",
         )
@@ -456,34 +526,45 @@ def render_identification_viewer(
                     int(match.get("charge", 0)),
                 )
                 peaks, unmatched = annotate_peaks(peaks, annotations)
+                if annotations.empty:
+                    st.info("No saved fragment assignments match this exact spectrum, RNA sequence and signed charge.")
             except VIEW_ERRORS as error:
+                annotations = pd.DataFrame()
                 st.warning(f"Native fragment annotations are unavailable: {error}")
         else:
             st.caption(
                 "No idXML annotations were saved for this run; the acquired spectrum remains available."
             )
+        # Reserve the plot's position above its linked table. The table must
+        # execute first so this rerun can render the current row selection.
+        plot_area = st.container()
+        highlighted_mz = []
+        if not annotations.empty:
+            match_key = f"{key}-{viewer_key((index, native_id, str(match.get('sequence', '')), str(match.get('charge', ''))))}"
+            peaks, highlighted_mz = _fragment_assignment_controls(peaks, annotations, match_key)
         if peaks.empty:
             st.info("The acquired scan contains no peaks.")
         else:
-            show_viewer_plot(
-                spectrum_figure(peaks, str(match.get("sequence", native_id))),
-                f"{key}-spectrum",
-                "naseweis-matched-spectrum",
-            )
+            with plot_area:
+                show_viewer_plot(
+                    spectrum_figure(peaks, str(match.get("sequence", native_id)), highlighted_mz=highlighted_mz),
+                    f"{key}-spectrum",
+                    "naseweis-matched-spectrum",
+                )
         if not annotations.empty:
             if not unmatched.empty:
                 st.info(
                     "Some scored fragments are absent or ambiguous in the acquired scan, for example after deisotoping or decharging. Their native assignments are retained below."
                 )
-            with st.expander("Native RNA fragment assignments"):
+            with st.expander("All native assignment metadata"):
                 st.dataframe(annotations, hide_index=True, use_container_width=True)
-                st.download_button(
-                    "Download fragment assignments (TSV)",
-                    annotations.to_csv(sep="\t", index=False),
-                    "naseweis-fragments.tsv",
-                    "text/tab-separated-values",
-                    key=f"{key}-annotations",
-                )
+            st.download_button(
+                "Download fragment assignments (TSV)",
+                annotations.to_csv(sep="\t", index=False),
+                "naseweis-fragments.tsv",
+                "text/tab-separated-values",
+                key=f"{key}-annotations",
+            )
             st.caption(
                 "Labels come from NASE's saved assignments. Acquired peak heights are preserved; processed fragment masses are labelled only when they uniquely match an acquired peak."
             )

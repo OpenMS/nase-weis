@@ -205,6 +205,81 @@ def match_annotations(
     return selected
 
 
+def _peak_assignment_matches(
+    peaks: pd.DataFrame,
+    annotations: pd.DataFrame,
+    tolerance_da: float,
+) -> tuple[np.ndarray, np.ndarray, list[int | None], list[str]]:
+    """Match native assignments to unique positional rows in the raw scan."""
+    _require_columns(peaks, {"mz", "intensity"}, "spectrum peaks")
+    _require_columns(annotations, {"mz", "ion"}, "RNA annotations")
+    tolerance = _finite_number(tolerance_da, "Annotation tolerance")
+    if tolerance < 0:
+        raise ValueError("Annotation tolerance must be zero or positive in Da.")
+    mz_values = np.array(
+        [_finite_number(value, "Spectrum m/z", positive=True) for value in peaks["mz"]]
+    )
+    intensities = np.array(
+        [_finite_number(value, "Spectrum intensity") for value in peaks["intensity"]]
+    )
+    order = np.argsort(mz_values, kind="stable")
+    sorted_mz = mz_values[order]
+    positions, statuses = [], []
+    for _, annotation in annotations.iterrows():
+        mz = _finite_number(annotation["mz"], "Annotated m/z", positive=True)
+        ion = annotation["ion"]
+        if not isinstance(ion, str) or not ion.strip():
+            raise ValueError("Each RNA fragment assignment must have an ion label.")
+        left = np.searchsorted(sorted_mz, mz - tolerance, side="left")
+        right = np.searchsorted(sorted_mz, mz + tolerance, side="right")
+        if right - left == 1:
+            positions.append(int(order[left]))
+            statuses.append("matched")
+        else:
+            positions.append(None)
+            statuses.append(
+                "ambiguous peak match" if right > left else "no matching peak"
+            )
+    return mz_values, intensities, positions, statuses
+
+
+def fragment_assignment_table(
+    peaks: pd.DataFrame,
+    annotations: pd.DataFrame,
+    tolerance_da: float = 1e-5,
+) -> pd.DataFrame:
+    """Retain every native assignment and add its uniquely observed peak.
+
+    ``peak_index`` is the zero-based row position in the original scan, not its
+    pandas index label. Unplaced or ambiguous assignments keep missing observed
+    values. Relative intensity uses the maximum intensity of the full raw scan,
+    with zero for matched peaks in a zero-intensity scan. Scored native
+    intensities and provenance remain unchanged.
+    """
+    mz_values, intensities, positions, statuses = _peak_assignment_matches(
+        peaks, annotations, tolerance_da
+    )
+    maximum = float(intensities.max()) if len(intensities) else 0.0
+    observed_mz, observed_intensity, relative_intensity = [], [], []
+    for position in positions:
+        if position is None:
+            observed_mz.append(np.nan)
+            observed_intensity.append(np.nan)
+            relative_intensity.append(np.nan)
+        else:
+            intensity = intensities[position]
+            observed_mz.append(mz_values[position])
+            observed_intensity.append(intensity)
+            relative_intensity.append(intensity / maximum * 100.0 if maximum > 0 else 0.0)
+    table = annotations.copy(deep=True)
+    table["observed_mz"] = np.array(observed_mz, dtype=float)
+    table["observed_intensity"] = np.array(observed_intensity, dtype=float)
+    table["relative_intensity"] = np.array(relative_intensity, dtype=float)
+    table["peak_index"] = pd.array(positions, dtype="Int64")
+    table["match_status"] = statuses
+    return table
+
+
 def annotate_peaks(
     peaks: pd.DataFrame,
     annotations: pd.DataFrame,
@@ -217,36 +292,19 @@ def annotate_peaks(
     unplaced. Multiple native ion labels on one unique peak are joined with
     ``; ``. Original rows, ordering, indices and intensities are preserved.
     """
-    _require_columns(peaks, {"mz", "intensity"}, "spectrum peaks")
-    _require_columns(annotations, {"mz", "ion"}, "RNA annotations")
-    tolerance = _finite_number(tolerance_da, "Annotation tolerance")
-    if tolerance < 0:
-        raise ValueError("Annotation tolerance must be zero or positive in Da.")
-    mz_values = np.array(
-        [_finite_number(value, "Spectrum m/z", positive=True) for value in peaks["mz"]]
+    mz_values, _, positions, statuses = _peak_assignment_matches(
+        peaks, annotations, tolerance_da
     )
-    for value in peaks["intensity"]:
-        _finite_number(value, "Spectrum intensity")
     annotated = peaks.copy(deep=True)
     labels = [[] for _ in mz_values]
-    order = np.argsort(mz_values, kind="stable")
-    sorted_mz = mz_values[order]
-    unplaced, statuses = [], []
-    for position, (_, annotation) in enumerate(annotations.iterrows()):
-        mz = _finite_number(annotation["mz"], "Annotated m/z", positive=True)
-        ion = annotation["ion"]
-        if not isinstance(ion, str) or not ion.strip():
-            raise ValueError("Each RNA fragment assignment must have an ion label.")
-        left = np.searchsorted(sorted_mz, mz - tolerance, side="left")
-        right = np.searchsorted(sorted_mz, mz + tolerance, side="right")
-        if right - left == 1:
-            labels[order[left]].append(ion)
+    unplaced, unplaced_statuses = [], []
+    for row, position in enumerate(positions):
+        if position is None:
+            unplaced.append(row)
+            unplaced_statuses.append(statuses[row])
         else:
-            unplaced.append(position)
-            statuses.append(
-                "ambiguous peak match" if right > left else "no matching peak"
-            )
+            labels[position].append(annotations.iloc[row]["ion"])
     annotated["ion"] = ["; ".join(dict.fromkeys(ions)) for ions in labels]
     unmatched = annotations.iloc[unplaced].copy()
-    unmatched["match_status"] = statuses
+    unmatched["match_status"] = unplaced_statuses
     return annotated, unmatched

@@ -19,6 +19,7 @@ def test_real_nme1_run_preserves_native_scan_identity_signal_and_rna_annotations
 
     from src.naseweis_annotations import (
         annotate_peaks,
+        fragment_assignment_table,
         match_annotations,
         native_spectrum_id,
         read_annotations,
@@ -125,6 +126,20 @@ def test_real_nme1_run_preserves_native_scan_identity_signal_and_rna_annotations
     assert any(
         re.match(r"^(?:a\d+-B|a-B|[dw]\d)", annotation.text)
         for annotation in spectrum.layout.annotations
+    )
+    evidence = fragment_assignment_table(peaks, selected)
+    placed = evidence.loc[evidence["match_status"].eq("matched")].iloc[0]
+    raw_position = int(placed["peak_index"])
+    assert placed["observed_mz"] == expected_mz[raw_position]
+    assert placed["observed_intensity"] == expected_intensity[raw_position]
+    highlighted = spectrum_figure(
+        labelled, match["sequence"], highlighted_mz=[placed["observed_mz"]]
+    )
+    selected_trace = next(trace for trace in highlighted.data if trace.name == "Selected ion")
+    assert list(selected_trace.x) == [expected_mz[raw_position]]
+    np.testing.assert_allclose(
+        selected_trace.y,
+        [float(expected_intensity[raw_position]) / float(expected_intensity.max()) * 100],
     )
     pd.testing.assert_frame_equal(labelled[["mz", "intensity"]], peaks)
 

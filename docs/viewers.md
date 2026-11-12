@@ -49,7 +49,12 @@ reference sequences cannot share a coverage axis. Coverage is also available
 for each individual sample and older single-acquisition runs. Download the
 self-contained HTML or vector SVG; neither requires the original acquisition.
 
-Open **Results → Spectra** for the selected saved run. The acquisition path
+Open **Results → Spectra** for the selected saved run, or
+**Results → Sample details → Spectra** in a multi-sample experiment. Select
+**Open spectrum viewer** to load the RNA identification viewer. Search by RNA
+sequence or complete native spectrum ID and choose a spectrum match; its
+selector includes the signed precursor charge, retention time and native ID.
+The acquisition path
 comes only from that run's parameter snapshot. Missing source data or an
 unreadable snapshot produces a clear message; the current search input is
 never silently substituted.
@@ -73,6 +78,16 @@ and supports RNA `a-B`, `d` and `w` ion series. It labels only unique m/z matche
 within an absolute 0.00001 Da serialization allowance and keeps the acquired
 peak heights. NASE's stored annotation intensities describe its scored
 spectrum and are not used to replace raw intensities.
+
+The visible **Assigned fragment ions** table lists ion labels, signed fragment
+charges, native assigned m/z, matched raw m/z, raw intensity and relative
+intensity against the full scan's base peak. Use **Ion series** to filter the
+table and spectrum labels together. Select one or more table rows with the
+checkboxes to highlight their exact acquired peaks in gold; multiple ions can
+refer to one peak. Unplaced or ambiguous assignments remain listed with their
+status and cannot highlight another peak. The original native metadata and TSV
+download retain all assignments, independently of display filters. Display
+settings do not change identification results or saved scientific parameters.
 
 Deisotoping or decharging can produce scored masses absent from the raw scan.
 Those assignments remain in the downloadable native fragment table and are

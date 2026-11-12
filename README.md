@@ -157,7 +157,12 @@ On **Results → Spectra**, choose a saved spectrum match to inspect its origina
 scan and the RNA fragment assignments in NASE's idXML. Complete native spectrum
 IDs identify scans; retention time and array position are not substituted.
 RNA `a-B`, `d` and `w` ions are supported. Processed fragment masses absent from
-the acquired scan remain available in the assignment table.
+the acquired scan remain available in the assignment table. The identification
+viewer lets you search RNA sequences or native scan IDs, filter ion series and
+select assigned-ion rows to highlight their acquired peaks in gold. The visible
+ion table lists signed fragment charges, assigned and raw m/z, raw intensities
+and whether each assignment has a unique raw peak. In multi-sample experiments,
+open **Sample details → Spectra** for the selected acquisition.
 
 On **Results → Quantification**, open the LFQ feature viewer to inspect the
 feature map and an exact raw MS1 XIC for a selected feature, with its detected
