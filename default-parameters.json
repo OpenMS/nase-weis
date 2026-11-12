@@ -1,8 +1,10 @@
 {
     "image-format": "svg",
-    "mzML-files": null,
+    "mzML-files": [],
     "fasta-files": null,
     "add-decoys": true,
     "FDR_cutoff": 0.05,
-    "enable-lfq": false
+    "enable-lfq": false,
+    "lfq-measure": "intensity",
+    "lfq-normalization": "total"
 }

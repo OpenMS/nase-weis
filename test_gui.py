@@ -75,9 +75,9 @@ def test_load_example_and_configure(app):
     assert app.title[0].value == "Configure your search"
     workspace = Path(app.session_state.workspace)
     params = json.loads((workspace / "naseweis/params.json").read_text())
-    assert Path(params["mzML-files"]).name == "NME1.mzML"
+    assert [Path(path).name for path in params["mzML-files"]] == ["NME1.mzML"]
     assert Path(params["fasta-files"]).name == "NME1_Target.fasta"
-    assert any("NME1.mzML" in option for box in app.selectbox for option in box.options)
+    assert any("NME1.mzML" in option for box in app.multiselect for option in box.options)
     assert not app.exception
 
 

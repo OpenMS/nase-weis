@@ -4,49 +4,26 @@ Tests for get_merged_params() and the refactored get_topp_parameters().
 This module verifies the three-layer parameter merge:
   ini defaults < _defaults < user overrides
 """
-import os
-import sys
 import json
-import pytest
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-# Add project root to path for imports
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(PROJECT_ROOT)
-
-# Mock streamlit before importing ParameterManager so that the imported module
-# uses a controllable `st.session_state` (a plain dict) instead of the real one,
-# which requires a running Streamlit app context.
-mock_streamlit = MagicMock()
-mock_streamlit.session_state = {}
-
-# Temporarily replace streamlit in sys.modules so that ParameterManager's
-# `import streamlit as st` picks up the mock. Restore immediately after import
-# so other test files (e.g., test_gui.py AppTest) get the real streamlit.
-_original_streamlit = sys.modules.get('streamlit')
-sys.modules['streamlit'] = mock_streamlit
+import pytest
 
 from src.workflow.ParameterManager import ParameterManager
 
-if _original_streamlit is not None:
-    sys.modules['streamlit'] = _original_streamlit
-else:
-    sys.modules.pop('streamlit', None)
-
-# Remove cached src.workflow modules that were imported with mocked streamlit so
-# that AppTest (in test_gui.py) re-imports them fresh with the real package.
-for _key in list(sys.modules.keys()):
-    if _key.startswith('src.workflow'):
-        sys.modules.pop(_key, None)
+# Each test uses a controllable session state without replacing imported
+# packages or invalidating the workflow modules shared with GUI tests.
+mock_streamlit = MagicMock()
+mock_streamlit.session_state = {}
 
 
 @pytest.fixture(autouse=True)
-def reset_streamlit_state():
-    """Reset mock streamlit session state before each test."""
+def reset_streamlit_state(monkeypatch):
+    """Patch the actual method's module only for this test, then restore it."""
     mock_streamlit.session_state.clear()
-    yield
+    monkeypatch.setitem(ParameterManager.save_parameters.__globals__, "st", mock_streamlit)
 
 
 @pytest.fixture

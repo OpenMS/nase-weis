@@ -2,12 +2,17 @@
 
 import json
 import shutil
-from copy import deepcopy
+from copy import copy, deepcopy
 from pathlib import Path
 
 import streamlit as st
-from streamlit.components.v1 import html
 
+from src.naseweis_experiment import run_experiment, sample_results, sample_snapshot
+from src.naseweis_experiment_ui import (
+    configure_comparison,
+    configure_experiment_inputs,
+    render_experiment_results,
+)
 from src.naseweis_lfq import (
     FEATURE_FINDER_DEFAULTS,
     LFQ_FEATURES,
@@ -17,7 +22,8 @@ from src.naseweis_lfq import (
     read_lfq_table,
     run_lfq,
 )
-from src.naseweis_results import coverage_html, match_table, read_mztab
+from src.naseweis_result_plots_ui import render_coverage_groups
+from src.naseweis_results import match_table, read_mztab
 from src.naseweis_tools import (
     DECOY_INPUTS,
     DECOY_OUTPUTS,
@@ -28,6 +34,8 @@ from src.naseweis_tools import (
     tool_schema,
     validate_search_options,
 )
+from src.naseweis_validation import validate_startup
+from src.naseweis_viewers import render_identification_viewer, render_lfq_viewer
 from src.workflow.WorkflowManager import WorkflowManager
 
 SEARCH_DEFAULTS = {
@@ -99,6 +107,55 @@ class Workflow(WorkflowManager):
     def __init__(self) -> None:
         super().__init__("NASEWEIS", st.session_state["workspace"])
 
+    def start_workflow(self) -> None:
+        try:
+            super().start_workflow()
+        except (OSError, ValueError) as error:
+            st.error(f"Cannot start this analysis: {error}")
+            # Keep validation visible instead of entering the generic start
+            # spinner and immediately rerunning the page after a failed start.
+            st.stop()
+
+    def _new_run(self) -> None:
+        """Freeze the selected sample design together with the run parameters."""
+        from src.naseweis_experiment import preflight_experiment, validate_design_source
+        from src.workflow.ExperimentalDesign import design_path, load_design
+
+        params = self.parameter_manager.read_parameters_strict()
+        selected = params.get("mzML-files")
+        if not selected or (isinstance(selected, str) and not selected.strip()):
+            raise ValueError(
+                "Select at least one MS/MS acquisition on Configure → Identification before starting the analysis."
+            )
+        if not isinstance(selected, (str, list)) or (
+            isinstance(selected, list)
+            and any(not isinstance(path, str) or not path.strip() for path in selected)
+        ):
+            raise ValueError(
+                "The saved MS/MS acquisition selection is invalid. Select the files again on Configure → Identification."
+            )
+        paths = list(selected) if isinstance(selected, list) else [selected]
+        source = design_path(self.workflow_dir)
+        if source.is_file():
+            validate_design_source(source.read_bytes())
+        design = load_design(self.workflow_dir, paths)
+        params["mzML-files"] = paths
+        params["_sample_design"] = [
+            {
+                "file": path,
+                "condition": str(row["condition"]),
+                "replicate": int(row["replicate"]),
+                "fraction": int(row["fraction"]),
+            }
+            for path, (_, row) in zip(paths, design.iterrows())
+        ]
+        preflight_experiment(params)
+        for path in paths:
+            validate_startup(self, params | {"mzML-files": path}, Workflow._execute_single)
+        self.parameter_manager.write_parameters(params)
+        self.params = params
+        super()._new_run()
+
     def load_example_data(self) -> None:
         """Copy and select the paired NME1 dataset without replacing user files."""
         params = self.parameter_manager.read_parameters_strict()
@@ -128,8 +185,13 @@ class Workflow(WorkflowManager):
                 ["csv"],
             ),
         ]:
-            with st.expander(label, expanded=True):
-                self.ui.upload_widget(key=key, name=label, file_types=extensions)
+            with st.expander(label, expanded=key in {"mzML-files", "fasta-files"}):
+                self.ui.upload_widget(
+                    key=key,
+                    name=label,
+                    file_types=extensions,
+                    manual_import_sources=("pride",) if key == "bedrmod-mapping-files" else (),
+                )
 
     def configure(self) -> None:
         advanced = st.toggle(
@@ -144,12 +206,7 @@ class Workflow(WorkflowManager):
             self._configure_quantification(advanced)
 
     def _configure_identification(self, advanced: bool) -> None:
-        self.ui.select_input_file(
-            "mzML-files",
-            name="MS/MS spectra",
-            multiple=False,
-            upload={"file_types": ["mzML", "raw", "d"]},
-        )
+        configure_experiment_inputs(self)
         if advanced:
             self.ui.input_widget(
                 "database-source",
@@ -270,7 +327,7 @@ class Workflow(WorkflowManager):
                 "bedrmod-mapping-files",
                 name="Custom modification mapping (optional)",
                 multiple=False,
-                upload={"file_types": ["csv"]},
+                upload={"file_types": ["csv"], "manual_import_sources": ("pride",)},
             )
             st.caption(
                 "RNA mode excludes protein-only entrapment and neighbor searches. The standalone DecoyDatabase page exposes the complete tool."
@@ -279,7 +336,7 @@ class Workflow(WorkflowManager):
     def _configure_quantification(self, advanced: bool) -> None:
         st.subheader("Label-free quantification")
         st.write(
-            "Extract MS1 features for the oligonucleotides identified in this acquisition, following the RNA TOPPAS workflow."
+            "Compare modified RNA abundances across the selected acquisitions using native NASE-guided MS1 extraction."
         )
         self.ui.input_widget(
             "enable-lfq",
@@ -294,20 +351,30 @@ class Workflow(WorkflowManager):
             self.params.get("enable-lfq", False),
         ))
         with st.container(border=True):
-            st.markdown("**NASE targets → MS1 feature extraction → feature table**")
+            st.markdown("**NASE targets per sample → MS1 areas → combined RNA abundance matrix**")
             st.caption(
                 "Uses the original acquisition and the identified oligo formulas, charges and retention times. Saves the target list, featureXML and a TSV with all feature metadata."
             )
         st.info(
-            "Each run produces raw feature intensities for one acquisition. This TOPPAS workflow does not align, link or normalize separate runs."
+            "Select at least two acquisitions for LFQ. One analysis extracts each sample independently, "
+            "then combines modified RNA abundances across samples for relative comparison. "
+            "The sample design and quantification settings are saved with the analysis."
         )
         if not lfq_enabled:
             st.caption("Enable quantification to add these steps to the next run.")
             return
+        configure_comparison(self)
         st.caption(
             "Defaults follow pipeline2_fixed.toppas: full 50 ppm m/z and 240 s RT windows, isotope probability ≥ 0.05, and no elution-model fitting. Enable Advanced to adjust extraction and detection."
         )
         if advanced:
+            if st.button(
+                "Use fitted-area RNA comparison preset",
+                key="naseweis-rna-comparison-preset",
+                help="Apply the saved RNA KNIME extraction settings and total-area normalization.",
+                on_click=self._apply_rna_comparison_preset,
+            ):
+                st.rerun()
             self.ui.input_TOPP(
                 "FeatureFinderMetaboIdent",
                 num_cols=3,
@@ -325,9 +392,57 @@ class Workflow(WorkflowManager):
                 "m/z windows ≥ 1 use ppm; values below 1 use Da. A positive isotope probability takes precedence over the isotope count. Automatic RT extraction needs a positive peak width. Model fitting options apply only when a model is selected."
             )
 
+    def _apply_rna_comparison_preset(self) -> None:
+        """Apply the recovered RNA comparison settings only after an explicit click."""
+        params = self.parameter_manager.read_parameters_strict()
+        settings = params.get("FeatureFinderMetaboIdent", {})
+        if not isinstance(settings, dict):
+            settings = {}
+        params["FeatureFinderMetaboIdent"] = settings | {
+            "model:type": "symmetric",
+            "extract:mz_window": 10.0,
+            "extract:rt_window": 0.0,
+            "detect:peak_width": 60.0,
+            "extract:n_isotopes": 5,
+            "extract:isotope_pmin": 0.0,
+            "EMGScoring:init_mom": False,
+        }
+        params["lfq-measure"] = "model_area"
+        params["lfq-normalization"] = "total"
+        self.parameter_manager.write_parameters(params)
+        self.parameter_manager.clear_parameter_session_state()
+        self.params = params
+
     def execution(self) -> bool:
+        """Execute a selected experiment, retaining scalar legacy-run support."""
+        if isinstance(self.params.get("mzML-files"), list):
+            return run_experiment(self, Workflow._execute_single)
+        return self._execute_single()
+
+    def _execute_single(self, *, validate_only: bool = False) -> bool:
         """Run the tools and propagate failure; never save Streamlit state here."""
-        cached_digest = self.params.get("database-source", "FASTA") == "Cached digest"
+        from src.naseweis_provenance import (
+            acquisition_fingerprint,
+            assert_acquisition_unchanged,
+        )
+
+        defaults = self.params.get("_defaults", {})
+        if not isinstance(defaults, dict) or not isinstance(self.params.get("_flag_params", {}), dict):
+            self.logger.log("ERROR: Invalid saved parameter defaults or flags. Repair the imported parameters or load defaults on Configure.")
+            return False
+        for tool in ("NucleicAcidSearchEngine", "DecoyDatabase"):
+            if not isinstance(defaults.get(tool, {}), dict) or not isinstance(self.params.get(tool, {}), dict):
+                self.logger.log(f"ERROR: Invalid saved {tool} settings. Repair the imported parameters or load defaults on Configure.")
+                return False
+        exports = self.params.get("search-exports", ["id_out"])
+        if not isinstance(exports, list) or any(not isinstance(option, str) for option in exports):
+            self.logger.log("ERROR: Select valid additional output files on Configure.")
+            return False
+        source = self.params.get("database-source", "FASTA")
+        if source not in ("FASTA", "Cached digest"):
+            self.logger.log("ERROR: Choose FASTA or Cached digest as the search database source on Configure.")
+            return False
+        cached_digest = source == "Cached digest"
         for key, label in [
             ("mzML-files", "MS spectra"),
             ("digest-files", "cached RNA digest")
@@ -396,12 +511,19 @@ class Workflow(WorkflowManager):
             return False
         if lfq_enabled:
             error = prepare_lfq(params, self.parameter_manager, params["mzML-files"])
+            if error is None and params.get("lfq-measure") == "model_area" and (
+                params["FeatureFinderMetaboIdent"]["model:type"] == "none"
+            ):
+                error = "Fitted model areas require symmetric or asymmetric elution-model fitting. Choose a fitted model under Advanced or use native feature areas."
             if error is None:
                 error = validate_lfq_spectra(params["mzML-files"])
             if error:
                 self.logger.log(f"ERROR: {error}")
                 return False
-        cutoff = float(params.get("FDR_cutoff", 0.05))
+        try:
+            cutoff = float(params.get("FDR_cutoff", 0.05))
+        except (TypeError, ValueError, OverflowError):
+            cutoff = float("nan")
         if not 0 <= cutoff <= 1:
             self.logger.log("ERROR: Maximum q-value must be between 0 and 1.")
             return False
@@ -476,11 +598,34 @@ class Workflow(WorkflowManager):
                     f"ERROR: This NASE installation cannot generate {SEARCH_EXPORTS[option][0]}; use the pinned nightly runtime."
                 )
                 return False
+        mapping = params.get("bedrmod-mapping-files")
+        if mapping and (not isinstance(mapping, str) or not Path(mapping).is_file()):
+            self.logger.log("ERROR: The selected custom modification mapping no longer exists. Choose an existing mapping on Configure or clear its selection.")
+            return False
+        if validate_only:
+            return True
         # The manager points at this run's snapshot in both local and queue mode.
+        # Imported snapshots cannot claim provenance for the selected input.
+        params.pop("_acquisition_fingerprint", None)
+        acquisition_record = None
+        if Path(params["mzML-files"]).suffix.lower() == ".mzml":
+            try:
+                acquisition_record = acquisition_fingerprint(params["mzML-files"])
+            except (OSError, ValueError) as error:
+                self.logger.log(f"ERROR: {error}")
+                return False
+            params["_acquisition_fingerprint"] = acquisition_record
         self.parameter_manager.write_parameters(params)
         self.params = params
         database = [params["digest-files"] if cached_digest else params["fasta-files"]]
-        if use_decoys:
+        shared_database = getattr(self, "_shared_database", None)
+        if use_decoys and shared_database is not None:
+            if not Path(shared_database).is_file():
+                self.logger.log("ERROR: The experiment's shared target-decoy database is unavailable.")
+                return False
+            database = [str(shared_database)]
+            self.logger.log("Reusing the experiment's target-decoy RNA database...")
+        elif use_decoys:
             output = self.file_manager.get_files(
                 "decoys.fasta"
                 if enabled(decoy.get("only_decoy", False))
@@ -502,6 +647,11 @@ class Workflow(WorkflowManager):
                 database = [str(combined)]
             else:
                 database = output
+        if use_decoys:
+            self._generated_database = database[0]
+        if hasattr(self, "_experiment_sample_id"):
+            params["_database_used"] = database[0]
+            self.parameter_manager.write_parameters(params)
         tab_out = self.file_manager.get_files(
             "search.mzTab", set_results_dir="mztab_results"
         )
@@ -526,11 +676,41 @@ class Workflow(WorkflowManager):
         self.logger.log("Searching RNA oligonucleotides...")
         if not self.executor.run_topp("NucleicAcidSearchEngine", io):
             return False
+        if acquisition_record is not None:
+            try:
+                assert_acquisition_unchanged(params["mzML-files"], acquisition_record)
+            except ValueError as error:
+                self.logger.log(f"ERROR: {error}")
+                return False
         if lfq_enabled:
-            return run_lfq(self, io["lfq_out"][0])
+            if not run_lfq(self, io["lfq_out"][0]):
+                return False
+            if acquisition_record is not None:
+                try:
+                    assert_acquisition_unchanged(params["mzML-files"], acquisition_record)
+                except ValueError as error:
+                    self.logger.log(f"ERROR: {error}")
+                    return False
         return True
 
     def results(self) -> None:
+        if not render_experiment_results(self, self._render_sample_results):
+            self._single_results()
+
+    def _render_sample_results(self, sample: dict) -> None:
+        """Reuse saved-run viewers with this sample's own parameters and evidence."""
+        child = copy(self)
+        child.results_dir = sample_results(self.results_dir, sample["id"])
+        child._sample_snapshot = sample_snapshot(self.results_dir, sample["id"])
+        child._sample_log_dir = child._sample_snapshot.parent / "logs"
+        child._single_results()
+
+    def _result_snapshot(self) -> Path:
+        if hasattr(self, "_sample_snapshot"):
+            return self._sample_snapshot
+        return self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
+
+    def _single_results(self) -> None:
         # Legacy runs used extensionless names; retain access after migration.
         result_file = self.results_dir / "mztab_results" / "search.mzTab"
         if not result_file.exists():
@@ -554,8 +734,10 @@ class Workflow(WorkflowManager):
             matches["Sequence"].nunique() if not matches.empty else 0,
         )
         cols[2].metric("RNA accessions", len(tables.get("NUC", [])))
-        table_tab, coverage_tab, lfq_tab, download_tab = st.tabs(
-            ["Matches", "Sequence coverage", "Quantification", "Export"]
+        snapshot = self._result_snapshot()
+        online = st.session_state.get("settings", {}).get("online_deployment", False)
+        table_tab, spectra_tab, coverage_tab, lfq_tab, download_tab = st.tabs(
+            ["Matches", "Spectra", "Sequence coverage", "Quantification", "Export"]
         )
         with table_tab:
             if matches.empty:
@@ -570,25 +752,15 @@ class Workflow(WorkflowManager):
                     "naseweis-matches.csv",
                     "text/csv",
                 )
+        with spectra_tab:
+            render_identification_viewer(
+                self.results_dir, snapshot, tables.get("OSM", matches),
+                self.workflow_dir, online,
+            )
         with coverage_tab:
-            references = tables.get("NUC")
-            if references is not None and not references.empty:
-                accession = st.selectbox(
-                    "RNA accession", references["accession"].dropna().unique()
-                )
-                try:
-                    plot = coverage_html(tables, accession)
-                    html(plot, height=550, scrolling=True)
-                    st.download_button(
-                        "Download coverage (HTML)",
-                        plot,
-                        "naseweis-coverage.html",
-                        "text/html",
-                    )
-                except (ValueError, KeyError, IndexError) as error:
-                    st.warning(f"Coverage is unavailable: {error}")
-            else:
-                st.info("No RNA sequence coverage to display for this run.")
+            render_coverage_groups(
+                [("This acquisition", tables)], f"coverage-{self.results_dir}"
+            )
         with lfq_tab:
             self.quantification_results()
         with download_tab:
@@ -627,11 +799,7 @@ class Workflow(WorkflowManager):
                         artifact.name,
                         "text/plain",
                     )
-            snapshot = (
-                self.runs.params_file(self.run_id)
-                if self.run_id
-                else self.parameter_manager.params_file
-            )
+            snapshot = self._result_snapshot()
             if snapshot.is_file():
                 st.download_button(
                     "Download search parameters",
@@ -639,23 +807,37 @@ class Workflow(WorkflowManager):
                     "naseweis-parameters.json",
                     "application/json",
                 )
-            log_path = (
-                self.runs.run_dir(self.run_id) if self.run_id else self.workflow_dir
-            ) / "logs" / "all.log"
+            log_dir = getattr(self, "_sample_log_dir", None)
+            if log_dir is None:
+                log_dir = (self.runs.run_dir(self.run_id) if self.run_id else self.workflow_dir) / "logs"
+            log_path = log_dir / "all.log"
             if log_path.is_file():
                 st.download_button("Download run log", log_path.read_bytes(), "naseweis-run.log", "text/plain")
 
     def select_run(self, label: str = "Run", key: str = "") -> str | None:
-        """Keep identification artifacts accessible if downstream LFQ fails."""
+        """Keep saved evidence accessible after failed, cancelled or interrupted runs."""
         from src.workflow.run_widgets import run_label, selected_run_key
 
+        runs = self.runs.list_runs()
+        workflow_running = (
+            self.get_workflow_status().get("running", False)
+            if any(run["status"] == "running" for run in runs) else False
+        )
+        statuses = {
+            run["id"]: (
+                "interrupted" if run["status"] == "running" and not workflow_running
+                else run["status"]
+            )
+            for run in runs
+        }
         available = [
-            run for run in self.runs.list_runs()
+            run for run in runs
             if run["status"] == "finished" or (
-                run["status"] == "failed" and any(
+                statuses[run["id"]] in {"failed", "cancelled", "interrupted"}
+                and ((self.runs.results_dir(run["id"]) / "experiment.json").is_file() or any(
                     (self.runs.results_dir(run["id"]) / "mztab_results" / name).is_file()
                     for name in ("search.mzTab", "tab_out")
-                )
+                ))
             )
         ]
         if not available:
@@ -672,15 +854,21 @@ class Workflow(WorkflowManager):
         run_id = st.selectbox(
             label, list(choices), key=widget,
             format_func=lambda value: run_label(choices[value]) + (
-                " · Failed / partial results" if choices[value]["status"] == "failed" else ""
+                f" · {statuses[value].capitalize()} / partial results"
+                if statuses[value] != "finished" else ""
             ),
             on_change=store_selection,
-            help="Choose a saved run. Failed runs with search artifacts remain available for inspecting partial outputs.",
+            help="Choose a saved run. Stopped or failed runs with saved artifacts remain available for inspecting partial outputs.",
         )
         store_selection()
         self._use_run(run_id)
-        if choices[run_id]["status"] == "failed":
-            st.warning("This run failed. Available outputs may be incomplete; inspect this run's saved log on Export before interpreting them.")
+        self._result_run_status = statuses[run_id]
+        if statuses[run_id] != "finished":
+            state = (
+                "failed" if statuses[run_id] == "failed"
+                else f"was {statuses[run_id]}"
+            )
+            st.warning(f"This run {state}. Available outputs may be incomplete; inspect this run's saved log on Export before interpreting them.")
         return run_id
 
     def quantification_results(self) -> None:
@@ -713,12 +901,19 @@ class Workflow(WorkflowManager):
                             "expected_rt": st.column_config.NumberColumn("Expected RT (s)", format="%.2f"),
                         },
                     )
+                    snapshot = self._result_snapshot()
+                    render_lfq_viewer(
+                        self.results_dir, snapshot, table, self.workflow_dir,
+                        st.session_state.get("settings", {}).get("online_deployment", False),
+                    )
             except (OSError, ValueError) as error:
                 st.error(f"Could not read this run's feature table: {error}")
         else:
-            snapshot = self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
+            snapshot = self._result_snapshot()
             try:
                 saved = json.loads(snapshot.read_text())
+                if not isinstance(saved, dict):
+                    saved = {}
             except (OSError, ValueError):
                 saved = {}
             if enabled(saved.get("enable-lfq", False)):

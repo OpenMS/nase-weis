@@ -12,6 +12,17 @@ from pathlib import Path
 import pandas as pd
 
 HEADERS = {"NUH": "NUC", "OLH": "OLI", "OSH": "OSM"}
+# NASequence emits D (dihydrouridine), I (inosine) and Y (pseudouridine)
+# without brackets. Terminal groups are decorations, not extra nucleotides.
+_NUCLEOTIDE = r"[ACGUNDIY]|\[(?![35]'-)[^\[\]]+\]"
+_FIVE_PRIME = r"p|\*|\[5'-[^\[\]]+\]"
+_THREE_PRIME = r"p|c|\[3'-[^\[\]]+\]"
+_NUCLEOTIDE_TOKEN = re.compile(
+    rf"(?:{_FIVE_PRIME})?(?P<nucleotide>{_NUCLEOTIDE})(?:{_THREE_PRIME})?"
+)
+_TERMINAL_ALIASES = {
+    "[5'-p]": "p", "[5'-p*]": "*", "[3'-p]": "p", "[3'-c]": "c",
+}
 
 
 def read_mztab(path: str | Path) -> dict[str, pd.DataFrame]:
@@ -53,29 +64,48 @@ def read_mztab(path: str | Path) -> dict[str, pd.DataFrame]:
     return tables
 
 
+def nucleotide_token(token: str) -> str:
+    """Return one native nucleotide identity without terminal decorations.
+
+    ``split_sequence`` attaches terminal groups to its outer nucleotide tokens.
+    This helper removes only those decorations, preserving modified nucleotide
+    identity such as ``D``, ``Y`` or ``[m5C]`` for labels and site markers.
+    """
+    match = _NUCLEOTIDE_TOKEN.fullmatch(token) if isinstance(token, str) else None
+    if match is None:
+        raise ValueError(f"Invalid RNA nucleotide token: {token}")
+    return match["nucleotide"]
+
+
 def split_sequence(sequence: str) -> list[str]:
-    """Tokenize bracketed modifications and attach terminal phosphate markers."""
-    if not sequence:
+    """Tokenize native RNA identities with terminal groups on the outer bases.
+
+    In addition to bracketed nucleotide annotations, OpenMS emits D/I/Y as
+    single letters and uses a leading ``*`` for a 5′ phosphorothioate. Known
+    bracketed terminal aliases canonicalize to p/*/c. Other explicit 5′/3′
+    terminal groups retain their labels without increasing nucleotide count.
+    """
+    if not isinstance(sequence, str):
+        raise ValueError("An RNA sequence must be text.")  # noqa: TRY004
+    if sequence == "":
         return []
-    # OpenMS accepts bracketed terminal groups as well as p/c shorthand.
-    sequence = (
-        sequence.replace("[5'-p]", "p").replace("[3'-p]", "p").replace("[3'-c]", "c")
-    )
-    tokens = re.findall(r"\[[^\[\]]+\]|[ACGUNpc]", sequence)
+    tokens = re.findall(r"\[[^\[\]]+\]|[ACGUNDIYpc*]", sequence)
     if "".join(tokens) != sequence:
         raise ValueError(f"Invalid RNA sequence: {sequence}")
-    if tokens[0] == "p":
-        tokens = tokens[1:]
-        if not tokens:
-            raise ValueError("A terminal phosphate must accompany a nucleotide.")
-        tokens[0] = "p" + tokens[0]
-    if tokens[-1] in ("p", "c"):
+    five_prime = ""
+    if re.fullmatch(_FIVE_PRIME, tokens[0]):
+        terminal = tokens.pop(0)
+        five_prime = _TERMINAL_ALIASES.get(terminal, terminal)
+    three_prime = ""
+    if tokens and re.fullmatch(_THREE_PRIME, tokens[-1]):
         terminal = tokens.pop()
-        if not tokens:
-            raise ValueError("A terminal phosphate must accompany a nucleotide.")
-        tokens[-1] += terminal
-    if any(token in ("p", "c") for token in tokens):
-        raise ValueError("Phosphate markers are only valid at sequence termini.")
+        three_prime = _TERMINAL_ALIASES.get(terminal, terminal)
+    if not tokens:
+        raise ValueError("A terminal group must accompany a nucleotide.")
+    if any(re.fullmatch(_NUCLEOTIDE, token) is None for token in tokens):
+        raise ValueError("Terminal groups are only valid at the sequence termini.")
+    tokens[0] = five_prime + tokens[0]
+    tokens[-1] += three_prime
     return tokens
 
 

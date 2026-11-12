@@ -3,7 +3,13 @@
 import pandas as pd
 import pytest
 
-from src.naseweis_results import coverage_html, match_table, read_mztab, split_sequence
+from src.naseweis_results import (
+    coverage_html,
+    match_table,
+    nucleotide_token,
+    read_mztab,
+    split_sequence,
+)
 
 
 @pytest.fixture
@@ -114,6 +120,57 @@ def test_cache_is_scoped_to_full_path_and_revision(result_file, tmp_path):
 )
 def test_terminal_modifications(sequence, expected):
     assert split_sequence(sequence) == expected
+
+
+@pytest.mark.parametrize("sequence,expected", [
+    ("ADIYp", ["A", "D", "I", "Yp"]),
+    ("*A[m5C]Yc", ["*A", "[m5C]", "Yc"]),
+    ("[5'-p*]A[m5C]Y[3'-c]", ["*A", "[m5C]", "Yc"]),
+    ("p[Am]p", ["p[Am]p"]),
+    ("[5'-cap]AI[3'-custom]", ["[5'-cap]A", "I[3'-custom]"]),
+    ("[5'-cap][m5C][3'-custom]", ["[5'-cap][m5C][3'-custom]"]),
+])
+def test_native_modified_bases_and_terminal_groups_do_not_add_positions(sequence, expected):
+    assert split_sequence(sequence) == expected
+
+
+@pytest.mark.parametrize("token,expected", [
+    ("A", "A"), ("D", "D"), ("Yp", "Y"), ("*Ic", "I"),
+    ("pAp", "A"), ("*[m5C]p", "[m5C]"), ("[5'-p*]A", "A"),
+    ("[5'-cap][m5C][3'-custom]", "[m5C]"),
+])
+def test_nucleotide_identity_preserves_modifications_and_removes_only_termini(token, expected):
+    assert nucleotide_token(token) == expected
+
+
+@pytest.mark.parametrize("token", ["", "AC", "p", "*", "[5'-p]", "[3'-p]", "**A", None])
+def test_nucleotide_helper_rejects_non_nucleotide_tokens(token):
+    with pytest.raises(ValueError, match="Invalid RNA nucleotide token"):
+        nucleotide_token(token)
+
+
+@pytest.mark.parametrize("sequence", [
+    "*", "**A", "ApC", "A*G", "A[5'-p]", "[3'-p]A", "[5'-p*]",
+    "[5'-cap][3'-custom]", "[5'-cap]pA", "A[3'-custom]c", "Z", None, 1,
+])
+def test_invalid_native_terminal_placement_and_nontext_sequences(sequence):
+    with pytest.raises(ValueError):
+        split_sequence(sequence)
+
+
+@pytest.mark.parametrize("sequence", [
+    "ADGp", "AIGp", "AYGp", "*ACGp", "[5'-p*]ACGp", "pA[m5C]Yc",
+])
+def test_token_positions_match_native_nase_sequence_roundtrip(sequence):
+    import pyopenms as oms
+
+    native = oms.NASequence.fromString(sequence)
+    canonical = native.toString()
+    assert len(split_sequence(sequence)) == native.size()
+    assert len(split_sequence(canonical)) == native.size()
+    assert [nucleotide_token(token) for token in split_sequence(sequence)] == [
+        nucleotide_token(token) for token in split_sequence(canonical)
+    ]
 
 
 def test_long_coverage_wraps_into_blocks():

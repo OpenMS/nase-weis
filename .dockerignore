@@ -8,6 +8,7 @@
 **/node_modules
 .env
 .env.*
+data/
 .streamlit/secrets.toml
 workspaces-*
 electron/payload

@@ -27,7 +27,7 @@
     "enable_workspaces": true,
     "test": false,
     "workspaces_dir": "..",
-    "local_data_dir": "",
+    "local_data_dir": "/data",
     "queue_settings": {
         "default_timeout": 7200,
         "result_ttl": 86400

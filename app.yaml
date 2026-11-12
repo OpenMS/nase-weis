@@ -12,8 +12,8 @@ app:
 inputs:
   mzML-files:
     types: [mzML, raw, d]
-    multiple: false
-    description: One MS/MS acquisition (mzML, Thermo RAW or Bruker directory).
+    multiple: true
+    description: Selected MS/MS acquisitions (mzML, Thermo RAW or Bruker directories).
   fasta-files:
     types: [fasta, fa, faa]
     multiple: false
@@ -60,6 +60,7 @@ pages:
   - content/topp_workflow_execution.py
   - content/topp_workflow_results.py
   - content/decoy_database.py
+  - content/naseweis_raw_viewer.py
 deploy:
   k8s:
     enabled: false
@@ -78,12 +79,29 @@ sync:
     - default-parameters.json
     - presets.json
     - README.md
+    - docker-compose.yml
     - docs/lfq.md
+    - docs/viewers.md
     - content/*
     - src/Workflow.py
+    - src/workflow/host_paths.py
+    - src/workflow/process_state.py
+    - src/workflow/file_lock.py
     - src/naseweis_results.py
     - src/naseweis_tools.py
+    - src/naseweis_validation.py
     - src/naseweis_lfq.py
+    - src/naseweis_experiment.py
+    - src/naseweis_experiment_ui.py
+    - src/naseweis_comparison.py
+    - src/naseweis_comparison_plots.py
+    - src/naseweis_coverage.py
+    - src/naseweis_result_plots_ui.py
+    - src/naseweis_viewers.py
+    - src/naseweis_msdata.py
+    - src/naseweis_annotations.py
+    - src/naseweis_plots.py
+    - src/naseweis_provenance.py
     - src/DecoyWorkflow.py
     - openms-runtime.json
     - docker/Dockerfile.app
@@ -103,6 +121,7 @@ sync:
     - tests/data/naseweis/*
     - src/python-tools/*
     - example-data/*
+    - data/.gitkeep
     - assets/*
     - k8s/overlays/*
     - k8s/argocd/*

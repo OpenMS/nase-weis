@@ -5,8 +5,8 @@ These functions are executed by RQ workers and should not import Streamlit.
 This module must be importable without Streamlit being available.
 """
 
-import sys
 import json
+import os
 import shutil
 import traceback
 from pathlib import Path
@@ -80,14 +80,14 @@ def execute_workflow(
         _update_progress(job, 0.0, "Initializing workflow...")
 
         # Import required modules
-        from src.workflow.CommandExecutor import CommandExecutor
-        from src.workflow.FileManager import FileManager
-        from src.workflow.ParameterManager import ParameterManager
-        from src.workflow.Logger import Logger
-        from src.workflow.RunManager import RunManager
-
         # Load the workflow class dynamically
         import importlib
+
+        from src.workflow.CommandExecutor import CommandExecutor
+        from src.workflow.FileManager import FileManager
+        from src.workflow.Logger import Logger
+        from src.workflow.ParameterManager import ParameterManager
+        from src.workflow.RunManager import RunManager
         module = importlib.import_module(workflow_module)
         WorkflowClass = getattr(module, workflow_class)
 
@@ -135,6 +135,13 @@ def execute_workflow(
         parameter_manager.params_file = params_file
         executor = CommandExecutor(workflow_path, logger, parameter_manager)
         executor.pid_dir.mkdir(parents=True, exist_ok=True)
+        if job is not None:
+            # Record the work-horse too, not only its native tool children.
+            # Local queue recovery must not admit another analysis in the
+            # gaps between commands while this worker is still active.
+            from src.workflow.process_state import register_process_marker
+
+            register_process_marker(executor.pid_dir / str(os.getpid()), os.getpid())
 
         _update_progress(job, 0.1, "Starting workflow execution...")
 
@@ -218,7 +225,7 @@ def execute_workflow(
             for log_name in ["minimal.log", "commands-and-run-times.log", "all.log"]:
                 log_file = log_dir / log_name
                 with open(log_file, "a") as f:
-                    f.write(f"\n\nERROR: {str(e)}\n")
+                    f.write(f"\n\nERROR: {e!s}\n")
                     # A workflow reporting failure by returning False is not a
                     # crash, the reason is in the tool output above.
                     if not isinstance(e, (WorkflowExecutionError, WorkerBuildMismatchError)):

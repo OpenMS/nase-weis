@@ -53,6 +53,10 @@ electron/dist/
 !electron/build/
 
 # Local development and validation
+.env
+.env.*
+/data/*
+!/data/.gitkeep
 .venv/
 .pytest_cache/
 .ruff_cache/

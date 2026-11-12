@@ -8,6 +8,6 @@ from src.Workflow import Workflow
 page_setup()
 st.title("Explore your results")
 st.write(
-    "Choose a saved run to inspect matches, sequence coverage, optional MS1 quantification and downloadable results."
+    "Choose a saved analysis to compare sample abundances and inspect each acquisition's matches, spectra and sequence coverage."
 )
 Workflow().show_results_section()
