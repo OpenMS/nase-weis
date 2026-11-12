@@ -48,6 +48,12 @@ Create the folder if needed, then run `docker compose up -d` to apply the mount.
 The app shows this host folder in its file browser. The local `.env` file is ignored
 by Git and container builds.
 
+Absolute host paths in the app are clickable `file://` folder links. Browsers
+may block these links or show a directory in the browser instead of opening
+the OS file manager. Use the copy button beside the displayed path and paste
+it into your file manager's address or Go to Folder field when needed. The
+default `./data` path stays as copyable text relative to `docker-compose.yml`.
+
 ```bash
 docker compose ps
 docker compose logs --tail=100 naseweis

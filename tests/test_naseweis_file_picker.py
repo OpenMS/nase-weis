@@ -280,3 +280,19 @@ def test_upload_page_explains_the_host_data_folder(naseweis_app, monkeypatch, tm
     )
     assert "Refresh folder" in instructions
     assert "saved runs" in instructions
+    assert f"](<{inbox.as_uri()}/>)" in instructions
+    assert any(code.value == str(inbox) for code in naseweis_app.code)
+    assert any("If the link does not open your file browser" in caption.value for caption in naseweis_app.caption)
+
+
+def test_upload_page_keeps_relative_host_folder_copyable_without_a_container_uri(
+    naseweis_app, monkeypatch  # noqa: F811
+):
+    monkeypatch.setenv("LOCAL_DATA_HOST_DIR", "./data")
+    naseweis_app.run(timeout=30)
+    naseweis_app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    assert not naseweis_app.exception
+    instructions = next(info.value for info in naseweis_app.info if "Your data folder:" in info.value)
+    assert "file:" not in instructions
+    assert any(code.value == "./data" for code in naseweis_app.code)
+    assert any("relative to the folder containing docker-compose.yml" in caption.value for caption in naseweis_app.caption)

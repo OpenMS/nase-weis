@@ -54,6 +54,7 @@ from src.workflow.ExperimentalDesign import (
     to_openms_design,
 )
 from src.workflow.vendor_files import extract_bruker_zip, has_type
+from src.workflow.host_paths import folder_reference
 from src.data_import import ui as data_import_ui
 from src.workflow.ParameterManager import (
     InvalidParameterFileError,
@@ -840,7 +841,7 @@ class StreamlitUI:
         with st.container(border=True):
             st.markdown(f"**Choose {name} from the data folder**")
             if host_folder := os.environ.get("LOCAL_DATA_HOST_DIR"):
-                st.caption(f"On your computer: `{host_folder}`")
+                st.caption(f"On your computer: {folder_reference(host_folder)}")
             st.caption("Move files into your data folder, then refresh this list. Selected files are read in place.")
             # Clicking already reruns this widget and re-reads the directory.
             st.button("Refresh folder", key=f"mounted_refresh_{key}")

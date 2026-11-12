@@ -84,6 +84,7 @@ sync:
     - docs/viewers.md
     - content/*
     - src/Workflow.py
+    - src/workflow/host_paths.py
     - src/naseweis_results.py
     - src/naseweis_tools.py
     - src/naseweis_lfq.py
