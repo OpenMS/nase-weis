@@ -50,3 +50,13 @@ patches:
     target:
       kind: Deployment
       name: rq-worker
+  # Production runs ten workers; a runner fits two of even the shrunk size
+  # (2 x 500m next to kube-system on 4 vCPU). Back to the base's two, which
+  # still gives assert_workers_spread_across_nodes two replicas to spread.
+  - target:
+      kind: Deployment
+      name: rq-worker
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
