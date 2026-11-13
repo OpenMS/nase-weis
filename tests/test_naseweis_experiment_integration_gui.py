@@ -88,7 +88,7 @@ def test_full_configure_selection_deselection_and_clear_keep_lfq_off(app, topp_s
     assert not any(box.key == "naseweis-param-lfq-measure" for box in app.selectbox)
 
 
-def test_configure_and_method_summary_work_after_experiment_design_snapshot(app, topp_schemas):
+def test_configure_and_methods_work_after_experiment_design_snapshot(app, topp_schemas):
     folder, paths = seed_inputs(app)
     params_file = folder / "params.json"
     params = json.loads(params_file.read_text())
@@ -102,7 +102,7 @@ def test_configure_and_method_summary_work_after_experiment_design_snapshot(app,
     configure(app)
     assert app.multiselect(key="naseweis-param-mzML-files").value == paths
     assert app.checkbox(key="naseweis-param-enable-lfq").value is False
-    assert any(button.label == "📑 Method summary" for button in app.get("download_button"))
+    assert any(button.label == "📑 Methods" for button in app.get("download_button"))
     assert json.loads(params_file.read_text())["_sample_design"] == params["_sample_design"]
 
 
