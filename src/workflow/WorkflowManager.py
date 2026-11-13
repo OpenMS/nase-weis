@@ -1,11 +1,14 @@
+import json
 from pathlib import Path
 from typing import Optional
 from .Logger import Logger
-from .ParameterManager import ParameterManager
+from .ParameterManager import InvalidParameterFileError, ParameterManager
 from .CommandExecutor import CommandExecutor
 from .StreamlitUI import StreamlitUI
 from .FileManager import FileManager
-from .RunManager import RunManager, FINISHED, FAILED, CANCELLED, RUNNING
+from ._log_status import classify_log_outcome
+from .RunManager import RunManager, FINISHED, FAILED, CANCELLED, RUNNING, FOLLOW_UP_KEY, FOLLOW_UP_FILE, RUN_NAME_KEY, RUN_NAME_FILE, MAX_NAME_LENGTH, apply_settings, same_files_info
+from .pid_files import reap
 from .process_state import local_workflow_running, owned_workflow_running, pid_markers, prune_exited_marker, register_process_marker, signal_owned_process
 from .file_lock import file_lock
 import multiprocessing
@@ -34,6 +37,14 @@ class WorkflowManager:
     # instead of overwriting <workflow_dir>/results/. Set to True in a subclass
     # to opt in, and read and write results through self.results_dir.
     multi_run = False
+    # The page that shows a running start (its execution section), opened by
+    # the Start button that settings adding files to an experiment draw on the
+    # configure page. None: that button stays on the configure page.
+    run_page = None
+    # Draw a name field beside the Run button of the configure page
+    # (show_run_button). Run folders always offer it; a workflow without them
+    # sets this to True and reads the name in execution() with run_name().
+    name_runs = False
 
     # Core workflow logic using the above classes
     def __init__(self, name: str, workspace: str):
@@ -92,10 +103,15 @@ class WorkflowManager:
                 acquired = True
                 if self.get_workflow_status().get("running", False):
                     raise ValueError("This workflow is already running. Wait for it to finish or stop it before starting another analysis.")
+                # Flush the latest session state to params.json so the worker
+                # (queued) or the workflow process (local) sees the values the
+                # user just selected, not stale disk state.
                 if self.parameter_manager.save_parameters() is False:
                     raise ValueError("The current settings could not be saved. Correct the parameter error before starting.")
                 if self.multi_run:
                     self._new_run()
+                else:
+                    self._settle_follow_up()
                 try:
                     if self._queue_manager and self._queue_manager.is_available:
                         self._start_workflow_queued()
@@ -110,15 +126,177 @@ class WorkflowManager:
                 raise  # A real launch/I/O failure is not lock contention.
             raise ValueError("Another session is starting or stopping this workflow. Wait a moment, then try again.") from error
 
+    def _settle_follow_up(self) -> None:
+        """Without run folders: the start keeps which result it follows (for the
+        processing report) and the name it was given, and the next settings
+        start fresh."""
+        params = self._stored_params()
+        if params is None:
+            return
+        info = params.pop(FOLLOW_UP_KEY, None)
+        name = params.pop(RUN_NAME_KEY, None)
+        sidecar = Path(self.workflow_dir, FOLLOW_UP_FILE)
+        if isinstance(info, dict):
+            sidecar.write_text(json.dumps(info), encoding="utf-8")
+        else:
+            sidecar.unlink(missing_ok=True)
+        name_file = Path(self.workflow_dir, RUN_NAME_FILE)
+        if isinstance(name, str) and name.strip():
+            name_file.write_text(name.strip(), encoding="utf-8")
+        else:
+            name_file.unlink(missing_ok=True)
+        if info is not None or name is not None:
+            self.parameter_manager.write_parameters(params)
+
+    def _stored_params(self) -> Optional[dict]:
+        """params.json for a read-modify-write, None (and logged) when it
+        cannot be read: writing back a tolerant empty read would erase it."""
+        try:
+            return self.parameter_manager.read_parameters_strict()
+        except InvalidParameterFileError as e:
+            print(f"params.json not updated: {e}", file=sys.stderr)
+            return None
+
+    def run_name(self) -> str:
+        """The name the running start was given, for ``execution()``; empty
+        when none was given. A run keeps it as its name (its default name when
+        none was given)."""
+        if self.multi_run and getattr(self, "run_id", None):
+            return (self.runs.get(self.run_id) or {}).get("name", "")
+        try:
+            return Path(self.workflow_dir, RUN_NAME_FILE).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def run_name_placeholder(self) -> str:
+        """Shown in the empty name field beside the Run button."""
+        if self.multi_run:
+            return self.runs.default_name()
+        return "Name (optional)"
+
     def _new_run(self) -> None:
         """Create the run this start writes into, and show it on the results pages."""
         from .run_widgets import clear_run_name, pending_run_name, set_selected_run
 
-        name = pending_run_name(self.runs)
-        self.run_id = self.runs.new_run(name, Path(self.workflow_dir, "params.json"))
+        # A failed read leaves params.json as it is (nothing written back)
+        stored = self._stored_params()
+        params = stored if stored is not None else {}
+        # The name typed on the Run page, else the one given beside the Run
+        # button of the configure page
+        given = params.pop(RUN_NAME_KEY, None)
+        name = pending_run_name(self.runs) or (given if isinstance(given, str) else "")
+        if given is not None and stored is not None:
+            self.parameter_manager.write_parameters(params)
+        info = params.get(FOLLOW_UP_KEY)
+        adds_to = info.get("adds_to") if isinstance(info, dict) else None
+        self.run_id = self.runs.new_run(name, Path(self.workflow_dir, "params.json"), adds_to=adds_to)
+        # The name is cleared only once the run exists, so a failed start keeps it
         clear_run_name(self.runs)
+        # The run keeps which run it follows; the next settings start fresh
+        if params.pop(FOLLOW_UP_KEY, None) is not None and stored is not None:
+            self.parameter_manager.write_parameters(params)
         self._use_run(self.run_id)
         set_selected_run(self.runs, self.run_id)
+
+    def follow_up(
+        self,
+        run_id: str,
+        changes: Optional[dict] = None,
+        page=None,
+        note: str = "",
+        add_files: Optional[str] = None,
+        same_files: Optional[str] = None,
+        keep: Optional[list] = None,
+    ) -> bool:
+        """Set up the next run from the settings ``run_id`` was started with.
+
+        For an analysis a run is missing (identification after deconvolution
+        only), more files, or a comparison with other runs: the parameters the
+        user set for that run, and its experimental design, become the
+        workflow's again, with ``changes`` on top (params.json keys, e.g.
+        ``{"identify": True}`` or ``{"mzML-files": [...]}``; a TOPP tool's dict is
+        merged). The configure page then says which run it starts from and
+        ``note`` (what changed). ``page`` switches there (``st.switch_page``).
+        Returns False if the run recorded no parameters.
+
+        ``add_files`` (the params.json key of the input files) is for more
+        files: that key starts empty, and the next run adds the files picked
+        then to ``run_id``'s experiment, which the results pages show as one
+        (``RunManager.experiment``), so the earlier files are not processed again.
+
+        ``same_files`` (that key) is for an analysis added to ``run_id`` itself
+        (identification of a run deconvolved only): the next run takes exactly
+        its files, shown locked on the configure page, and ``keep`` names the
+        tools whose results it reuses, shown as kept there in place of their
+        settings. ``execution()`` finds the run in ``follow_up_info()["reuses"]``
+        and takes those tools' results from it instead of running them.
+        """
+        if not self.multi_run or not self.runs.restore_settings(
+                run_id, changes, note, add_files, same_files=same_files, keep=keep):
+            return False
+        self._reload_settings(page)
+        return True
+
+    def start_from(
+        self,
+        params: dict,
+        changes: Optional[dict] = None,
+        name: str = "",
+        page=None,
+        note: str = "",
+        adds_to: Optional[list] = None,
+        files: Optional[list] = None,
+        files_key: Optional[str] = None,
+        same_files: Optional[str] = None,
+        keep: Optional[list] = None,
+        reuses: Optional[list] = None,
+    ) -> None:
+        """``follow_up`` for an app without run folders: start from ``params``.
+
+        ``params`` are the settings the earlier result was made with (as the
+        app stored them), ``name`` names that result on the configure page.
+        ``adds_to`` (the app's ids of earlier results, with their input
+        ``files``) is for more files: the next run then adds to them, and
+        ``execution()`` reads them with ``self.follow_up_info()``. ``files_key``
+        (the params.json key of the input files) shows those files apart on the
+        configure page, so only the files to add can be picked there.
+
+        ``same_files`` (that key) instead keeps the input ``files`` of the
+        results ``reuses`` (the app's ids), shown locked on the configure page,
+        and ``keep`` names the tools whose results are reused (see ``follow_up``).
+        """
+        info = {"name": name, "note": note}
+        if same_files:
+            info.update(same_files_info(same_files, files or [], keep, reuses))
+            changes = {**(changes or {}), same_files: list(files or [])}
+        elif adds_to:
+            info.update(adds_to=list(adds_to), files=list(files or []))
+            if files_key:
+                info["files_key"] = files_key
+        apply_settings(self.workflow_dir, params, changes, info)
+        self._reload_settings(page)
+
+    def follow_up_info(self) -> dict:
+        """What the running start follows (``start_from``), for ``execution()``.
+
+        Without run folders the start keeps it apart from params.json (so the
+        next settings start fresh), a run keeps it in its own parameters;
+        empty when the start followed nothing.
+        """
+        if self.multi_run and getattr(self, "run_id", None):
+            info = (self.runs.params(self.run_id) or {}).get(FOLLOW_UP_KEY)
+            return info if isinstance(info, dict) else {}
+        try:
+            info = json.loads(Path(self.workflow_dir, FOLLOW_UP_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return info if isinstance(info, dict) else {}
+
+    def _reload_settings(self, page=None) -> None:
+        self.params = self.parameter_manager.get_parameters_from_json()
+        self.parameter_manager.clear_parameter_session_state()
+        if page is not None:
+            st.switch_page(page)
 
     def _use_run(self, run_id: str) -> None:
         """Point results_dir (and the FileManager) at a run."""
@@ -145,6 +323,7 @@ class WorkflowManager:
                     "run_id": self.run_id if self.multi_run else None,
                 },
                 job_id=job_id,
+                timeout=self.job_timeout(),
                 description=f"Workflow: {self.name}"
             )
         except QueueStateUnavailableError:
@@ -160,6 +339,19 @@ class WorkflowManager:
             # Fallback to local execution if queue submission fails
             st.warning("Queue submission failed, running locally...")
             self._start_workflow_local()
+
+    def job_timeout(self) -> int:
+        """Time limit (s) of a queued run: grows with the run's input files.
+
+        settings.json queue_settings: default_timeout + timeout_per_input per
+        selected input file, at most max_timeout (src/workflow/job_timeout.py).
+        Override for a workflow whose run time follows something else.
+        """
+        from .job_timeout import count_input_files, job_timeout
+        from .settings_io import load_settings
+
+        params = self.parameter_manager.get_parameters_from_json()
+        return job_timeout(count_input_files(params), load_settings().get("queue_settings", {}))
 
     def _start_workflow_local(self) -> None:
         """Start the workflow in a separate Python process (local mode)."""
@@ -308,7 +500,19 @@ class WorkflowManager:
                     self._queue_manager.clear_job_id(self.workflow_dir, expected_job_id=job_id)
 
         # Fallback: check PID files (local mode)
-        if local_workflow_running(self.executor.pid_dir):
+        pid_dir = self.executor.pid_dir
+        # A run whose process was killed (the app force-closed) left its pid
+        # files behind and showed as running forever. Checking the markers
+        # removes those of ended processes; online they may belong to a
+        # worker in another container, so only proven ones count there.
+        if self._is_online_mode():
+            running = local_workflow_running(pid_dir)
+        else:
+            # reap() also removes the folder once no marker is left.
+            running, removed = reap(pid_dir)
+            if removed and not running:
+                self._record_interrupted_run()
+        if running:
             return {
                 "running": True,
                 "status": "running",
@@ -328,6 +532,19 @@ class WorkflowManager:
             "queue_position": None,
             "queue_length": None,
         }
+
+    def _record_interrupted_run(self) -> None:
+        """Say in the log why a run whose processes are gone ended."""
+        log = Path(self.workflow_dir, "logs", "minimal.log")
+        try:
+            content = log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            content = ""
+        if classify_log_outcome(content) == "error":
+            self.logger.log(
+                "ERROR: The workflow was interrupted: its process ended without "
+                "finishing (the app was closed or the process was killed)."
+            )
 
     def stop_workflow(self) -> bool:
         """
@@ -437,24 +654,164 @@ class WorkflowManager:
         """
         self.ui.parameter_section(self.configure)
 
-    def show_execution_section(self) -> None:
+    def _follow_up(self) -> Optional[dict]:
+        """What the settings follow (``follow_up``, ``start_from``), else None."""
+        info = self.parameter_manager.get_parameters_from_json().get(FOLLOW_UP_KEY)
+        return info if isinstance(info, dict) else None
+
+    @staticmethod
+    def _follow_up_summary(info: dict) -> str:
+        """One line on what a start with the settings of an earlier run does."""
+        name = info.get("name") or info.get("run") or "the earlier run"
+        if info.get("same_files"):
+            return f"Adds to {name}: its files with these settings, the new run kept next to it."
+        if info.get("adds_to"):
+            return f"Adds the files picked above to {name}."
+        return f"Starts from the settings of {name}."
+
+    def _follow_up_files_missing(self, info: Optional[dict]) -> bool:
+        """True while settings that add files to an experiment have none picked."""
+        key = (info or {}).get("files_key")
+        if not key or not (info or {}).get("adds_to"):
+            return False
+        picked = st.session_state.get(f"{self.parameter_manager.param_prefix}{key}",
+                                      self.params.get(key))
+        return not picked
+
+    def _autostart_key(self) -> str:
+        """Session-state flag set by ``show_run_button``: start on the Run page."""
+        return f"{self.workflow_dir.name}-autostart"
+
+    def show_run_button(
+        self,
+        run_page,
+        label: str = "Run analysis",
+        help: Optional[str] = None,
+        key: str = "",
+        sticky: bool = True,
+        summary: Optional[str] = None,
+        name_label: str = "Run name",
+    ) -> None:
+        """A primary button that opens the Run page and starts the workflow there.
+
+        For the end of the configure page, so a user who has described the
+        experiment goes straight on: the settings are saved, ``run_page`` (a
+        page path or ``st.Page``) opens and the run starts at once. While a run
+        is going, the button opens the Run page to follow it instead.
+
+        ``sticky`` (default) draws it in a bar that stays at the bottom of the
+        window while the page scrolls, with ``summary`` (a short line on what
+        will run) beside it; call it last on the page. ``sticky=False`` draws
+        the button alone where it is called.
+
+        A workflow with run folders (or ``name_runs``) gets a name field
+        beside the button, labelled ``name_label``: the start is given that
+        name (``run_name()`` in ``execution()``).
+        """
+        running = self.get_workflow_status().get("running", False)
+        if running:
+            label, icon = "Follow the running analysis", ":material/hourglass_top:"
+            help = help or "An analysis is running. Open the Run page to follow it."
+            summary = "An analysis is running."
+        else:
+            icon = ":material/play_arrow:"
+            help = help or "Save these settings, open the Run page and start the analysis."
+        info = None if running else self._follow_up()
+        if info:
+            # Settings of an earlier run (adding files, an analysis, a re-run):
+            # this button starts with them; say so beside it.
+            line = self._follow_up_summary(info)
+            summary = f"{line} {summary}" if summary else line
+        key = key or f"{self.workflow_dir.name}-run-button"
+        if sticky:
+            bar = st.container(key=f"{key}-bar", horizontal=True,
+                               vertical_alignment="center", horizontal_alignment="right")
+            st.html(_run_bar_css(f"{key}-bar"))
+        else:
+            bar = st.container()
+        named = (self.multi_run or self.name_runs) and not running
+        with bar:
+            if sticky and summary:
+                st.caption(summary, width="stretch")
+            if named:
+                st.text_input(
+                    name_label, key=f"{key}-name", max_chars=MAX_NAME_LENGTH,
+                    placeholder=self.run_name_placeholder(), width=320,
+                    label_visibility="collapsed" if sticky else "visible",
+                    help=f"{name_label}: how the results of this analysis are listed. "
+                    "Leave it empty for the default name.",
+                )
+            clicked = st.button(label, type="primary", icon=icon, help=help, key=key)
+        if clicked:
+            if not running and self._follow_up_files_missing(info):
+                st.toast("Pick the files to add first.", icon=":material/warning:")
+                return
+            if not running:
+                if not self.parameter_manager.save_parameters():
+                    return
+                if named and not self._give_next_run_name(st.session_state.get(f"{key}-name", "")):
+                    return
+                st.session_state[self._autostart_key()] = True
+            st.switch_page(run_page)
+
+    def _give_next_run_name(self, name: str) -> bool:
+        """Keep the name typed beside the Run button for the start it opens.
+        False (with an error shown) when params.json cannot be read."""
+        name = (name or "").strip()[:MAX_NAME_LENGTH]
+        try:
+            params = self.parameter_manager.read_parameters_strict()
+        except InvalidParameterFileError as e:
+            st.error(f"**ERROR**: {e} The analysis was not started.")
+            return False
+        if name:
+            params[RUN_NAME_KEY] = name
+        elif params.pop(RUN_NAME_KEY, None) is None:
+            return True
+        self.parameter_manager.write_parameters(params)
+        if self.multi_run:
+            from .run_widgets import run_name_key
+
+            # The Run page shows it in its own name field
+            st.session_state[run_name_key(self.runs)] = name
+        return True
+
+    def show_execution_section(
+        self,
+        results_page=None,
+        results_label: str = "Open results",
+    ) -> None:
         """
         Shows the execution section of the UI with content defined in self.execution().
+
+        A start requested by ``show_run_button`` on the configure page begins
+        here at once. ``results_page`` (a page path or ``st.Page``) is linked
+        when the run has finished, labelled ``results_label``.
         """
+        autostart = bool(st.session_state.pop(self._autostart_key(), False))
         name_key = ""
         if self.multi_run:
             from .run_widgets import run_name_input, run_name_key
 
-            run_name_input(self.runs, disabled=self.get_workflow_status()["running"])
+            run_name_input(self.runs, disabled=self.get_workflow_status()["running"] or autostart)
             name_key = run_name_key(self.runs)
         if self._run_online(name_key):
             return
         self.ui.execution_section(
             start_workflow_function=self.start_workflow,
             get_status_function=self.get_workflow_status,
-            stop_workflow_function=self.stop_workflow
+            stop_workflow_function=self.stop_workflow,
+            autostart=autostart,
+            results_page=results_page,
+            results_label=results_label,
+            on_open_results=self._select_newest_run if self.multi_run else None,
         )
-        
+
+    def _select_newest_run(self) -> None:
+        """Show the newest finished run on the results page, not an older pick."""
+        from .run_widgets import set_selected_run
+
+        set_selected_run(self.runs, self.runs.latest())
+
     def _run_online(self, name_key: str) -> bool:
         """Offer the linked online workspace (offline app, workspace sync on).
 
@@ -581,3 +938,26 @@ class WorkflowManager:
         # Display results here
         ###################################
         pass
+
+def _run_bar_css(container_key: str) -> str:
+    """Style of the Run bar: it sticks to the bottom of the window, in the
+    background colour of the active theme so the page scrolls under it."""
+    try:
+        theme = st.context.theme.type or "light"
+    except Exception:  # pragma: no cover - older Streamlit
+        theme = "light"
+    try:
+        background = st.get_option(f"theme.{theme}.backgroundColor")
+    except Exception:
+        background = None
+    background = background or ("#0e1117" if theme == "dark" else "#ffffff")
+    # The bar's own element wrapper is what sticks: the bar alone would only
+    # stick within that wrapper.
+    return f"""<style>
+div:has(> .st-key-{container_key}) {{
+  position: sticky; bottom: 0; z-index: 99;
+  background: {background};
+  padding: 0.75rem 0 1rem 0; margin-top: 1rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.3);
+}}
+</style>"""

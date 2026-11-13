@@ -54,7 +54,10 @@ def test_failure_after_spawn_reaps_real_child_and_retains_original_error(executo
 
     def record_child(*args, **kwargs):
         process = native_popen(*args, **kwargs)
-        children.append(process)
+        # subprocess.Popen is global, so only count the command under test
+        # (platform.uname() may spawn `uname -p` along the way).
+        if (args[0] if args else kwargs.get('args', [None]))[0] == sys.executable:
+            children.append(process)
         return process
 
     monkeypatch.setattr(module.subprocess, 'Popen', record_child)
@@ -200,7 +203,7 @@ def test_python_parameter_cleanup_preserves_original_outcome(executor, monkeypat
     script.write_text("DEFAULTS=[{'key':'value','value':0}]\n")
     used = []
 
-    def command(args):
+    def command(args, **_):
         path = Path(args[2])
         used.append(path)
         assert json.loads(path.read_text())['value'] == 42
@@ -226,7 +229,7 @@ def test_concurrent_same_python_tool_has_private_parameter_files(executor, monke
     paths = []
     observed = []
 
-    def command(args):
+    def command(args, **_):
         path = Path(args[2])
         paths.append(path)
         barrier.wait(timeout=10)

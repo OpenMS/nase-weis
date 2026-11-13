@@ -5,8 +5,9 @@ These functions are executed by RQ workers and should not import Streamlit.
 This module must be importable without Streamlit being available.
 """
 
-import json
 import os
+import sys
+import json
 import shutil
 import traceback
 from pathlib import Path
@@ -169,6 +170,9 @@ def execute_workflow(
 
         # Log workflow start
         logger.log("STARTING WORKFLOW")
+        if job is not None and getattr(job, "timeout", None):
+            from src.workflow.job_timeout import format_duration
+            logger.log(f"Time limit of this run: {format_duration(job.timeout)}")
 
         _update_progress(job, 0.15, "Executing workflow steps...")
 
@@ -222,13 +226,26 @@ def execute_workflow(
             log_dir = workflow_path / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
 
+            message = str(e)
+            if _is_timeout(e):
+                # The queue's time limit (job_timeout.py), not a crash: say
+                # so, and end the tools it leaves running.
+                from src.workflow.job_timeout import format_duration
+                limit = getattr(job, "timeout", None) if job is not None else None
+                message = (
+                    "The run took longer than its time limit"
+                    + (f" of {format_duration(limit)}" if limit else "")
+                    + " and was stopped.\nA longer limit: "
+                    "queue_settings.timeout_per_input and max_timeout in settings.json."
+                )
+                _end_tools(workflow_path / "pids")
             for log_name in ["minimal.log", "commands-and-run-times.log", "all.log"]:
                 log_file = log_dir / log_name
                 with open(log_file, "a") as f:
-                    f.write(f"\n\nERROR: {e!s}\n")
+                    f.write(f"\n\nERROR: {message}\n")
                     # A workflow reporting failure by returning False is not a
                     # crash, the reason is in the tool output above.
-                    if not isinstance(e, (WorkflowExecutionError, WorkerBuildMismatchError)):
+                    if not isinstance(e, (WorkflowExecutionError, WorkerBuildMismatchError)) and not _is_timeout(e):
                         f.write(traceback.format_exc())
         except Exception:
             pass
@@ -250,6 +267,33 @@ def execute_workflow(
         # {"success": False} dict here looked like a normal return to RQ, which
         # recorded every crashed workflow as finished successfully.
         raise
+
+
+def _is_timeout(e: BaseException) -> bool:
+    """RQ's JobTimeoutException (by name: rq is not importable everywhere)."""
+    return type(e).__name__ == "JobTimeoutException"
+
+
+def _end_tools(pid_dir: Path) -> None:
+    """SIGTERM the tools a run started (pids/<pid>), which outlive a timed-out job.
+
+    Only processes whose marker proves they are the ones this run started are
+    signalled (a reused PID is left alone), and never this work-horse itself,
+    whose own marker sits in the same folder.
+    """
+    import signal
+    from src.workflow.process_state import pid_markers, signal_owned_process
+    try:
+        markers = pid_markers(pid_dir)
+    except OSError:
+        return
+    for marker in markers:
+        if marker.name == str(os.getpid()):
+            continue
+        try:
+            signal_owned_process(marker, signal.SIGTERM)
+        except PermissionError:
+            pass
 
 
 def _update_progress(job, progress: float, step: str) -> None:

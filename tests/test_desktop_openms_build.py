@@ -32,6 +32,11 @@ def test_current_openms_uses_its_platform_preset_without_removed_ctest_scripts(
         json.dumps({"configurePresets": [{"name": preset}]})
     )
     (tmp_path / "vcpkg.json").write_text("{}")
+    # Current OpenMS keeps its dependency scripts but no CTest build scripts.
+    if platform != "Windows":
+        scripts = tmp_path / "tools/ci"
+        scripts.mkdir(parents=True)
+        (scripts / ("deps-macos.sh" if platform == "macOS" else "deps-ubuntu.sh")).touch()
     result, output = run_route(tmp_path, platform, thirdparty)
     assert result.returncode == 0, result.stdout + result.stderr
     assert output == {"route": "vcpkg", "preset": preset}
@@ -54,7 +59,7 @@ def test_missing_supported_build_route_fails_before_installing_dependencies(tmp_
     result, output = run_route(tmp_path, "Linux", "fixture")
     assert result.returncode != 0
     assert output == {}
-    assert "neither a linux-x64-release preset nor" in result.stdout
+    assert "neither the linux-x64-release CMake preset nor" in result.stdout
 
 
 def run_route(directory, platform, thirdparty):

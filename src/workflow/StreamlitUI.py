@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import filecmp
 import subprocess
-from typing import Any, Union, List, Literal, Callable
+from typing import Any, Callable, Dict, List, Literal, Union
 import json
 import math
 import os
@@ -26,14 +26,19 @@ from src.common.common import (
     tk_file_dialog,
 )
 from src.workflow._log_status import classify_log_outcome
+from src.workflow.report_ui import report_buttons
+from src.workflow.RunManager import FOLLOW_UP_KEY
 from src.workflow.progress import (
     DONE,
     FAILED,
     RUNNING,
+    current_step,
     failures,
     file_counts,
     format_duration,
     read_progress,
+    sample_counts,
+    tool_progress,
 )
 from src.workflow.InputFolders import (
     design_rows,
@@ -53,15 +58,22 @@ from src.workflow.ExperimentalDesign import (
     save_design,
     to_openms_design,
 )
-from src.workflow.vendor_files import extract_bruker_zip, has_type
 from src.workflow.host_paths import folder_reference
+from src.workflow.vendor_files import extract_bruker_zip, has_type
 from src.workflow.process_state import local_workflow_running
+from src.workflow.settings_io import (
+    THREADS_USER_MARKER,
+    local_thread_default,
+    local_threads_pinned,
+    usable_cpu_count,
+)
 from src.data_import import ui as data_import_ui
 from src.workflow.ParameterManager import (
     InvalidParameterFileError,
     ParameterManager,
     TransientParameterFileError,
 )
+from src.workflow.parameter_names import display_name as _display_name
 
 
 def _txt(value) -> str:
@@ -186,6 +198,35 @@ def _short(value) -> str:
     return text if len(text) <= 40 else text[:37] + "..."
 
 
+def editor_table(state, editor_key: str, table, fits=None):
+    """The table to hand ``st.data_editor(key=editor_key)`` in this run.
+
+    A data editor keeps its edits as changes to the table it was first drawn
+    with, and Streamlit identifies it by that table as well as its key. An app
+    that saves each edit and draws the editor from the saved data would hand
+    it a new table after every edit: Streamlit then draws a new editor and the
+    edit made in that run is lost (every second value typed and confirmed with
+    Tab or Enter vanished). So the first table is kept in ``state`` and used
+    again while the editor stays on the page. ``table`` (a value, or a
+    function returning one) is taken again when the editor was not drawn in
+    the previous run (first visit, back from another page), so a change saved
+    meanwhile shows, or when ``fits(kept_table)`` is false (other rows).
+    Pass a new ``editor_key`` to start from ``table`` again (e.g. after an
+    import replaced the data).
+    """
+    kept_key = f"_{editor_key}-table"
+    kept = state.get(kept_key)
+    if kept is None or editor_key not in state or (fits is not None and not fits(kept)):
+        kept = table() if callable(table) else table
+        state[kept_key] = kept
+    return kept
+
+
+def latest_results_key(workflow_dir) -> str:
+    """Session-state flag the Run page's results button sets for the results page."""
+    return f"{Path(workflow_dir).name}-show-latest-results"
+
+
 class StreamlitUI:
     """
     Provides an interface for Streamlit applications to handle file uploads,
@@ -211,7 +252,7 @@ class StreamlitUI:
         key: str,
         file_types: Union[str, List[str]],
         name: str = "",
-        fallback: Union[List, str] = None,
+        fallback: Union[List, str, Dict[str, str]] = None,
         suggest_folders: bool = False,
         list_files: bool = True,
         manual_import_sources: tuple[str, ...] = (),
@@ -228,7 +269,10 @@ class StreamlitUI:
                 a zip archive. Convert vendor files before use with
                 ``CommandExecutor.convert_to_mzml()``.
             name (str, optional): Display name for the upload component. Defaults to the key if not provided.
-            fallback (Union[List, str], optional): Default files to use if no files are uploaded.
+            fallback (Union[List, str, Dict[str, str]], optional): Default files
+                to use if no files are uploaded. A dict maps each file to the
+                folder it is put in when it is copied, so the examples arrive
+                sorted.
             suggest_folders (bool, optional): Offer to sort the files into folders
                 by the groups their names suggest (``ctrl_R1``, ``ctrl_R2``,
                 ``treated_R1`` ...). Folders are labels kept in
@@ -480,6 +524,7 @@ class StreamlitUI:
                 c1, _ = st.columns(2)
                 if not Path(files_dir, f).exists():
                     shutil.copy(f, Path(files_dir, Path(f).name))
+            self._fallback_folders(key, fallback)
             current_files = [f.name for f in files_dir.iterdir() if f.name != "external_files.txt"]
             c1.warning("**No data yet. Using example data file(s).**")
         else:
@@ -721,21 +766,34 @@ class StreamlitUI:
         def browse():
             # The same ways to add files as the upload page's tabs.
             importing = data_import_ui.enabled()
-            local_label = "📂 Data folder" if _mounted_data_root() else "💻 Data on your computer"
-            labels = ["📁 Your files", local_label]
+            # A protein database comes from UniProt rather than from a PRIDE
+            # dataset, so its UniProt tab follows "Your files" and PRIDE is left out.
+            uniprot = bool(upload.get("uniprot"))
+            pride = importing and not uniprot
+            labels = ["📁 Your files"]
+            if uniprot:
+                labels.append("🔎 Import from UniProt proteome")
+            computer_label = (
+                "📂 Data folder" if _mounted_data_root() else "💻 Data on your computer"
+            )
+            labels.append(computer_label)
             if importing:
-                labels += ["☁️ Cloud data", "🧬 Import from PRIDE"]
-            if upload.get("uniprot"):
-                labels.append("🔎 UniProt proteome")
-            tabs = st.tabs(labels)
-            with tabs[0]:
+                labels.append("☁️ Cloud data")
+            if pride:
+                labels.append("🧬 Import from PRIDE")
+            tabs = dict(zip(labels, st.tabs(labels)))
+            tab_list = list(tabs.values())
+            with tab_list[0]:
                 # Takes the example files out once files of the user's own are in.
                 self._ensure_fallback(key, upload.get("fallback"))
                 options = self._input_file_options(key)
                 if not options:
                     st.info(
-                        "No files yet: add some from your computer"
-                        + (", from the cloud or from PRIDE." if importing else ".")
+                        "No files yet: add some "
+                        + ("from UniProt, " if uniprot else "")
+                        + "from your computer"
+                        + (", from the cloud or from PRIDE." if pride
+                           else " or from the cloud." if importing else ".")
                     )
                 else:
                     paths = {Path(o).name: o for o in options}
@@ -773,7 +831,7 @@ class StreamlitUI:
             # The upload widget fills self.upload_targets, so it is drawn
             # first and the import tabs route files by it.
             self.upload_targets = {}
-            with tabs[1]:
+            with tabs[computer_label]:
                 # Unwrapped from its fragment: adding files reruns the whole
                 # dialog, so "Your files" lists them at once.
                 StreamlitUI.upload_widget.__wrapped__(
@@ -781,16 +839,17 @@ class StreamlitUI:
                     **{k: v for k, v in upload.items() if k not in ("name", "uniprot")},
                 )
             if importing:
-                with tabs[2]:
+                with tabs["☁️ Cloud data"]:
                     data_import_ui.link_import_section(
                         self.workflow_dir, self.upload_targets, source=data_import_ui.LINK
                     )
-                with tabs[3]:
+            if pride:
+                with tabs["🧬 Import from PRIDE"]:
                     data_import_ui.link_import_section(
                         self.workflow_dir, self.upload_targets, source=data_import_ui.PRIDE
                     )
-            if upload.get("uniprot"):
-                with tabs[-1]:
+            if uniprot:
+                with tabs["🔎 Import from UniProt proteome"]:
                     # Downloads into this upload folder and selects the file.
                     self.uniprot_proteome_download(key, plain_name)
 
@@ -1088,6 +1147,20 @@ class StreamlitUI:
         for example in examples.values():
             if not Path(files_dir, example.name).exists():
                 shutil.copy(example, Path(files_dir, example.name))
+        self._fallback_folders(key, fallback)
+
+    def _fallback_folders(self, key: str, fallback) -> None:
+        """Put the example files of upload ``key`` in the folders a ``fallback``
+        dict names (file -> folder); files already in a folder stay there."""
+        if not isinstance(fallback, dict):
+            return
+        named = {Path(f).name: d for f, d in fallback.items() if d}
+        if not named:
+            return
+        folders = load_folders(self.workflow_dir, key)
+        missing = {n: d for n, d in named.items() if n not in folders}
+        if missing:
+            save_folders(self.workflow_dir, key, {**folders, **missing})
 
     def _select_input_file_impl(self, key, name, multiple, display_file_path, reactive, upload=None):
         """Internal implementation of select_input_file - contains all the widget logic."""
@@ -1095,8 +1168,30 @@ class StreamlitUI:
             name = f"**{key}**"
         if upload is not None:
             self._ensure_fallback(key, upload.get("fallback"))
-        options = self._input_file_options(key)
         widget = f"{self.parameter_manager.param_prefix}{key}"
+        if self._same_files(key, name, multiple, widget):
+            return
+        options = self._input_file_options(key)
+        done = self._experiment_files(key)
+        if done:
+            # Settings that add files to an experiment: its processed files are
+            # shown apart, and only the files to add can be picked
+            processed = {Path(f).name for f in done}
+            options = [o for o in options if Path(o).name not in processed]
+            current = st.session_state.get(widget)
+            if isinstance(current, list):
+                st.session_state[widget] = [f for f in current if f in options]
+            name = "Files to add"
+            names = list(dict.fromkeys(Path(f).name for f in done))
+            st.multiselect(
+                "In the experiment already",
+                names,
+                default=names,
+                disabled=True,
+                key=f"_experiment-files-{widget}",
+                help="Processed already. The results show them together with the files "
+                "added here, as one experiment.",
+            )
         pending = f"_pending-{widget}"
         if pending in st.session_state:  # chosen in the Browse pop-out
             value = st.session_state.pop(pending)
@@ -1163,6 +1258,54 @@ class StreamlitUI:
             "folders and add new ones.",
         ):
             self._browse_input_files(key, name, multiple, upload)
+
+    def _follow_up_info(self) -> dict:
+        info = self.parameter_manager.get_parameters_from_json().get(FOLLOW_UP_KEY)
+        return info if isinstance(info, dict) else {}
+
+    def _same_files(self, key: str, name: str, multiple: bool, widget: str) -> bool:
+        """While the settings add an analysis to earlier results
+        (``WorkflowManager.follow_up(..., same_files=key)``): their files, locked.
+        True when drawn in place of the file selector."""
+        info = self._follow_up_info()
+        if info.get("same_files") != key:
+            return False
+        files = [str(f) for f in info.get("files") or []]
+        st.session_state[widget] = files if multiple else (files[0] if files else None)
+        self.params[key] = st.session_state[widget]
+        names = list(dict.fromkeys(Path(f.rstrip("/\\")).name for f in files))
+        st.multiselect(
+            name,
+            names,
+            default=names,
+            disabled=True,
+            key=f"_same-files-{widget}",
+            help=f"The files of {info.get('name') or 'the earlier run'}: the analysis is added to "
+            "its results, so they stay as they are. **Start a new experiment instead** (at the top) to pick other files.",
+        )
+        return True
+
+    def _kept_tool(self, instance: str) -> bool:
+        """Draw that ``instance``'s results are reused while the settings add an
+        analysis to earlier results (``keep``); True when drawn in place of its
+        parameters."""
+        info = self._follow_up_info()
+        if instance not in (info.get("kept") or []):
+            return False
+        st.info(
+            f"**{instance}** is not run again: its results come from "
+            f"{info.get('name') or 'the earlier run'}, so its settings stay as they were there.",
+            icon=":material/lock:",
+        )
+        return True
+
+    def _experiment_files(self, key: str) -> List[str]:
+        """The files the experiment holds already, while the settings add files
+        to it (``WorkflowManager.follow_up(..., add_files=key)``), else none."""
+        info = self.parameter_manager.get_parameters_from_json().get(FOLLOW_UP_KEY)
+        if not isinstance(info, dict) or not info.get("adds_to") or info.get("files_key") != key:
+            return []
+        return [str(f) for f in info.get("files") or []]
 
     def _select_by_folder(self, key: str, options: List[str]) -> None:
         """Buttons that select the files of one folder (see ``upload_widget``)."""
@@ -1468,6 +1611,7 @@ class StreamlitUI:
         custom_defaults: dict = {},
         tool_instance_name: str = None,
         reactive: bool = False,
+        advanced_parameters: List[str] = [],
     ) -> None:
         """
         Generates input widgets for TOPP tool parameters dynamically based on the tool's
@@ -1495,18 +1639,27 @@ class StreamlitUI:
                 section to re-render, enabling conditional UI based on this widget's
                 value. Use when downstream UI depends on a parameter value (e.g.,
                 TMT type driving channel count). Default is False.
+            advanced_parameters (List[str], optional): Parameters to treat as
+                advanced although the tool does not tag them so: they are left
+                off the page and reached through the "All parameters" dialog,
+                like the tool's own advanced ones (e.g. output options). A name
+                ending in ":" matches a whole top-level section.
         """
+        if self._kept_tool(tool_instance_name or topp_tool_name):
+            return
         if reactive:
             self._input_TOPP_impl(
                 topp_tool_name, num_cols, exclude_parameters, include_parameters,
                 flag_parameters, display_tool_name, display_subsections,
                 display_subsection_tabs, custom_defaults, tool_instance_name,
+                advanced_parameters,
             )
         else:
             self._input_TOPP_fragmented(
                 topp_tool_name, num_cols, exclude_parameters, include_parameters,
                 flag_parameters, display_tool_name, display_subsections,
                 display_subsection_tabs, custom_defaults, tool_instance_name,
+                advanced_parameters,
             )
 
     @st.fragment
@@ -1522,11 +1675,13 @@ class StreamlitUI:
         display_subsection_tabs: bool = False,
         custom_defaults: dict = {},
         tool_instance_name: str = None,
+        advanced_parameters: List[str] = [],
     ) -> None:
         self._input_TOPP_impl(
             topp_tool_name, num_cols, exclude_parameters, include_parameters,
             flag_parameters, display_tool_name, display_subsections,
             display_subsection_tabs, custom_defaults, tool_instance_name,
+            advanced_parameters,
         )
 
     def _read_params_for_update(self, tool_instance_name: str) -> dict:
@@ -1601,6 +1756,26 @@ class StreamlitUI:
             # stubbed out; re-raise rather than fall through to the write.
             raise
 
+    def _topp_tool_unavailable(self, topp_tool_name: str) -> None:
+        """Say why a TOPP tool's parameters cannot be shown: missing, or failing."""
+        from src.workflow.ParameterManager import INI_TOOL_MISSING
+
+        reason = getattr(self.parameter_manager, "ini_errors", {}).get(
+            topp_tool_name, INI_TOOL_MISSING
+        )
+        if reason == INI_TOOL_MISSING:
+            st.error(
+                f"TOPP tool **'{topp_tool_name}'** not found. The OpenMS TOPP "
+                "tools are not installed here, or not on the PATH of this app."
+            )
+            return
+        st.error(
+            f"TOPP tool **'{topp_tool_name}'** is installed but could not "
+            "write its parameters, so they cannot be shown."
+        )
+        with st.expander("Tool output"):
+            st.code(reason, language=None)
+
     def _input_TOPP_impl(
         self,
         topp_tool_name: str,
@@ -1613,6 +1788,7 @@ class StreamlitUI:
         display_subsection_tabs: bool = False,
         custom_defaults: dict = {},
         tool_instance_name: str = None,
+        advanced_parameters: List[str] = [],
     ) -> None:
         """Internal implementation of input_TOPP - contains all the widget logic."""
         # Default instance name to the tool name when not provided
@@ -1646,7 +1822,7 @@ class StreamlitUI:
         # Create pristine ini file (never mutated with custom defaults)
         ini_file_path = Path(self.parameter_manager.ini_dir, f"{topp_tool_name}.ini")
         if not self.parameter_manager.create_ini(topp_tool_name):
-            st.error(f"TOPP tool **'{topp_tool_name}'** not found.")
+            self._topp_tool_unavailable(topp_tool_name)
             return
 
         # Seed custom defaults into params.json under _defaults key
@@ -1698,14 +1874,21 @@ class StreamlitUI:
         params = []
         for key in valid_keys:
             entry = param.getEntry(key)
+            friendly = _display_name(
+                topp_tool_name, _txt(key).split(":1:", 1)[-1], tool_instance_name
+            )
             p = {
                 "name": _txt(entry.name),
+                "friendly": friendly,
                 "key": key,
                 "value": entry.value,
                 "original_is_list": isinstance(entry.value, list),
                 "valid_strings": _valid_strings(entry),
                 "description": _txt(entry.description),
-                "advanced": ("advanced" in _tags(param, key)),
+                "advanced": (
+                    "advanced" in _tags(param, key)
+                    or any(_matches_topp_parameter(k, key) for k in advanced_parameters)
+                ),
                 "non_included": key not in included_keys,
                 "section_description": param.getSectionDescription(
                     ":".join(_txt(key).split(":")[:-1])
@@ -1800,36 +1983,71 @@ class StreamlitUI:
         def show_subsection_header(section: str, display_subsections: bool):
             # Display section name and help text (section description) if required
             if section and display_subsections:
+                description = section_descriptions.get(section)
+                friendly = _display_name(topp_tool_name, section, tool_instance_name)
+                if friendly:
+                    # The app's own heading; the help keeps the tool's name
+                    st.markdown(
+                        f"**{friendly['name']}**",
+                        help=(friendly["help"] or description or "")
+                        + f"\n\nSection `{section}` of {topp_tool_name}.",
+                    )
+                    return
                 parts = section.split(":")
                 st.markdown(
                     ":".join(parts[:-1])
                     + (":" if len(parts) > 1 else "")
                     + f"**{parts[-1]}**",
-                    help=(
-                        section_descriptions[section]
-                        if section in section_descriptions
-                        else None
-                    ),
+                    help=description,
                 )
 
         def display_TOPP_params(params: dict, num_cols):
             """Displays individual TOPP parameters in given number of columns"""
-            cols = st.columns(num_cols)
+
+            def is_text_area(p):
+                value = p["value"]
+                if isinstance(value, str) and "\n" in value:
+                    return True
+                return isinstance(value, list) and not p["valid_strings"]
+
+            # Free-text lists (multi-line text areas) come after the other
+            # inputs of a section, so every row holds inputs of one height and
+            # they can line up at the bottom: a label that wraps onto a second
+            # line no longer pushes its input below its neighbours'.
+            text_areas = [p for p in params if is_text_area(p)]
+            params = [p for p in params if not is_text_area(p)] + text_areas
+
+            def new_row():
+                return st.columns(num_cols, vertical_alignment="bottom")
+
+            cols = new_row()
             i = 0
             for p in params:
+                if i and text_areas and p is text_areas[0]:
+                    # The text areas start a row of their own
+                    i = 0
+                    cols = new_row()
                 # get key and name – use tool_instance_name in session state key
                 key_str = _txt(p['key'])
                 if tool_instance_name != topp_tool_name:
                     key_str = key_str.replace(f"{topp_tool_name}:1:", f"{tool_instance_name}:1:", 1)
                 key = f"{self.parameter_manager.topp_param_prefix}{key_str}"
                 name = p["name"]
+                if p.get("friendly"):
+                    # The app's own name for it; the help keeps the tool's
+                    # name, which logs, presets and the tool's docs use.
+                    name = p["friendly"]["name"]
+                    p["description"] = (
+                        (p["friendly"]["help"] or p["description"])
+                        + f"\n\nParameter `{_txt(p['key']).split(':1:', 1)[-1]}`"
+                        + f" of {topp_tool_name}."
+                    )
                 try:
                     # sometimes strings with newline, handle as list
                     if isinstance(p["value"], str) and "\n" in p["value"]:
                         p["value"] = p["value"].split("\n")
                     # bools
                     if isinstance(p["value"], bool):
-                        cols[i].markdown("##")
                         cols[i].checkbox(
                             name,
                             value=(
@@ -1927,7 +2145,7 @@ class StreamlitUI:
                     i += 1
                     if i == num_cols:
                         i = 0
-                        cols = st.columns(num_cols)
+                        cols = new_row()
                 except Exception as e:
                     cols[i].error(f"Error in parameter **{p['name']}**.")
                     print('Error parsing "' + p["name"] + '": ' + str(e))
@@ -2016,6 +2234,7 @@ class StreamlitUI:
                 continue
             entry = param.getEntry(key)
             name = _txt(key).split(":1:")[1]
+            friendly = _display_name(topp_tool_name, name, tool_instance_name)
             default = defaults.get(name, entry.value)
             value = user.get(name, default)
             if isinstance(entry.value, list):
@@ -2025,9 +2244,15 @@ class StreamlitUI:
             rows.append(
                 {
                     "name": name,
-                    "label": _txt(entry.name),
+                    "label": friendly["name"] if friendly else _txt(entry.name),
+                    "friendly": bool(friendly),
                     "section": ":".join(name.split(":")[:-1]),
-                    "description": _txt(entry.description),
+                    "description": (
+                        (friendly["help"] or _txt(entry.description))
+                        if friendly
+                        else _txt(entry.description)
+                    ),
+                    "tool_description": _txt(entry.description),
                     "value": value,
                     "default": default,
                     "valid_strings": _valid_strings(entry),
@@ -2076,7 +2301,9 @@ class StreamlitUI:
             r
             for r in rows
             if all(
-                w in f"{r['name']} {r['description']}".lower() for w in words
+                w
+                in f"{r['label']} {r['name']} {r['description']} {r['tool_description']}".lower()
+                for w in words
             )
             and (not only_changed or not same(r["value"], r["default"]))
         ]
@@ -2156,13 +2383,22 @@ class StreamlitUI:
                 st.session_state[k] = as_widget_value(r, v)
 
         c_label, c_value, c_actions = st.columns([5, 4, 3], vertical_alignment="center")
-        section = f":gray[{row['section']}:]" if row["section"] else ""
         marker = " :orange[●]" if changed else ""
-        c_label.markdown(
-            f"{section}**{row['label']}**{marker}"
-            + (" :gray[· advanced]" if row["advanced"] else ""),
-            help=row["description"] or None,
-        )
+        if row.get("friendly"):
+            # The app's name first, the tool's own name beside it, so both
+            # read the same as on the page and in the tool's documentation.
+            c_label.markdown(
+                f"**{row['label']}**{marker} :gray[· {row['name']}]"
+                + (" :gray[· advanced]" if row["advanced"] else ""),
+                help=row["description"] or None,
+            )
+        else:
+            section = f":gray[{row['section']}:]" if row["section"] else ""
+            c_label.markdown(
+                f"{section}**{row['label']}**{marker}"
+                + (" :gray[· advanced]" if row["advanced"] else ""),
+                help=row["description"] or None,
+            )
         if changed:
             c_label.caption(f"default: {_short(default)}")
 
@@ -2340,10 +2576,11 @@ class StreamlitUI:
                 to that ``select_input_file`` so the table follows the selection.
             name (str, optional): The heading shown above the table.
             suggest (bool, optional): Also fill the condition and replicate of
-                files in no folder from the groups their names suggest
-                (``ctrl_R1``, ``ctrl_R2``, ``treated_R1`` ...). Files in a
-                folder (see ``upload_widget``) always take the folder as
-                their condition when they have none yet.
+                files from the groups their names suggest (``ctrl_R1``,
+                ``ctrl_R2``, ``treated_R1`` ...): files in no folder from all
+                names, files in a folder (see ``upload_widget``) from the
+                names in that folder. Without such groups a file in a folder
+                takes the folder as its condition when it has none yet.
         """
         files = st.session_state.get(
             f"{self.parameter_manager.param_prefix}{key}", self.params.get(key, [])
@@ -2433,9 +2670,14 @@ class StreamlitUI:
                 st.session_state[version_key] += 1
                 st.toast(f"Imported the design of {matched} of {len(files)} file(s)")
 
+        editor_key = f"{version_key}-{st.session_state[version_key]}"
+        base = editor_table(
+            st.session_state, editor_key, stored,
+            fits=lambda table: list(table["file"]) == list(stored["file"]),
+        )
         edited = st.data_editor(
-            stored,
-            key=f"{version_key}-{st.session_state[version_key]}",
+            base,
+            key=editor_key,
             hide_index=True,
             num_rows="fixed",
             disabled=["file"],
@@ -2671,23 +2913,74 @@ class StreamlitUI:
             if c1.button("⬇️ Download files", use_container_width=True):
                 self.zip_and_download_files(Path(self.workflow_dir, "input-files"))
 
-    def parameter_section(self, custom_parameter_function) -> None:
+    def follow_up_notice(self) -> None:
+        """Say which run the settings come from, after ``WorkflowManager.follow_up``.
+
+        Drawn once per page, at the top of the parameter section; a page that
+        draws its own box above that section calls it first.
+        """
+        if getattr(self, "_follow_up_drawn", False):
+            return
+        self._follow_up_drawn = True
+        info = self.parameter_manager.get_parameters_from_json().get(FOLLOW_UP_KEY)
+        if not isinstance(info, dict):
+            return
+        text = f"These are the settings of the run **{info.get('name', info.get('run', ''))}**"
+        text += f", {info['note']}." if info.get("note") else "."
+        if info.get("adds_to"):
+            done = info.get("files") or []
+            text += (f" Pick only the files to add: the {len(done)} "
+                     f"{'file' if len(done) == 1 else 'files'} of that run "
+                     f"{'is' if len(done) == 1 else 'are'} processed already, and the results "
+                     "show them together with the new ones as one experiment.")
+        if info.get("same_files"):
+            kept = info.get("kept") or []
+            text += (" Its files stay as they are"
+                     + (f", and the results of {', '.join(kept)} are reused" if kept else "")
+                     + ": only the settings of the steps that follow can be changed.")
+        text += " Check them, then start the run."
+        with st.container(border=True, horizontal=True, vertical_alignment="center"):
+            st.markdown(f":material/history: {text}", width="stretch")
+            if st.button(
+                "Start a new experiment instead",
+                icon=":material/restart_alt:",
+                key=f"{self.workflow_dir.name}-follow-up-dismiss",
+                help="Keep these settings, but pick any files: the run then is an experiment "
+                "of its own, not added to this run.",
+            ):
+                params = self.parameter_manager.get_parameters_from_json()
+                params.pop(FOLLOW_UP_KEY, None)
+                self.parameter_manager.write_parameters(params)
+                st.rerun()
+
+    def parameter_section(self, custom_parameter_function, after_parameters=None) -> None:
         # No "Show advanced parameters" toggle: each TOPP tool's "All N
         # parameters" dialog reaches the advanced ones, and a python tool's
         # sit in an expander. An app can still set this to True itself.
         st.session_state.setdefault("advanced", False)
+        self.follow_up_notice()
 
         # Display threads configuration for local mode only
         if not st.session_state.settings.get("online_deployment", False):
-            max_threads_config = st.session_state.settings.get("max_threads", {})
-            default_threads = max_threads_config.get("local", 4)
+            default_threads = local_thread_default(st.session_state.settings)
+            if not local_threads_pinned(st.session_state.settings):
+                default_help = (
+                    f"Default: all CPUs of this computer but one "
+                    f"({usable_cpu_count()} usable, so {default_threads})."
+                )
+            else:
+                default_help = f"Default: {default_threads}, set by this app."
             self.input_widget(
                 key="max_threads",
                 default=default_threads,
                 name="Threads",
                 widget_type="number",
                 min_value=1,
-                help="Maximum threads for parallel processing. Threads are distributed between parallel commands and per-tool thread allocation."
+                help=(
+                    "Maximum threads for parallel processing. Threads are "
+                    "distributed between parallel commands and per-tool thread "
+                    f"allocation. {default_help}"
+                ),
             )
 
         # Display preset buttons if presets are available for this workflow
@@ -2695,6 +2988,8 @@ class StreamlitUI:
         self.user_presets()
 
         custom_parameter_function()
+        if after_parameters is not None:
+            after_parameters()
 
         # File Import / Export section       
         st.markdown("---")
@@ -2747,11 +3042,17 @@ class StreamlitUI:
                     st.rerun()
 
     def _import_parameters(self, upload) -> bool:
-        """Validate imports before atomically replacing the saved settings."""
+        """Check an imported file, then replace the saved settings atomically.
+
+        A file that is not a JSON object keeps the current settings. An
+        export made while a follow-up was prepared names the run it
+        followed: imported settings start no follow-up.
+        """
         try:
             params = json.loads(upload.getvalue().decode("utf-8"))
             if not isinstance(params, dict):
                 raise ValueError("Parameters must be a JSON object.")
+            params.pop(FOLLOW_UP_KEY, None)
             self.parameter_manager.write_parameters(params)
         except (OSError, ValueError) as error:
             st.error(f"Could not import parameters: {error} Existing settings were kept.")
@@ -2762,8 +3063,19 @@ class StreamlitUI:
         self,
         start_workflow_function,
         get_status_function=None,
-        stop_workflow_function=None
+        stop_workflow_function=None,
+        autostart: bool = False,
+        results_page=None,
+        results_label: str = "Open results",
+        on_open_results=None,
     ) -> None:
+        """Start/Stop, progress and log of the workflow.
+
+        ``autostart`` starts the workflow on this render unless one is running
+        (the Run button of the configure page). ``results_page`` is linked
+        below the success message of a finished run; ``on_open_results`` runs
+        before that button switches to it.
+        """
         with st.expander("**Summary**"):
             st.markdown(self.export_parameters_markdown())
 
@@ -2805,6 +3117,13 @@ class StreamlitUI:
         if status.get("job_id"):
             self._show_queue_status(status)
 
+        # Started from the configure page's Run button
+        if autostart and not is_running:
+            start_workflow_function()
+            with st.spinner("**Workflow starting...**"):
+                time.sleep(1)
+                st.rerun()
+
         # Control buttons
         if is_running:
             if c1.button("Stop Workflow", type="primary", use_container_width=True):
@@ -2843,14 +3162,17 @@ class StreamlitUI:
 
                 if job_status != "queued":
                     self._show_run_progress()
+                else:
+                    st.empty()  # keeps the place of the progress panel
                 with st.spinner(spinner_text):
+                    log_slot = st.empty()
                     if log_snapshot is not None:
                         _, lines = log_snapshot
                         if log_lines_count == "all":
                             display_lines = lines
                         else:
                             display_lines = lines[-st.session_state.log_lines_count:]
-                        st.code(
+                        log_slot.code(
                             "".join(display_lines),
                             language="neon",
                             line_numbers=False,
@@ -2869,11 +3191,14 @@ class StreamlitUI:
                 outcome = classify_log_outcome(content)
                 if outcome == "finished":
                     st.success("**Workflow completed successfully.**")
+                    if results_page is not None:
+                        self._results_link(results_page, results_label, on_open_results)
                 elif outcome == "cancelled":
                     st.warning("**Workflow was cancelled.**")
                 else:
                     st.error("**Errors occurred, check log file.**")
                 self._show_run_summary(show_failures=outcome != "finished")
+                report_buttons(self.workflow_dir, key=f"{self.workflow_dir.name}-run-report")
                 # Apply line limit to static display
                 if log_lines_count == "all":
                     display_lines = lines
@@ -2881,24 +3206,57 @@ class StreamlitUI:
                     display_lines = lines[-st.session_state.log_lines_count:]
                 st.code("".join(display_lines), language="neon", line_numbers=False)
 
+    def _results_link(self, results_page, label: str, on_open=None) -> None:
+        """A primary button that opens the results page of a finished run.
+
+        It leaves ``st.session_state[latest_results_key(workflow_dir)]`` set, so a
+        results page that picks among the results itself (no run folders) can
+        pop it and show the newest one; ``on_open`` (a multi-run workflow
+        selects its newest finished run) runs before the page switch.
+        """
+        if st.button(label, type="primary", icon=":material/arrow_forward:",
+                     key="workflow-open-results"):
+            st.session_state[latest_results_key(self.workflow_dir)] = True
+            if on_open is not None:
+                on_open()
+            st.switch_page(results_page)
+
     def _show_run_progress(self) -> None:
-        """Per-file progress of the running workflow: tool, file n of N, elapsed times."""
+        """Progress of the running workflow: per sample when the run records
+        its samples, else per file of the running tool; elapsed times.
+
+        The panel is redrawn every second and the page ends each redraw with
+        st.rerun(), which never clears elements a redraw left out: the panel
+        always takes one element on the page, and inside it every part
+        (progress bar, tool progress, file list, caption) has a fixed slot,
+        filled or left empty. A part drawn only sometimes would otherwise
+        shift the parts after it and leave the last one of the previous
+        redraw on the page, a second, outdated list of samples or files.
+        """
+        panel = st.empty()
         state = read_progress(self.workflow_dir)
-        now = time.time()
-        if not state or not state.get("steps"):
+        if not state:
             return
+        if len(state.get("samples") or []) > 1:
+            self._show_sample_progress(state, panel)
+            return
+        if not state.get("steps"):
+            return
+        now = time.time()
         step = state["steps"][-1]
         files = step["files"]
         n = len(files)
         finished = sum(f["status"] in (DONE, FAILED) for f in files)
         active = [i for i, f in enumerate(files) if f["status"] == RUNNING]
-        with st.container(border=True):
-            st.markdown(
+        with panel.container(border=True):
+            head, bar, tool, file_list, caption = self._progress_slots()
+            head.markdown(
                 f"**Elapsed {format_duration(now - state['started'])}** · "
                 f"step {len(state['steps'])}: **{step['tool']}**"
                 + ("" if step["ended"] is None else " finished")
             )
-            if step["ended"] is None:
+            # A step without commands (e.g. the workflow's own processing) has no files
+            if step["ended"] is None and n:
                 counts = file_counts(step)
                 if active and n > 1:
                     which = ", ".join(str(i + 1) for i in active)
@@ -2917,7 +3275,9 @@ class StreamlitUI:
                     f"{threads} thread{'s' if threads > 1 else ''}"
                     + (f" × {parallel} in parallel" if parallel > 1 else "")
                 )
-                st.progress(finished / n if n else 0.0, text=text)
+                bar.progress(finished / n if n else 0.0, text=text)
+                if len(active) == 1:
+                    self._show_tool_progress(tool)
             if n > 1 or step["ended"] is not None:
                 lines = []
                 for f in files:
@@ -2929,10 +3289,80 @@ class StreamlitUI:
                         lines.append(f":blue[:material/progress_activity:] **{f['name']}** :gray[{format_duration(now - f['started'])}]")
                     else:
                         lines.append(f":gray[:material/radio_button_unchecked: {f['name']}]")
-                st.markdown("  \n".join(lines))
+                file_list.markdown("  \n".join(lines))
             earlier = state["steps"][:-1]
             if earlier:
-                st.caption("Done: " + " · ".join(self._step_summary(s) for s in earlier))
+                caption.caption("Done: " + " · ".join(self._step_summary(s) for s in earlier))
+
+    @staticmethod
+    def _progress_slots() -> tuple:
+        """The fixed parts of the progress panel: heading, progress bar, tool
+        progress, list of samples or files, caption (see _show_run_progress)."""
+        return tuple(st.empty() for _ in range(5))
+
+    def _show_tool_progress(self, slot) -> None:
+        """The running tool's own progress ("loading spectra 42 %"), if it
+        reports any, in ``slot``."""
+        found = tool_progress(Path(self.workflow_dir, "logs", "all.log"))
+        if found:
+            label, fraction = found
+            slot.progress(fraction, text=f":gray[{label} · {fraction:.0%}]")
+
+    def _show_sample_progress(self, state: dict, panel) -> None:
+        """One line per sample: waiting, running (with its tool), done or failed."""
+        now = time.time()
+        samples = state["samples"]
+        n = len(samples)
+        counts = sample_counts(state)
+        running = [i for i, s in enumerate(samples) if s["status"] == RUNNING]
+        with panel.container(border=True):
+            heading, bar, tool, sample_list, _caption = self._progress_slots()
+            head = f"**Elapsed {format_duration(now - state['started'])}**"
+            # A step outside every sample, e.g. one over all of them at the end
+            shared = None
+            steps = state.get("steps") or []
+            if steps and steps[-1].get("sample") is None and steps[-1]["ended"] is None:
+                shared = steps[-1]
+            if running:
+                i = running[0]
+                head += f" · sample {i + 1} of {n}: **{samples[i]['name']}**"
+            elif shared is not None:
+                head += f" · **{shared['tool']}**"
+            heading.markdown(head)
+            text = f"{counts[DONE]} of {n} samples done"
+            if counts[FAILED]:
+                text += f" · :red[{counts[FAILED]} failed]"
+            bar.progress((counts[DONE] + counts[FAILED]) / n, text=text)
+            step = shared
+            if running:
+                step = current_step(state, samples[running[0]]["name"])
+            one_command = (
+                step is not None
+                and step["ended"] is None
+                and file_counts(step)[RUNNING] == 1
+            )
+            if one_command:
+                self._show_tool_progress(tool)
+            sample_list.markdown("  \n".join(self._sample_lines(state, now)))
+
+    @staticmethod
+    def _sample_lines(state: dict, now: float) -> list:
+        """A markdown line per sample, with its time and, while it runs, its tool."""
+        lines = []
+        for s in state["samples"]:
+            if s["status"] == DONE:
+                lines.append(f":green[:material/check_circle:] {s['name']} :gray[{format_duration(s['ended'] - s['started'])}]")
+            elif s["status"] == FAILED:
+                lines.append(f":red[:material/cancel:] {s['name']} :red[failed]")
+            elif s["status"] == RUNNING:
+                step = current_step(state, s["name"])
+                tool = ""
+                if step is not None:
+                    tool = f" · {step['tool']}" + ("" if step["ended"] is None else " finished")
+                lines.append(f":blue[:material/progress_activity:] **{s['name']}** :gray[{format_duration(now - s['started'])}{tool}]")
+            else:
+                lines.append(f":gray[:material/radio_button_unchecked: {s['name']}]")
+        return lines
 
     @staticmethod
     def _step_summary(step: dict) -> str:
@@ -2963,7 +3393,33 @@ class StreamlitUI:
                         f"Tool output (exit code {failure['returncode']})"
                     ):
                         st.code("\n".join(failure["output"]), language="neon")
+        if len(state.get("samples") or []) > 1:
+            st.markdown("  \n".join(self._sample_lines(state, time.time())))
+            st.caption(self._tool_totals(state["steps"]))
+            return
         st.caption(" · ".join(self._step_summary(s) for s in state["steps"]))
+
+    @staticmethod
+    def _tool_totals(steps: list) -> str:
+        """'FLASHDeconv: 4 runs in 2:10 · FLASHTnT: 4 runs in 5:02 (1 failed)'."""
+        totals = {}
+        for step in steps:
+            took = (step["ended"] or time.time()) - step["started"]
+            runs, seconds, failed = totals.get(step["tool"], (0, 0.0, 0))
+            totals[step["tool"]] = (
+                runs + 1,
+                seconds + took,
+                failed + (file_counts(step)[FAILED] > 0),
+            )
+        parts = []
+        for tool, (runs, seconds, failed) in totals.items():
+            part = f"{tool}: " + (
+                f"{runs} runs in {format_duration(seconds)}" if runs > 1 else format_duration(seconds)
+            )
+            if failed:
+                part += f" ({failed} failed)"
+            parts.append(part)
+        return " · ".join(parts)
 
     def _show_queue_status(self, status: dict) -> None:
         """Display queue job status for online mode"""
@@ -3084,7 +3540,7 @@ Started: {status.get('started_at', 'N/A')}""")
             [
                 {
                     "Folder": folder_of(rel),
-                    "File": str(rel.relative_to(folder_of(rel))),
+                    "File": rel.relative_to(folder_of(rel)).as_posix(),
                     "Size": human_size(Path(results_dir, rel).stat().st_size),
                     "Modified": datetime.fromtimestamp(
                         Path(results_dir, rel).stat().st_mtime
@@ -3116,7 +3572,7 @@ Started: {status.get('started_at', 'N/A')}""")
             selected = st.selectbox(
                 "File",
                 files,
-                format_func=str,
+                format_func=lambda rel: rel.as_posix(),
                 key=f"{key_prefix}-file",
                 label_visibility="collapsed",
             )
@@ -3191,10 +3647,6 @@ Started: {status.get('started_at', 'N/A')}""")
             cleaned_dict = {}
 
             for key, value in d.items():
-                # Run evidence (including structured sample designs) is saved
-                # separately; only scientific defaults belong in this summary.
-                if key.startswith("_") and key != "_defaults":
-                    continue
                 if isinstance(value, dict):
                     # Recursively clean nested dictionaries
                     nested_cleaned = remove_full_paths(value)
@@ -3215,7 +3667,9 @@ Started: {status.get('started_at', 'N/A')}""")
             return cleaned_dict
 
         # Don't want file paths to be shown in summary for export
-        params = remove_full_paths(self.params)
+        params = remove_full_paths(
+            {k: v for k, v in self.params.items() if k != THREADS_USER_MARKER}
+        )
 
         summary_text = ""
         python = {}
@@ -3223,7 +3677,7 @@ Started: {status.get('started_at', 'N/A')}""")
         general = {}
 
         for k, v in params.items():
-            if k == "_defaults":
+            if k.startswith("_"):  # _defaults, _flag_params, _follow_up: bookkeeping
                 continue
             if isinstance(v, dict):
                 topp[k] = v

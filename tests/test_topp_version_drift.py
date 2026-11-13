@@ -40,6 +40,7 @@ if _original_pyopenms is None:
     sys.modules["pyopenms"] = MagicMock()
 
 from src.workflow.ParameterManager import (  # noqa: E402
+    INI_TOOL_MISSING,
     ParameterManager,
     param_paths_from_param_xml_ini,
     bool_param_paths_from_param_xml_ini,
@@ -185,6 +186,73 @@ def test_ini_kept_when_tool_is_not_installed(tmp_path, monkeypatch):
 
     assert pm.create_ini(TOOL)
     assert "ida_log" in ini.read_text()
+
+
+# ------------------------- why an .ini is missing --------------------------
+
+
+def test_missing_tool_is_reported_as_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    pm = ParameterManager(tmp_path / "wf")
+
+    assert not pm.create_ini(TOOL)
+    assert pm.ini_errors[TOOL] == INI_TOOL_MISSING
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shebang executable")
+def test_failing_tool_keeps_its_output(tmp_path, monkeypatch):
+    """An installed tool whose -write_ini fails is not reported as missing."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    exe = bindir / TOOL
+    exe.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "sys.stderr.write('error while loading shared libraries: libQt6Core.so.6\\n')\n"
+        "sys.exit(127)\n"
+    )
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+    pm = ParameterManager(tmp_path / "wf")
+
+    assert not pm.create_ini(TOOL)
+    reason = pm.ini_errors[TOOL]
+    assert "exited with code 127" in reason
+    assert "libQt6Core.so.6" in reason
+    assert not list(Path(pm.ini_dir).iterdir())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shebang executable")
+def test_truncated_ini_does_not_replace_the_cached_one(tmp_path, monkeypatch):
+    """A tool that dies mid-write leaves the previous .ini in place."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    exe = bindir / TOOL
+    exe.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "open(sys.argv[2], 'w').write('<?xml version=\"1.0\"?><PARAMETERS><NODE')\n"
+        "sys.exit(1)\n"
+    )
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+    pm = ParameterManager(tmp_path / "wf")
+    Path(pm.ini_dir).mkdir(parents=True, exist_ok=True)
+    ini = Path(pm.ini_dir, f"{TOOL}.ini")
+    ini.write_text("<PARAMETERS/>")
+    os.utime(ini, (0, 0))  # older than the tool, so it is regenerated
+
+    pm.create_ini(TOOL)
+    assert ini.read_text() == "<PARAMETERS/>"
+    assert [p.name for p in Path(pm.ini_dir).iterdir()] == [ini.name]
+
+@pytest.mark.skipif(os.name == "nt", reason="shebang executable")
+def test_success_clears_an_earlier_failure(tmp_path, fake_tool):
+    pm = ParameterManager(tmp_path / "wf")
+    pm.ini_errors[TOOL] = "earlier failure"
+
+    assert pm.create_ini(TOOL)
+    assert TOOL not in pm.ini_errors
 
 
 def test_known_params_without_ini_is_none(tmp_path, monkeypatch):

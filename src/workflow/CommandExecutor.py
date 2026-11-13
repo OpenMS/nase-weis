@@ -5,9 +5,10 @@ import threading
 from pathlib import Path
 from .Logger import Logger
 from .ParameterManager import ParameterManager, bool_param_paths_from_param_xml_ini
-from .settings_io import load_settings, detect_cpu_quota
+from .settings_io import load_settings, detect_cpu_quota, resolve_thread_setting, local_thread_default
 from .vendor_files import vendor_format
 from .progress import RunProgress, read_progress, failure_context, OUTPUT_TAIL
+from .processing_report import command_io, report_params
 from collections import deque
 import sys
 import importlib.util
@@ -59,6 +60,10 @@ class CommandExecutor:
         remains the fallback for every deployment where no quota is readable:
         bare metal, docker-compose without a cpu limit, a dev box.
 
+        ``"auto"`` (the template default for both keys; ``null`` and ``-1``
+        mean the same) is every usable CPU but one, see
+        settings_io.default_thread_count(). A number pins the budget.
+
         The trade-off, deliberately taken: an operator can no longer
         under-subscribe a container that declares more CPU than it wants used.
         For a Guaranteed pod that is the right call, because the declaration
@@ -75,16 +80,16 @@ class CommandExecutor:
             return self._max_threads
 
         settings = load_settings()
-        max_threads_config = settings.get("max_threads", {"local": 4, "online": 2})
+        max_threads_config = settings.get("max_threads", {})
 
         if settings.get("online_deployment", False):
             quota = detect_cpu_quota()
             if quota is not None:
                 value = quota
             else:
-                value = max_threads_config.get("online", 2)
+                value = resolve_thread_setting(max_threads_config.get("online", "auto"))
         else:
-            default = max_threads_config.get("local", 4)
+            default = local_thread_default(settings)
             params = self.parameter_manager.get_parameters_from_json()
             value = params.get("max_threads", default)
 
@@ -243,7 +248,8 @@ class CommandExecutor:
                 self._log_failure_context(task, -1)
             raise
 
-        # Status polling can already have pruned this exited process's marker.
+        # Status polling (pid_files.reap) removes the marker of a zombie, and
+        # a tool is a zombie between its exit and wait(): it may be gone.
         pid_file_path.unlink(missing_ok=True)
 
         end_time = time.time()
@@ -528,12 +534,20 @@ class CommandExecutor:
         if not commands:
             raise Exception("No commands to execute.")
 
-        # Record the call for the Run page: one entry per command (input file)
+        # Record the call for the Run page: one entry per command (input file),
+        # with what the processing report says about it
         step = self.progress.start_step(
             tool if params_key == tool else f"{tool} ({params_key})",
             self._command_labels(input_output, len(commands)),
             threads=threads_per_command,
             parallel=parallel_commands,
+            provenance={
+                "kind": "topp",
+                "program": tool,
+                "version": self.parameter_manager.tool_version(tool),
+                "params": report_params({**merged_params, **custom_params}),
+                "io": command_io(input_output, len(commands)),
+            },
         )
         try:
             if len(commands) == 1:
@@ -620,6 +634,7 @@ class CommandExecutor:
             return self.run_command([sys.executable, str(path)])
         elif isinstance(defaults, list):
             defaults = {entry["key"]: entry["value"] for entry in defaults}
+            script_defaults = dict(defaults)
             # load paramters from JSON file
             params = {k: v for k, v in self.parameter_manager.get_parameters_from_json().items() if path.name in k}
             # update defaults
@@ -634,13 +649,31 @@ class CommandExecutor:
                 dir=self.pid_dir.parent, delete=False,
             ) as temporary:
                 tmp_params_file = Path(temporary.name)
+            # Record the call like run_topp(), for the Run page and the report
+            io = {k: v if isinstance(v, list) else [v] for k, v in input_output.items()}
+            io = {k: v for k, v in io.items() if v}
+            step = None
             try:
                 with tmp_params_file.open("w", encoding="utf-8") as handle:
                     json.dump(defaults, handle, indent=4)
+                step = self.progress.start_step(
+                    path.name,
+                    self._command_labels(io, 1) if io else [""],
+                    provenance={
+                        "kind": "python",
+                        "program": path.name,
+                        "version": None,
+                        "params": report_params({k: v for k, v in defaults.items()
+                                                if k not in input_output and v != script_defaults.get(k)}),
+                        "io": command_io({k: [v] for k, v in io.items()}, 1),
+                    },
+                )
                 return self.run_command(
-                    [sys.executable, str(path), str(tmp_params_file)]
+                    [sys.executable, str(path), str(tmp_params_file)], task=(step, 0)
                 )
             finally:
+                if step is not None:
+                    self.progress.end_step(step)
                 tmp_params_file.unlink(missing_ok=True)
 
         # DEFAULTS exists but is not the documented list of parameter dicts, so
@@ -658,8 +691,10 @@ class CommandExecutor:
         Returns an mzML path for every input file, converting vendor files first.
 
         mzML files are returned unchanged. Thermo ``.raw`` files are converted
-        with the TOPP tool FileConverter (ThermoRawFileParser; on Linux and
-        macOS it needs mono). Bruker timsTOF ``.d`` folders are converted with
+        with the TOPP tool FileConverter: on Windows with ThermoRawFileParser,
+        elsewhere with OpenMS's built-in reader, which needs a .NET 8 or newer
+        runtime (the desktop app ships one), or, in an OpenMS built without it
+        (the Docker image), with ThermoRawFileParser on mono. Bruker timsTOF ``.d`` folders are converted with
         ``src/python-tools/bruker_to_mzml.py``. A conversion is done once: the
         mzML is kept in ``out_dir`` (default ``<workflow_dir>/converted-mzML``)
         and reused while it is newer than its input.
@@ -682,6 +717,7 @@ class CommandExecutor:
             out = Path(out_dir, f"{Path(f).stem}.mzML")
             if out.exists() and out.stat().st_mtime >= Path(f).stat().st_mtime:
                 self.logger.log(f"Using converted {out.name} for {Path(f).name}.")
+                self.progress.record_alias(str(out), str(f), "converted to mzML in an earlier run")
                 mzmls.append(str(out))
                 continue
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -699,5 +735,7 @@ class CommandExecutor:
                     self.logger.log(f"ERROR: Could not convert {Path(f).name} to mzML.", 0)
                     return None
                 os.replace(tmp, out)
+                # The report follows the mzML back to the file it came from
+                self.progress.record_alias(str(out), str(tmp))
             mzmls.append(str(out))
         return mzmls

@@ -85,8 +85,6 @@ sync:
     - content/*
     - src/Workflow.py
     - src/workflow/host_paths.py
-    - src/workflow/process_state.py
-    - src/workflow/file_lock.py
     - src/naseweis_results.py
     - src/naseweis_tools.py
     - src/naseweis_validation.py
