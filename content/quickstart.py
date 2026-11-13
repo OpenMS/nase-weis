@@ -3,6 +3,7 @@
 import streamlit as st
 
 from src.common.common import page_setup
+from src.common.installers import render_installer_buttons
 from src.Workflow import Workflow
 
 page_setup(page="main")
@@ -39,6 +40,8 @@ st.write(
 if st.button("Load example dataset", type="primary", icon=":material/science:"):
     Workflow().load_example_data()
     st.switch_page("content/naseweis.py")
+
+render_installer_buttons("### Download the desktop app")
 
 with st.expander("Input formats and search guidance"):
     st.markdown("""
