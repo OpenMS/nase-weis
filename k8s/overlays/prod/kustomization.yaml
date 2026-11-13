@@ -64,6 +64,11 @@ patches:
       kind: Deployment
       name: rq-worker
     patch: |
+      # Ten workers, so ten searches run at once. Set here and not with
+      # kubectl scale: Argo CD self-heal puts a hand-scaled count back.
+      - op: replace
+        path: /spec/replicas
+        value: 10
       - op: replace
         path: /spec/template/spec/containers/0/env/0/value
         value: "redis://naseweis-redis:6379/0"
