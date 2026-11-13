@@ -119,11 +119,11 @@ with sync_playwright() as p:
             click(page, "Add")
             shot(page, "decoy-uploaded")
         for step in ["Configure", "Run"]:
-            page.get_by_text(step, exact=True).first.click(); settle(page)
+            page.locator('[data-testid="stRadio"]').get_by_text(step, exact=True).first.click(); settle(page)
             shot(page, f"decoy-{step.lower()}")
         if click(page, "Start Workflow"):
             wait_run(page, "decoy", minutes=10)
-        page.get_by_text("Results", exact=True).first.click(); settle(page)
+        page.locator('[data-testid="stRadio"]').get_by_text("Results", exact=True).first.click(); settle(page)
         shot(page, "decoy-results")
         ctx.close(); browser.close()
 
