@@ -1,0 +1,44 @@
+name: Browser E2E (temporary)
+on:
+  push:
+    branches: [claude/project-thread-ujl5i8]
+    paths: ['.e2e/**', '.github/workflows/e2e-browser.yml', 'src/**', 'content/**', 'docker/**', 'requirements.txt', 'app.py', 'settings.json']
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: e2e-browser-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app on the pinned OpenMS nightly
+        run: docker build -f docker/Dockerfile.app -t naseweis-e2e .
+      - name: Start the app in online mode (as deployed)
+        run: |
+          jq '.online_deployment = true' settings.json > /tmp/settings.json
+          mkdir -p /tmp/ws && chmod 777 /tmp/ws
+          docker run -d --name app -p 8501:8501 \
+            -v /tmp/settings.json:/app/settings.json:ro \
+            -v $PWD/.e2e/no_captcha.py:/app/src/common/captcha_.py:ro \
+            -e WORKSPACES_DIR=/workspaces -v /tmp/ws:/workspaces naseweis-e2e
+          for i in $(seq 90); do curl -fs http://127.0.0.1:8501/_stcore/health && break; sleep 2; done
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Drive every page with a browser
+        run: |
+          pip install -q playwright==1.48.0 && python -m playwright install --with-deps chromium >/dev/null
+          python .e2e/e2e.py http://127.0.0.1:8501 e2e-output example-data/fasta/NME1_Target.fasta
+      - name: App log
+        if: always()
+        run: docker logs app 2>&1 | tail -150
+      - name: Outputs (base64 tar)
+        if: always()
+        run: |
+          find e2e-output -name '*.webm' | head -3
+          tar czf out.tgz e2e-output && ls -la out.tgz
+          echo "::group::B64"; echo "@@@BEGIN"; base64 -w 1000 out.tgz; echo "@@@END"; echo "::endgroup::"
