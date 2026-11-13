@@ -28,6 +28,7 @@ def manager(tmp_path):
     instance.workflow_dir.mkdir()
     instance.executor = SimpleNamespace(pid_dir=instance.workflow_dir / "pids")
     instance.parameter_manager = Mock()
+    instance.parameter_manager.get_parameters_from_json.return_value = {}
     instance.parameter_manager.save_parameters.return_value = True
     instance.logger = Mock()
     instance._queue_manager = None
@@ -54,6 +55,7 @@ def test_simultaneous_start_and_stop_cannot_enter_launch_in_another_session(mana
     other = object.__new__(WorkflowManager)
     other.__dict__ = manager.__dict__.copy()
     other.parameter_manager = Mock()
+    other.parameter_manager.get_parameters_from_json.return_value = {}
     other._start_workflow_local = Mock()
     other._stop_local_workflow = Mock(return_value=True)
     entered, release = Event(), Event()

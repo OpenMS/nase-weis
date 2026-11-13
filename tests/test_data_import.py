@@ -3,6 +3,7 @@
 A local HTTP server stands in for the object stores. It can refuse Range
 requests, drop the connection partway through a file, and redirect.
 """
+import base64
 import gzip
 import hashlib
 import io
@@ -530,6 +531,138 @@ def test_onedrive_personal_folder_is_walked(monkeypatch):
         ("run1.mzML", "file"), ("sample.d", "folder"), ("db.fasta", "file")]
 
 
+BROWSER_LINK = (
+    "https://onedrive.live.com/?id=1D8EB194B8DEBA10%21sd26d79411a4f42da8b76ddbc5749bc14"
+    "&cid=1D8EB194B8DEBA10&ithint=folder&redeem=aHR0cHM6Ly8xZHJ2Lm1zL2YvYy8xZDhlYjE5NGI4ZGViYTEw"
+    "L0lnQkJlVzNTVHhyYVFvdDIzYnhYU2J3VUFmWWZ4SGxQY2pQZ1NtaUpCZjd6dlpNP2U9ZzNLcEIz&migratedtospo=true")
+SHARE_LINK = "https://1drv.ms/f/c/1d8eb194b8deba10/IgBBeW3STxraQot23bxXSbwUAfYfxHlPcjPgSmiJBf7zvZM?e=g3KpB3"
+
+
+def test_onedrive_browser_address_gives_the_sharing_link():
+    assert sources.sharing_link(BROWSER_LINK) == SHARE_LINK
+    assert sources.sharing_link(SHARE_LINK) == SHARE_LINK
+    assert sources.sharing_link("https://onedrive.live.com/?id=A&cid=B") == "https://onedrive.live.com/?id=A&cid=B"
+    # A redeem value that is not a OneDrive link is not followed
+    bad = base64.b64encode(b"http://169.254.169.254/").decode()
+    assert sources.sharing_link(f"https://onedrive.live.com/?redeem={bad}").startswith("https://onedrive.live.com/")
+
+
+def test_onedrive_malformed_redeem_keeps_the_link():
+    bad = base64.b64encode(b"http://[abc").decode()
+    link = f"https://onedrive.live.com/?redeem={bad}"
+    assert sources.sharing_link(link) == link
+
+
+@pytest.mark.parametrize("body", [["TOK"], "TOK", {"token": 5}, {}])
+def test_onedrive_token_reply_that_is_not_a_token(monkeypatch, body):
+    monkeypatch.setattr(sources, "_badger", {})
+
+    class S:
+        def post(self, *a, **kw):
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return body
+            return R()
+    with pytest.raises(ValueError):
+        sources._badger_headers(S())
+
+
+def test_onedrive_listing_page_that_is_not_an_object():
+    with pytest.raises(ValueError):
+        sources._page_items(["x"])
+    assert sources._page_items({"value": [1]}) == ([1], None)
+
+
+def test_onedrive_children_falls_back_after_a_malformed_drive_page(monkeypatch):
+    share = sources._Share(api=sources.ONEDRIVE_API, headers={}, id="s!1")
+    item = {"id": "F1", "parentReference": {"driveId": "D1"}}
+
+    def fake_json(session, url, headers=None, **kw):
+        if "/drives/" in url:
+            return ["not", "a", "page"]
+        return {"value": [{"name": "a.mzML"}], "@odata.nextLink": None}
+    monkeypatch.setattr(sources, "_json", fake_json)
+    assert sources._onedrive_children(None, share, item) == ([{"name": "a.mzML"}], None)
+
+
+class _TokenSession:
+    def __init__(self):
+        self.posts = []
+
+    def post(self, url, json=None, headers=None, **kw):
+        self.posts.append((url, json, headers))
+
+        class R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"token": "TOK"}
+        return R()
+
+
+def test_onedrive_folder_shared_since_the_move_to_sharepoint(monkeypatch):
+    """New personal shares answer only with the anonymous visitor token."""
+    monkeypatch.setattr(sources, "_badger", {})
+    api = sources.ONEDRIVE_API
+    sid = sources.share_id(SHARE_LINK)
+    seen = []
+
+    def fake_json(session, url, headers=None, **kw):
+        seen.append((url, dict(headers or {})))
+        if not headers:
+            raise requests.HTTPError("401 Unauthorized")
+        assert headers == {"Authorization": "Badger TOK", "Prefer": "autoredeem"}
+        pages = {
+            f"{api}/shares/{sid}/root?$expand=children": {
+                "name": "Spectra", "folder": {"childCount": 2},
+                "children": [
+                    {"name": "a.mzML", "size": 4, "file": {}, "@content.downloadUrl": "https://dl.example/a"},
+                    {"name": "raw", "id": "R1", "folder": {"childCount": 1},
+                     "parentReference": {"driveId": "1d8eb194b8deba10"}},
+                ]},
+            f"{api}/drives/1d8eb194b8deba10/items/R1/children": {"value": [
+                {"name": "b.raw", "size": 9, "file": {}, "@content.downloadUrl": "https://dl.example/b"}]},
+        }
+        return pages[url]
+
+    monkeypatch.setattr(sources, "_json", fake_json)
+    monkeypatch.setattr(sources, "_open_archives", lambda session, listing: None)
+    session = _TokenSession()
+    listing = sources.resolve(session, BROWSER_LINK)
+    assert listing.title == "OneDrive: Spectra"
+    assert [(f.path, f.url) for f in listing.files] == [
+        ("a.mzML", "https://dl.example/a"), ("raw/b.raw", "https://dl.example/b")]
+    assert seen[0] == (f"{api}/shares/{sid}/root?$expand=children", {})
+    assert session.posts == [(sources.BADGER_TOKEN_URL, {"appId": sources.BADGER_APP_UUID},
+                              {"AppId": sources.BADGER_APP_ID, "Accept": "application/json"})]
+
+
+def test_onedrive_personal_content_api_is_tried_last(monkeypatch):
+    monkeypatch.setattr(sources, "_badger", {})
+    sid = sources.share_id(SHARE_LINK)
+    personal = sources.ONEDRIVE_PERSONAL_API
+
+    def fake_json(session, url, headers=None, **kw):
+        if not url.startswith(personal):
+            raise requests.HTTPError("403")
+        return {
+            f"{personal}/shares/{sid}/driveitem?$expand=children": {
+                "name": "Spectra", "folder": {}, "children": [
+                    {"name": "sub", "id": "S", "folder": {}, "parentReference": {"driveId": "d"}}]},
+            f"{personal}/shares/{sid}/items/S/children": {"value": [
+                {"name": "c.mzML", "size": 1, "file": {}, "@content.downloadUrl": "https://dl.example/c"}]},
+        }.get(url) or (_ for _ in ()).throw(requests.HTTPError("404"))
+
+    monkeypatch.setattr(sources, "_json", fake_json)
+    monkeypatch.setattr(sources, "_open_archives", lambda session, listing: None)
+    listing = sources.resolve(_TokenSession(), SHARE_LINK)
+    assert [(f.path, f.url) for f in listing.files] == [("sub/c.mzML", "https://dl.example/c")]
+
+
 def test_sharepoint_file_link_is_fetched_with_download(monkeypatch):
     def no_api(session, url, **kw):
         raise AssertionError("SharePoint links must not go to the shares API")
@@ -583,7 +716,7 @@ def test_pride_dataset(monkeypatch):
              "publicFileLocations": [
                  {"value": "prd_ascp@fasp.ebi.ac.uk:pride/data/archive/2012/03/PXD000001/" + name},
                  {"value": "ftp://ftp.pride.ebi.ac.uk/pride/data/archive/2012/03/PXD000001/" + name}]}
-            for name in ("run1.raw", "run1.mzML.gz", "run2.raw", "ecoli.fasta")],
+            for name in ("run1.raw", "run1.mzML.gz", "run2.raw", "ecoli.fasta", "run3.raw.gz", "run3.mzML")],
     }
     monkeypatch.setattr(sources, "_json", lambda session, url, **kw: pages[url])
     monkeypatch.setattr(sources, "_open_archives", lambda session, listing: None)
@@ -593,14 +726,15 @@ def test_pride_dataset(monkeypatch):
         assert listing.url == "https://www.ebi.ac.uk/pride/archive/projects/PXD000001"
         assert "Organisms: Escherichia coli; Instruments: Orbitrap Eclipse" in listing.notes
         assert [(f.path, f.preselect) for f in listing.files] == [
-            ("run1.raw", False), ("run1.mzML.gz", True), ("run2.raw", True), ("ecoli.fasta", True)]
+            ("run1.raw", False), ("run1.mzML.gz", True), ("run2.raw", True), ("ecoli.fasta", True),
+            ("run3.raw.gz", False), ("run3.mzML", True)]
         assert listing.files[0].url == \
             "https://ftp.pride.ebi.ac.uk/pride/data/archive/2012/03/PXD000001/run1.raw"
     targets = {"ms": {"name": "MS data", "file_types": ["mzML", "raw"], "dir": "x", "fallback": []},
                "db": {"name": "Database", "file_types": ["fasta"], "dir": "y", "fallback": []}}
     items = job.build_items(listing.files, targets)
     assert [(i["target"], i["preselect"]) for i in items] == [
-        ("ms", False), ("ms", True), ("ms", True), ("db", True)]
+        ("ms", False), ("ms", True), ("ms", True), ("db", True), ("ms", False), ("ms", True)]
 
 
 def test_unknown_pride_dataset_is_explained(monkeypatch):
@@ -640,3 +774,11 @@ def test_bruker_folder_is_ticked_like_its_files():
                 for i, p in enumerate(ticks)]
     assert job.build_items(files(False, False), t)[0]["preselect"] is False
     assert job.build_items(files(False, True), t)[0]["preselect"] is True
+
+
+def test_pride_example_comes_from_settings(monkeypatch):
+    from src.data_import import ui
+    monkeypatch.setattr(ui, "settings", lambda: {})
+    assert ui.pride_example() == "PXD000001"
+    monkeypatch.setattr(ui, "settings", lambda: {"pride_example": "PXD078120"})
+    assert ui.pride_example() == "PXD078120"

@@ -11,6 +11,8 @@ from pathlib import Path
 import psutil
 
 _FOREIGN_PROCESS = object()
+# Seconds between a legacy (empty) marker's mtime and its process's start.
+_LEGACY_PID_REUSE_SLACK = 5.0
 
 
 @lru_cache(maxsize=1)
@@ -140,6 +142,16 @@ def _live_marker_process(marker: Path, *, prune_stale=True):
     ):
         # Empty legacy markers and damaged records cannot establish ownership.
         # They still keep a live process busy, but are never used to signal it.
+        # A legacy marker is touched right after its process started, so a
+        # process created well after the marker got a reused PID.
+        try:
+            reused = process.create_time() > marker.stat().st_mtime + _LEGACY_PID_REUSE_SLACK
+        except FileNotFoundError:
+            return None, False
+        if reused:
+            if prune_stale:
+                _remove_marker(marker)
+            return None, False
         return process, False
     if process.create_time() != record["create_time"]:
         if prune_stale:

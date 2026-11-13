@@ -99,8 +99,8 @@ wf.show_file_upload_section()
 
 The 4 pages call these methods respectively:
 - `wf.show_file_upload_section()` — upload page
-- `wf.show_parameter_section()` — configure page
-- `wf.show_execution_section()` — run page
+- `wf.show_parameter_section()` — configure page, then `wf.show_run_button("content/<run page>.py", summary=...)` as its last call (a bar fixed to the bottom of the window; opens the Run page and starts the run there)
+- `wf.show_execution_section(results_page="content/<results page>.py")` — run page; a finished run links to the results page
 - `wf.show_results_section()` — results page
 
 4. **Register all 4 pages** as a group in `app.py`:
@@ -126,6 +126,7 @@ The 4 pages call these methods respectively:
 
 ### Execution
 - `self.executor.run_topp("ToolName", input_output={"in": [...], "out": [...]})` — run a TOPP tool; returns `False` if any command failed. Each call shows on the Run page as a step with "file n of N" and elapsed times, and a failure is reported as "While running ToolName on file 2 of 3 (x.mzML)" with the tool output (`src/workflow/progress.py`)
+- A workflow that processes its samples one after another (several tools per sample, each `run_topp` on one file) records them, so the Run page lists every sample as waiting, running (with its current tool), done or failed: `self.executor.progress.start_samples(names)` before the loop, then `with self.executor.progress.sample(i):` around each sample's tools (failed when the block raises; call `sample_finished(i, ok=False)` for a failure that does not raise)
 - `self.executor.run_python("script_name", {"in": [...]})` — run a Python tool from `src/python-tools/`; returns `False` if the script is missing or exited non-zero
 - **`execution()` must be annotated `-> bool` and return `True` only when every step
   succeeded**, `False` on bad input or a failed tool. `tasks.execute_workflow()` (local and

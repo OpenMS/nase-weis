@@ -3,6 +3,12 @@
 ARG APP_IMAGE=naseweis-regression-app:local
 FROM ${APP_IMAGE}
 WORKDIR /app
+# The framework's dependency-license tests build a small git repository.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+# Each test points the app at its own workspaces folder; the app image's
+# shared folder would carry one test's saved settings into the next.
+ENV LOCAL_WORKSPACES_DIR=
 COPY requirements-dev.txt /app/requirements-dev.txt
 RUN /root/miniforge3/envs/streamlit-env/bin/python -m pip install --no-cache-dir -r requirements-dev.txt
 # Framework tests also inspect the Dockerfiles and Kubernetes manifests.

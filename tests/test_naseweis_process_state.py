@@ -38,6 +38,7 @@ def markers(tmp_path):
 def test_pid_markers_follow_process_liveness_not_file_existence(markers, monkeypatch, state, running):
     folder, marker = markers
     process = Mock()
+    process.create_time.return_value = 0.0  # started before its legacy marker
     process.is_running.return_value = state != "not-running"
     process.status.return_value = state
     lookup = Mock(return_value=process)
@@ -60,6 +61,7 @@ def test_live_worker_does_not_prevent_pruning_other_dead_markers(markers, monkey
     dead = folder / "54322"
     dead.touch()
     process = Mock()
+    process.create_time.return_value = 0.0  # started before its legacy marker
     process.is_running.return_value = True
     process.status.return_value = psutil.STATUS_SLEEPING
 
@@ -133,6 +135,8 @@ def manager(markers):
     instance.workflow_dir = markers[0].parent
     instance.executor = SimpleNamespace(pid_dir=markers[0])
     instance._queue_manager = None
+    instance.logger = Mock()
+    instance.multi_run = False
     return instance
 
 
@@ -151,6 +155,7 @@ def test_manager_status_cleans_only_dead_pids_preserving_run_metadata_and_logs(m
 
 def test_manager_status_keeps_live_workers_running(manager, monkeypatch):
     process = Mock()
+    process.create_time.return_value = 0.0  # started before its legacy marker
     process.is_running.return_value = True
     process.status.return_value = psutil.STATUS_SLEEPING
     monkeypatch.setattr("src.workflow.process_state.psutil.Process", Mock(return_value=process))
@@ -294,6 +299,7 @@ def test_stop_tolerates_marker_pruned_after_listing(
     kills = []
     marker.write_text(json.dumps({"schema": 1, "pid": 54321, "create_time": 100.0, "namespace": process_namespace()}))
     process = Mock()
+    process.create_time.return_value = 0.0  # started before its legacy marker
     process.create_time.return_value = 100.0
     process.is_running.return_value = True
     process.status.return_value = psutil.STATUS_SLEEPING

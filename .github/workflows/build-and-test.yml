@@ -26,6 +26,10 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+# Every job reads the repository only; a job that needs more says so itself.
+permissions:
+  contents: read
+
 jobs:
   images:
     # Which of the four images this app builds: `deploy.images` in app.yaml,
@@ -42,6 +46,7 @@ jobs:
       kind: ${{ steps.images.outputs.kind }}
       manifest: ${{ steps.images.outputs.manifest }}
       apptainer: ${{ steps.images.outputs.apptainer }}
+      kind_tests: ${{ steps.images.outputs.kind_tests }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,11 +82,24 @@ jobs:
             exit 1
           fi
           echo "Images built: $list"
+          # `ci.kind_tests` / `ci.apptainer: false` in app.yaml turn those
+          # tests off for an app with few CI minutes (default: on).
+          kind_tests=true; apptainer_tests=true
+          if [ -f app.yaml ]; then
+            [ "$(yq '.ci.kind_tests' app.yaml | tr '[:upper:]' '[:lower:]')" = false ] && kind_tests=false
+            [ "$(yq '.ci.apptainer' app.yaml | tr '[:upper:]' '[:lower:]')" = false ] && apptainer_tests=false
+          fi
+          echo "kind tests: $kind_tests, Apptainer: $apptainer_tests"
           {
             echo "list=$list"
             echo "kind=$(jq -c 'map(split("-") | {variant: .[0], arch: .[1], runner: (if .[1] == "arm64" then "ubuntu-24.04-arm" else "ubuntu-latest" end)})' <<< "$list")"
             echo "manifest=$(jq -c '[["full", "simple"][] as $v | {variant: $v, arches: ([.[] | split("-") | select(.[0] == $v) | .[1]] | join(" "))} | select(.arches != "")]' <<< "$list")"
-            echo "apptainer=$(jq -c '[.[] | split("-") | select(.[1] == "amd64") | .[0]]' <<< "$list")"
+            if [ "$apptainer_tests" = true ]; then
+              echo "apptainer=$(jq -c '[.[] | split("-") | select(.[1] == "amd64") | .[0]]' <<< "$list")"
+            else
+              echo "apptainer=[]"
+            fi
+            echo "kind_tests=$kind_tests"
           } >> "$GITHUB_OUTPUT"
 
   lint-manifests:
@@ -91,7 +109,7 @@ jobs:
 
       - name: Install kubeconform
         run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
           sudo mv kubeconform /usr/local/bin/
 
       - name: Install kubectl
@@ -145,6 +163,51 @@ jobs:
           fi
           kubeconform -summary -strict -kubernetes-version 1.28.0 -skip IngressRoute \
             < /tmp/prod-lint.yaml
+
+      - name: Validate the overlay with the S3 storage component
+        # k8s/components/storage-s3/ is opt-in. Render prod with it (added
+        # unless the overlay already lists it) and check that it really
+        # switched the app: the Manila claim is gone, every workspace volume
+        # names the S3 claim, and the S3 settings reached the containers.
+        run: |
+          tmp=$(mktemp -d)
+          cp -r k8s "$tmp/"
+          yq -i '(.components // []) as $c | .components = ($c + (["../../components/storage-s3"] - $c))' "$tmp/k8s/overlays/prod/kustomization.yaml"
+          kubectl kustomize "$tmp/k8s/overlays/prod/" > /tmp/prod-s3.yaml
+          if [ ! -s /tmp/prod-s3.yaml ]; then
+            echo "::error::prod + storage-s3 rendered nothing"
+            exit 1
+          fi
+          kubeconform -summary -strict -kubernetes-version 1.28.0 -skip IngressRoute \
+            < /tmp/prod-s3.yaml
+          claims=$(yq '.. | select(has("claimName")) | .claimName' /tmp/prod-s3.yaml | grep -v '^---$' | sort -u)
+          if [ -z "$claims" ] || printf '%s\n' "$claims" | grep -vq 'workspaces-s3-pvc$'; then
+            echo "::error::workspace volumes do not all name the S3 claim: $claims"
+            exit 1
+          fi
+          if yq 'select(.kind == "PersistentVolumeClaim") | .metadata.name' /tmp/prod-s3.yaml | grep -q manila; then
+            echo "::error::the Manila claim is still rendered next to the S3 claim"
+            exit 1
+          fi
+          n=$(yq 'select(.kind == "Deployment") | .spec.template.spec.containers[0].env[] | select(.name == "WORKSPACES_S3_BUCKET") | .name' /tmp/prod-s3.yaml | grep -c . || true)
+          if [ "$n" -lt 3 ]; then
+            echo "::error::WORKSPACES_S3_BUCKET reached $n of the 3 deployments (streamlit, rq-worker, sync)"
+            exit 1
+          fi
+
+      - name: Render the Argo CD folder
+        # k8s/argocd/ is synced by Argo CD itself (argocd-application.yaml),
+        # so a file it cannot render stops every later deploy. Its kinds are
+        # Argo CD CRDs, which kubeconform has no schema for: render only.
+        # tests/test_argocd_autodeploy.py checks the contents.
+        if: hashFiles('k8s/argocd/kustomization.yaml') != ''
+        run: |
+          kubectl kustomize k8s/argocd/ > /tmp/argocd-lint.yaml
+          if [ ! -s /tmp/argocd-lint.yaml ]; then
+            echo "::error::k8s/argocd/ rendered nothing"
+            exit 1
+          fi
+          grep -E '^kind: ' /tmp/argocd-lint.yaml
 
       - name: Validate the CI overlay
         # k8s/overlays/ci/ is what the two kind jobs actually apply, so it is
@@ -203,8 +266,9 @@ jobs:
           echo "$CI_RES"
 
       - name: Validate the storage roots
-        # Both of them: k8s/storage/ (Manila, what production applies) and
-        # k8s/ci-storage/ (the Ganesha stand-in the kind jobs apply).
+        # All three: k8s/storage/ (Manila, what production applies),
+        # k8s/ci-storage/ (the Ganesha stand-in the kind jobs apply) and the
+        # optional S3 tier k8s/storage-s3/ (JuiceFS).
         #
         # Rendered, not file-by-file: each root carries Helm values files,
         # which is not a Kubernetes manifest and would fail kubeconform on
@@ -221,7 +285,7 @@ jobs:
         # input, so a render that SUCCEEDS and emits zero documents would still
         # pass a pipefail-corrected pipe.
         run: |
-          for root in k8s/storage k8s/ci-storage; do
+          for root in k8s/storage k8s/ci-storage k8s/storage-s3; do
             kubectl kustomize --enable-helm "$root/" > /tmp/storage-rendered.yaml
             if [ ! -s /tmp/storage-rendered.yaml ]; then
               echo "::error::$root/ rendered nothing; its charts were never validated"
@@ -464,8 +528,8 @@ jobs:
       && (needs.build-simple-amd64.result == 'success' || !contains(fromJSON(needs.images.outputs.list), 'simple-amd64'))
       && (needs.build-full-arm64.result == 'success' || !contains(fromJSON(needs.images.outputs.list), 'full-arm64'))
       && (needs.build-simple-arm64.result == 'success' || !contains(fromJSON(needs.images.outputs.list), 'simple-arm64'))
-      && needs.test-nginx.result == 'success'
-      && needs.test-traefik.result == 'success'
+      && (needs.images.outputs.kind_tests != 'true'
+          || (needs.test-nginx.result == 'success' && needs.test-traefik.result == 'success'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -866,6 +930,7 @@ jobs:
     needs: [images, build-full-amd64, build-simple-amd64, build-full-arm64, build-simple-arm64]
     if: always() && !cancelled()
         && needs.images.result == 'success'
+        && needs.images.outputs.kind_tests == 'true'
         && (needs.build-simple-amd64.result == 'success' || !contains(fromJSON(needs.images.outputs.list), 'simple-amd64'))
         && (needs.build-simple-arm64.result == 'success' || !contains(fromJSON(needs.images.outputs.list), 'simple-arm64'))
     runs-on: ${{ matrix.runner }}
@@ -1301,14 +1366,39 @@ jobs:
 
       - name: Verify Redis Service is reachable
         # A Ready pod can still refuse the first connection for a few seconds
-        # while its Service endpoint propagates, so retry before failing.
+        # while its Service endpoint propagates, so retry before failing. The
+        # test pod carries a worker's labels: k8s/base/redis-networkpolicy.yaml
+        # admits only this app's streamlit, rq-worker and sync pods.
         run: |
-          kubectl run redis-test -n openms --image=redis:7-alpine --restart=Never --command -- \
+          kubectl run redis-test -n openms --image=redis:7.4.12-alpine --restart=Never \
+            --labels="app=${SLUG},component=rq-worker" --command -- \
             sh -c 'for i in $(seq 1 15); do redis-cli -h '"${SLUG}"'-redis.openms.svc.cluster.local ping | grep -q PONG && echo PONG && exit 0; sleep 2; done; exit 1'
           kubectl wait -n openms --for=jsonpath='{.status.phase}'=Succeeded pod/redis-test --timeout=90s \
             || { kubectl logs -n openms redis-test || true; kubectl delete pod -n openms redis-test --wait=false; exit 1; }
           kubectl logs -n openms redis-test
           kubectl delete pod -n openms redis-test --wait=false
+
+      - name: Verify Redis refuses pods of other apps
+        # Same client without this app's labels: the NetworkPolicy drops its
+        # packets, so every attempt has to end in a connect timeout (busybox
+        # `timeout` exits 143 when it kills the client, coreutils 124). The Service name must resolve first, and any other
+        # result (PONG, a refused connection, a DNS error) fails the step, so a
+        # broken client or an absent Redis cannot pass for a denial.
+        run: |
+          kubectl run redis-denied -n openms --image=redis:7.4.12-alpine --restart=Never \
+            --labels="app=another-app,component=rq-worker" --command -- \
+            sh -c 'H='"${SLUG}"'-redis.openms.svc.cluster.local
+              for i in $(seq 1 10); do getent hosts "$H" && break; sleep 2; done
+              getent hosts "$H" >/dev/null || { echo "cannot resolve $H"; exit 2; }
+              for i in 1 2 3; do
+                timeout 5 redis-cli -h "$H" ping; rc=$?
+                [ "$rc" -eq 143 ] || [ "$rc" -eq 124 ] || { echo "attempt $i ended with exit $rc, not a timeout"; exit 1; }
+              done
+              echo refused'
+          kubectl wait -n openms --for=jsonpath='{.status.phase}'=Succeeded pod/redis-denied --timeout=120s \
+            || { echo "::error::Redis did not drop a connection from a pod of another app"; kubectl logs -n openms redis-denied || true; kubectl delete pod -n openms redis-denied --wait=false; exit 1; }
+          kubectl logs -n openms redis-denied
+          kubectl delete pod -n openms redis-denied --wait=false
 
       - name: Verify all deployments are available
         # No `|| true`: a Pending, CrashLooping or unschedulable Deployment has to
@@ -1597,6 +1687,7 @@ jobs:
     needs: [images, build-full-amd64, build-simple-amd64, build-full-arm64, build-simple-arm64]
     if: always() && !cancelled()
         && needs.images.result == 'success'
+        && needs.images.outputs.kind_tests == 'true'
         && (needs.build-simple-amd64.result == 'success' || !contains(fromJSON(needs.images.outputs.list), 'simple-amd64'))
         && (needs.build-simple-arm64.result == 'success' || !contains(fromJSON(needs.images.outputs.list), 'simple-arm64'))
     runs-on: ${{ matrix.runner }}

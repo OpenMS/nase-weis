@@ -16,9 +16,11 @@
 # (Windows-x86_64: openms-package.zip, macOS-arm64: .pkg, Linux-x86_64: .deb),
 # which stage-openms.sh takes as OPENMS_PACKAGE.
 #
-# Modern sources build with their platform's vcpkg CMake preset. Sources
-# without those presets retain the contrib/CTest route used by older OpenMS
-# releases; current OpenMS no longer ships cibuild.cmake or cipackage.cmake.
+# A source with vcpkg CMake presets (OpenMS 3.6+) builds with them on all
+# three platforms, as OpenMS's own release does. Older sources build on
+# Windows with a prebuilt OpenMS/contrib release, on macOS and Linux with
+# OpenMS's tools/ci scripts (deps-macos.sh, deps-ubuntu.sh, cibuild.cmake,
+# cipackage.cmake), which 3.6 removed.
 
 name: OpenMS
 
@@ -113,8 +115,8 @@ jobs:
           cmake=$(gh api -H "Accept: application/vnd.github.raw" "repos/$repo/contents/CMakeLists.txt?ref=$sha") && break
           sleep $((attempt * 5))
         done
-        major=$(sed -n 's/^set(OPENMS_PACKAGE_VERSION_MAJOR "\([0-9]*\)").*/\1/p' <<<"$cmake")
-        minor=$(sed -n 's/^set(OPENMS_PACKAGE_VERSION_MINOR "\([0-9]*\)").*/\1/p' <<<"$cmake")
+        major=$(sed -nE 's/^[[:space:]]*set[[:space:]]*\([[:space:]]*OPENMS_PACKAGE_VERSION_MAJOR[[:space:]]+"?([0-9]+)"?[[:space:]]*\).*/\1/p' <<<"$cmake")
+        minor=$(sed -nE 's/^[[:space:]]*set[[:space:]]*\([[:space:]]*OPENMS_PACKAGE_VERSION_MINOR[[:space:]]+"?([0-9]+)"?[[:space:]]*\).*/\1/p' <<<"$cmake")
         if [[ -z "$major" || -z "$minor" ]]; then
           echo "::error::could not read the OpenMS version from $repo@$sha's CMakeLists.txt, so the Linux runner is unknown"
           exit 1
@@ -160,13 +162,13 @@ jobs:
       SHA: ${{ needs.resolve.outputs.sha }}
 
     steps:
-    # Bump this version when the build or packaging changes what a package holds.
+    # Bump v1 when the build or packaging below changes what a package holds.
     - name: Restore a package of this commit
       id: package
       uses: actions/cache/restore@v4
       with:
         path: openms-out
-        key: openms-package-v2-${{ matrix.platform }}-${{ needs.resolve.outputs.repository }}-${{ needs.resolve.outputs.sha }}
+        key: openms-package-v1-${{ matrix.platform }}-${{ needs.resolve.outputs.repository }}-${{ needs.resolve.outputs.sha }}
 
     # Everything up to "Save the package" runs only when no package of this
     # commit exists yet.
@@ -185,11 +187,10 @@ jobs:
       id: route
       run: |
         set -euo pipefail
-        case "$RUNNER_OS" in
+        case $RUNNER_OS in
           Windows) preset=windows-x64-release ;;
           macOS) preset=macos-arm64-release ;;
-          Linux) preset=linux-x64-release ;;
-          *) echo "::error::unsupported OpenMS build platform: $RUNNER_OS"; exit 1 ;;
+          *) preset=linux-x64-release ;;
         esac
         if grep -q "\"$preset\"" CMakePresets.json 2>/dev/null && [[ -f vcpkg.json ]]; then
           route=vcpkg
@@ -197,10 +198,11 @@ jobs:
           route=contrib
         else
           route=cibuild
+          [[ -f tools/ci/cibuild.cmake ]] || { echo "::error::$REPO@$SHA has neither the $preset CMake preset nor tools/ci/cibuild.cmake"; exit 1; }
+        fi
+        if [[ $RUNNER_OS != Windows ]]; then
           script=tools/ci/deps-$([[ $RUNNER_OS == macOS ]] && echo macos || echo ubuntu).sh
-          for required in "$script" tools/ci/cibuild.cmake tools/ci/cipackage.cmake; do
-            [[ -f $required ]] || { echo "::error::$REPO@$SHA has neither a $preset preset nor $required"; exit 1; }
-          done
+          [[ -f $script ]] || { echo "::error::$REPO@$SHA has no $script; rebase it onto a newer OpenMS develop"; exit 1; }
         fi
         { echo "route=$route"; echo "preset=$preset"; } >> "$GITHUB_OUTPUT"
         echo "Build route: $route ($preset)"
@@ -251,33 +253,45 @@ jobs:
         } >> "$GITHUB_ENV"
 
     ##########################################################################
-    # macOS and Linux: build dependencies
+    # macOS and Linux: build dependencies (both routes)
     ##########################################################################
     - name: Install build dependencies
       if: steps.package.outputs.cache-hit != 'true' && runner.os != 'Windows'
       id: deps
       env:
         HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+        ROUTE: ${{ steps.route.outputs.route }}
       run: |
         set -euo pipefail
         if [[ $RUNNER_OS == macOS ]]; then
-          if [[ "${{ steps.route.outputs.route }}" == vcpkg ]]; then
-            bash tools/ci/deps-macos.sh --skip-doc-deps --skip-gui-deps
-            # Modern OpenMS obtains its library dependencies through vcpkg.
-            echo "cmake_prefix=$(brew --prefix)" >> "$GITHUB_OUTPUT"
+          bash tools/ci/deps-macos.sh
+          if [[ $ROUTE == vcpkg ]]; then
+            # As OpenMS's CI: Qt from Homebrew, everything else from vcpkg.
+            brew_path=$(brew --prefix)
+            { echo "$brew_path/bin"; echo "$(brew --prefix flex)/bin"; echo "$(brew --prefix bison)/bin"; } >> "$GITHUB_PATH"
+            # deps-macos.sh installs no OpenMP runtime, and AppleClang has none
+            # of its own: without libomp OpenMS falls back to -fopenmp-simd and
+            # the tools run on one thread. FindOpenMP looks in OpenMP_ROOT.
+            brew install libomp
+            echo "OpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
+            echo "cmake_prefix=$brew_path;$(brew --prefix libomp)" >> "$GITHUB_OUTPUT"
           else
-            bash tools/ci/deps-macos.sh
-            # Older sources still use the system-package/CTest route.
+            # Homebrew's eigen is 5.x; OpenMS asks for Eigen 3.4. Eigen is
+            # header-only, so install 3.4.0's headers and CMake config aside.
             eigen3="$RUNNER_TEMP/eigen3"
             curl -fsSL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz | tar -xz -C "$RUNNER_TEMP"
             cmake -S "$RUNNER_TEMP/eigen-3.4.0" -B "$RUNNER_TEMP/eigen-build" -DCMAKE_INSTALL_PREFIX="$eigen3" -DBUILD_TESTING=OFF -DEIGEN_BUILD_DOC=OFF >/dev/null
             cmake --install "$RUNNER_TEMP/eigen-build" >/dev/null
             echo "cmake_prefix=$eigen3;$(brew --prefix qt)/lib/cmake;$(brew --prefix qt);$(brew --prefix libomp)" >> "$GITHUB_OUTPUT"
             echo "eigen3_dir=$eigen3/share/eigen3/cmake" >> "$GITHUB_OUTPUT"
+            # AppleClang has no OpenMP of its own; FindOpenMP looks in OpenMP_ROOT.
+            echo "OpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
+            echo "external_json=OFF" >> "$GITHUB_OUTPUT"
           fi
-          # AppleClang has no OpenMP of its own; FindOpenMP looks in OpenMP_ROOT.
-          echo "OpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
-          echo "external_json=OFF" >> "$GITHUB_OUTPUT"
+          # Without the GUI there are no Qt plugins, and fix_dependencies.rb
+          # aborts on the missing plugin folder before it fixes the TOPP tools'
+          # library paths. Skip the plugin folder when it does not exist.
+          sed -i '' 's|\$plugin_dir = Pathname.new(arg).realpath$|$plugin_dir = Pathname.new(arg).realpath if File.directory?(arg)|' cmake/MacOSX/fix_dependencies.rb
         else
           bash tools/ci/deps-ubuntu.sh
           echo "cmake_prefix=" >> "$GITHUB_OUTPUT"
@@ -285,9 +299,18 @@ jobs:
           echo "external_json=ON" >> "$GITHUB_OUTPUT"
         fi
         echo "jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)" >> "$GITHUB_OUTPUT"
+        if [[ $ROUTE == vcpkg ]]; then
+          mkdir -p .ccache
+          {
+            echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache"
+            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+            echo "CCACHE_COMPRESS=true"
+            echo "CCACHE_MAXSIZE=1G"
+          } >> "$GITHUB_ENV"
+        fi
 
     ##########################################################################
-    # vcpkg route (all platforms with matching release presets)
+    # vcpkg route (OpenMS 3.6+), all platforms
     ##########################################################################
     - name: Fetch vcpkg
       if: steps.package.outputs.cache-hit != 'true' && steps.route.outputs.route == 'vcpkg'
@@ -313,28 +336,25 @@ jobs:
       if: steps.package.outputs.cache-hit != 'true' && steps.route.outputs.route == 'vcpkg'
       id: vcpkg-configure
       env:
-        MACOSX_DEPLOYMENT_TARGET: ${{ runner.os == 'macOS' && '15.0' || '' }}
+        PRESET: ${{ steps.route.outputs.preset }}
+        DEPS_PREFIX: ${{ steps.deps.outputs.cmake_prefix }}
+        # As OpenMS's release: the oldest macOS is the runner's, whose Homebrew
+        # libraries the package bundles.
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
       run: |
         set -euxo pipefail
-        mkdir -p .vcpkg-cache .ccache
+        mkdir -p .vcpkg-cache
         export VCPKG_BINARY_SOURCES="clear;files,$GITHUB_WORKSPACE/.vcpkg-cache,readwrite"
-        export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache" CCACHE_BASEDIR="$GITHUB_WORKSPACE"
-        export CCACHE_COMPRESS=true CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-1G}"
-        {
-          echo "VCPKG_BINARY_SOURCES=$VCPKG_BINARY_SOURCES"
-          echo "CCACHE_DIR=$CCACHE_DIR"
-          echo "CCACHE_BASEDIR=$CCACHE_BASEDIR"
-          echo "CCACHE_COMPRESS=$CCACHE_COMPRESS"
-          echo "CCACHE_MAXSIZE=$CCACHE_MAXSIZE"
-        } >> "$GITHUB_ENV"
+        echo "VCPKG_BINARY_SOURCES=$VCPKG_BINARY_SOURCES" >> "$GITHUB_ENV"
         if [[ $RUNNER_OS == Windows ]]; then
           ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
         else
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
         fi
-        # Native tools and their readers, without GUI, documentation or Python.
-        cmake --preset "${{ steps.route.outputs.preset }}" \
-          -DCMAKE_PREFIX_PATH="${{ steps.deps.outputs.cmake_prefix }}" \
+        # A TOPP-only build. The optional dependencies match OpenMS's <os>-ci
+        # presets, i.e. what the official installers ship, minus GUI, docs and tests.
+        cmake --preset "$PRESET" \
+          ${DEPS_PREFIX:+"-DCMAKE_PREFIX_PATH=$DEPS_PREFIX"} \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
           -DWITH_GUI=OFF \
@@ -357,43 +377,52 @@ jobs:
           -DENABLE_TOPP_TESTING=OFF \
           -DENABLE_PIPELINE_TESTING=OFF
 
-    # As soon as configure (which runs `vcpkg install`) succeeded, so a failing
-    # compile does not throw away hours of dependency builds.
+    # Right after configure (which runs `vcpkg install`), so a failing compile
+    # does not throw away hours of dependency builds. A failed `vcpkg install`
+    # (a port's download refused, say) saves what it built under a key of its
+    # own: restore-keys picks it up next time, and the full key stays free for
+    # a complete cache.
     - name: Save the vcpkg binary cache
-      if: always() && steps.vcpkg-configure.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+      if: always() && (steps.vcpkg-configure.outcome == 'success' || steps.vcpkg-configure.outcome == 'failure') && steps.vcpkg-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: .vcpkg-cache
-        key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+        key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}${{ steps.vcpkg-configure.outcome == 'failure' && format('-partial-{0}-{1}', github.run_id, github.run_attempt) || '' }}
 
     - name: Build and package (vcpkg)
       if: steps.package.outputs.cache-hit != 'true' && steps.route.outputs.route == 'vcpkg'
       id: vcpkg-build
       env:
-        # Names the zip and its top-level folder (cmake/package_nsis.cmake).
-        CPACK_PACKAGE_FILE_NAME: openms-package
+        PRESET: ${{ steps.route.outputs.preset }}
+        PACKAGE_TYPE: ${{ matrix.package_type || 'zip' }}
+        JOBS: ${{ steps.deps.outputs.jobs }}
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
       run: |
         set -euxo pipefail
         ccache --zero-stats
-        # Bound parallel compilation to the hosted runners' memory.
-        preset="${{ steps.route.outputs.preset }}"
-        cmake --build --preset "$preset" --parallel 2
+        # Two jobs keep the MSVC compiler within the hosted runner's memory.
+        cmake --build --preset "$PRESET" --parallel "${JOBS:-2}"
         ccache --show-stats || true
-        package_type="${{ matrix.package_type || 'zip' }}"
-        package_dir="$GITHUB_WORKSPACE/build/$preset"
-        options=("-DPACKAGE_TYPE=$package_type" "-DSEARCH_ENGINES_DIRECTORY=$GITHUB_WORKSPACE/_thirdparty")
-        if [[ $RUNNER_OS == Windows ]]; then
-          # Keep CPack's staging path below Win32 MAX_PATH.
-          rm -rf /c/cpk && mkdir -p /c/cpk
-          options+=("-DCPACK_PACKAGE_DIRECTORY=C:/cpk")
-          package_dir=/c/cpk
-        elif [[ $RUNNER_OS == macOS ]]; then
-          options+=("-DSIGNING_IDENTITY=-" "-DCMAKE_OSX_DEPLOYMENT_TARGET=15.0")
-        fi
-        cmake -S . -B "build/$preset" "${options[@]}"
-        cmake --build "build/$preset" --target dist --parallel 2
         mkdir -p openms-out
-        cp "$package_dir"/*."$package_type" openms-out/
+        if [[ $RUNNER_OS == Windows ]]; then
+          # Names the zip and its top-level folder (cmake/package_nsis.cmake).
+          export CPACK_PACKAGE_FILE_NAME=openms-package
+          # Stage in a short directory: CPack's default under the build tree can
+          # exceed MAX_PATH (see OpenMS's release.yml).
+          rm -rf /c/cpk && mkdir -p /c/cpk
+          cmake -S . -B "build/$PRESET" -DPACKAGE_TYPE=zip \
+            "-DSEARCH_ENGINES_DIRECTORY=$GITHUB_WORKSPACE/_thirdparty" -DCPACK_PACKAGE_DIRECTORY=C:/cpk
+          cmake --build "build/$PRESET" --target dist
+          cp /c/cpk/openms-package.zip openms-out/
+        else
+          # Ad-hoc signature only on macOS: electron-builder signs every binary
+          # in the app again with the Developer ID certificate.
+          cmake -S . -B "build/$PRESET" "-DPACKAGE_TYPE=$PACKAGE_TYPE" \
+            "-DSEARCH_ENGINES_DIRECTORY=$GITHUB_WORKSPACE/_thirdparty" \
+            $([[ $RUNNER_OS == macOS ]] && echo -DSIGNING_IDENTITY=-)
+          cmake --build "build/$PRESET" --target dist
+          cp "build/$PRESET"/*."$PACKAGE_TYPE" openms-out/
+        fi
 
     ##########################################################################
     # Windows, contrib route (sources without vcpkg presets)
@@ -503,12 +532,6 @@ jobs:
       if: steps.package.outputs.cache-hit != 'true' && steps.route.outputs.route != 'vcpkg'
       run: |
         set -euo pipefail
-        if [[ $RUNNER_OS == macOS ]]; then
-          # Without the GUI there are no Qt plugins, and fix_dependencies.rb
-          # aborts on the missing plugin folder before it fixes the TOPP tools'
-          # library paths. Skip the plugin folder when it does not exist.
-          sed -i '' 's|\$plugin_dir = Pathname.new(arg).realpath$|$plugin_dir = Pathname.new(arg).realpath if File.directory?(arg)|' cmake/MacOSX/fix_dependencies.rb
-        fi
         # Names the Windows zip and its top-level folder (cmake/package_nsis.cmake).
         if [[ $RUNNER_OS == Windows ]]; then export CPACK_PACKAGE_FILE_NAME=openms-package; fi
         set +e

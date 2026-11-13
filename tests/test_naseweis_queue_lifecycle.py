@@ -28,6 +28,7 @@ def manager(tmp_path):
     manager.executor = SimpleNamespace(pid_dir=tmp_path / "pids")
     manager.executor.pid_dir.mkdir()
     manager.parameter_manager = Mock()
+    manager.parameter_manager.get_parameters_from_json.return_value = {}
     manager.logger = Mock()
     manager.multi_run = False
     manager.queue_error = importlib.import_module("src.workflow.QueueManager").QueueStateUnavailableError

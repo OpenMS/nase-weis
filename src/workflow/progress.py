@@ -7,6 +7,11 @@ failed entry keeps the exit code and the tail of the tool's output, so the Run
 page can say "While running FeatureFinderMetabo on file 2 of 3 (x.mzML)" and
 show the raw output under it.
 
+A workflow that takes its samples one after another, running several tools
+on each, also records the *samples* (``start_samples()`` and the ``sample()``
+context): the Run page then lists every sample as waiting, running (with the
+tool it is in), done or failed, instead of only the file of the current tool.
+
 The state is one JSON file, ``<workflow_dir>/logs/progress.json``. The logs
 folder is cleared when a run starts and copied into the run folder when a
 multi-run workflow ends. It is kept free of Streamlit because the run itself
@@ -17,6 +22,7 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
 
@@ -71,7 +77,7 @@ class RunProgress:
     def _load(self) -> dict:
         state = read_progress(self.workflow_dir)
         if not state:
-            state = {"started": time.time(), "steps": []}
+            state = {"started": time.time(), "steps": [], "environment": _environment()}
         return state
 
     def _save(self, state: dict) -> None:
@@ -103,23 +109,38 @@ class RunProgress:
             except (OSError, ValueError, KeyError, IndexError, TypeError):
                 return None
 
-    def start_step(self, tool: str, labels: List[str], threads: int = 1, parallel: int = 1) -> int:
-        """Record a tool call with one entry per label; returns the step index."""
+    def start_step(
+        self,
+        tool: str,
+        labels: List[str],
+        threads: int = 1,
+        parallel: int = 1,
+        provenance: Optional[dict] = None,
+    ) -> int:
+        """Record a tool call with one entry per label; returns the step index.
+
+        ``provenance`` is what the processing report needs to say how each
+        input file was processed (``src/workflow/processing_report.py``):
+        ``{"kind": "topp"|"python", "program", "version", "params",
+        "io": [{"inputs": [...], "outputs": [...]}, one per label]}``.
+        """
 
         def change(state):
-            state["steps"].append(
-                {
-                    "tool": tool,
-                    "started": time.time(),
-                    "ended": None,
-                    "threads": threads,
-                    "parallel": parallel,
-                    "files": [
-                        {"name": label, "status": PENDING, "started": None, "ended": None}
-                        for label in labels
-                    ],
-                }
-            )
+            step = {
+                "tool": tool,
+                "started": time.time(),
+                "ended": None,
+                "threads": threads,
+                "parallel": parallel,
+                "sample": _running_sample(state),
+                "files": [
+                    {"name": label, "status": PENDING, "started": None, "ended": None}
+                    for label in labels
+                ],
+            }
+            if provenance:
+                step["provenance"] = provenance
+            state["steps"].append(step)
             return len(state["steps"]) - 1
 
         step = self._update(change)
@@ -156,12 +177,91 @@ class RunProgress:
         if step >= 0:
             self._update(change)
 
+    def record_alias(self, path: str, source: str, note: str = "") -> None:
+        """``path`` is ``source`` under another name (a renamed or reused file),
+        so the processing report traces files made from it back to ``source``."""
+
+        def change(state):
+            state.setdefault("aliases", {})[str(path)] = {"source": str(source), "note": note}
+
+        self._update(change)
+
     def end_step(self, step: int) -> None:
         def change(state):
             state["steps"][step]["ended"] = time.time()
 
         if step >= 0:
             self._update(change)
+
+    # Samples: a workflow that runs its tools on one sample after another
+
+    def start_samples(self, labels: List[str]) -> None:
+        """Record the samples of this run, all waiting."""
+
+        def change(state):
+            state["samples"] = [
+                {"name": label, "status": PENDING, "started": None, "ended": None}
+                for label in labels
+            ]
+
+        self._update(change)
+
+    def sample_started(self, index: int) -> None:
+        def change(state):
+            entry = state["samples"][index]
+            entry["status"] = RUNNING
+            entry["started"] = time.time()
+
+        self._update(change)
+
+    def sample_finished(self, index: int, ok: bool) -> None:
+        def change(state):
+            entry = state["samples"][index]
+            entry["status"] = DONE if ok else FAILED
+            entry["ended"] = time.time()
+            if entry["started"] is None:
+                entry["started"] = entry["ended"]
+
+        self._update(change)
+
+    @contextmanager
+    def sample(self, index: int):
+        """Mark sample `index` running for the block: done when it ends, failed
+        when it raises (the exception goes on). Mark it failed yourself with
+        sample_finished(index, ok=False) for a failure that does not raise;
+        the block's end then leaves it so.
+        """
+        self.sample_started(index)
+        try:
+            yield
+        except BaseException:
+            self.sample_finished(index, ok=False)
+            raise
+        state = read_progress(self.workflow_dir) or {}
+        samples = state.get("samples") or []
+        if index < len(samples) and samples[index]["status"] == RUNNING:
+            self.sample_finished(index, ok=True)
+
+
+def _environment() -> dict:
+    """Versions the processing report names: Python, pyOpenMS, the platform."""
+    import platform  # pylint: disable=import-outside-toplevel
+    from importlib import metadata  # pylint: disable=import-outside-toplevel
+
+    env = {"python": platform.python_version(), "platform": platform.platform(terse=True)}
+    try:
+        env["pyopenms"] = metadata.version("pyopenms")
+    except metadata.PackageNotFoundError:
+        pass
+    return env
+
+
+def _running_sample(state: dict) -> Optional[str]:
+    """The name of the sample being processed, if the run records samples."""
+    for entry in state.get("samples") or []:
+        if entry["status"] == RUNNING:
+            return entry["name"]
+    return None
 
 
 def file_counts(step: dict) -> dict:
@@ -184,7 +284,11 @@ def file_position(step: dict, index: int) -> str:
 def failure_context(step: dict, index: int) -> str:
     """'While running CometAdapter on file 2 of 3 (x.mzML)'."""
     where = file_position(step, index)
-    return f"While running {step['tool']}" + (f" on {where}" if where else "")
+    context = f"While running {step['tool']}" + (f" on {where}" if where else "")
+    sample = step.get("sample")
+    if sample and sample != step["files"][index]["name"]:
+        context += f" for sample {sample}"
+    return context
 
 
 # OpenMS appends the C++ source location to its messages:
@@ -223,6 +327,56 @@ def failures(state: Optional[dict]) -> List[dict]:
                     }
                 )
     return found
+
+
+def sample_counts(state: Optional[dict]) -> dict:
+    """How many samples are pending, running, done and failed."""
+    counts = {PENDING: 0, RUNNING: 0, DONE: 0, FAILED: 0}
+    for entry in (state or {}).get("samples") or []:
+        counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+    return counts
+
+
+def current_step(state: dict, sample: str) -> Optional[dict]:
+    """The latest step run for `sample`, or None before its first tool."""
+    for step in reversed(state.get("steps") or []):
+        if step.get("sample") == sample:
+            return step
+    return None
+
+
+# TOPP tools report their own progress: "Progress of 'loading spectra':",
+# then lines ending in "42.17 %". The run writes tool output to logs/all.log.
+_PROGRESS_LABEL = re.compile(r"Progress of\s+'([^']+)'")
+_PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+# Bytes read from the end of all.log; a tool's latest progress lines are there
+_LOG_TAIL = 65536
+
+
+def tool_progress(log_path) -> Optional[tuple]:
+    """(label, fraction) of the running tool's own progress, from the end of
+    all.log, or None if the tool has reported none since it started."""
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - _LOG_TAIL))
+            lines = f.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    fraction = None
+    for line in reversed(lines):
+        if "Process finished:" in line or "Running command:" in line:
+            break
+        if fraction is None:
+            match = _PERCENT.search(line)
+            if match:
+                fraction = float(match.group(1)) / 100
+        match = _PROGRESS_LABEL.search(line)
+        if match:
+            if fraction is None or not 0 <= fraction <= 1:
+                return None
+            return match.group(1), fraction
+    return None
 
 
 def format_duration(seconds: float) -> str:
