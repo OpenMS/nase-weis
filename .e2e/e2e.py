@@ -106,7 +106,8 @@ with sync_playwright() as p:
         if click(page, "Start Workflow"):
             wait_run(page, "search")
         goto(page, "topp_workflow_results", "results-matches")
-        for t in ["Spectra", "Sequence coverage", "Quantification", "Export"]:
+        # Experiment tabs, then one acquisition's own tabs under Sample details.
+        for t in ["Sequence coverage", "Quantification", "Sample details", "Spectra", "Export"]:
             if tab(page, t):
                 shot(page, "results-" + t.lower().replace(" ", "-"))
         goto(page, "naseweis_raw_viewer", "raw-viewer")
