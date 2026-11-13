@@ -126,26 +126,6 @@ def test_readable_file_is_returned_unchanged(tmp_path):
     mock_streamlit.stop.assert_not_called()
 
 
-def test_method_summary_omits_structured_run_evidence_but_retains_settings(tmp_path):
-    ui = _ui(tmp_path)
-    ui.params = {
-        "enable-lfq": False,
-        "mzML-files": ["one.mzML", "two.mzML"],
-        "_sample_design": [{"file": "/private/one.mzML", "condition": "control"}],
-        "_defaults": {TOOL_INSTANCE: {"extract:mz_window": 10.0}},
-        TOOL_INSTANCE: {"model:type": "symmetric"},
-    }
-    before = json.dumps(ui.params)
-    summary = ui.non_default_params_summary()
-    assert "_sample_design" not in summary
-    assert "/private" not in summary
-    assert "one.mzML, two.mzML" in summary
-    assert "enable-lfq: **False**" in summary
-    assert "extract:mz_window: **10.0**" in summary
-    assert "model:type: **symmetric**" in summary
-    assert json.dumps(ui.params) == before
-
-
 def test_absent_file_reads_as_empty(tmp_path):
     """A first run has no stored parameters; that is not a failure."""
     ui = _ui(tmp_path)

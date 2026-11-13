@@ -3,7 +3,6 @@ import pyopenms as poms
 from pathlib import Path
 import shutil
 import filecmp
-import subprocess
 from typing import Any, Callable, Dict, List, Literal, Union
 import json
 import math
@@ -26,7 +25,9 @@ from src.common.common import (
     tk_file_dialog,
 )
 from src.workflow._log_status import classify_log_outcome
-from src.workflow.report_ui import report_buttons
+from src.workflow import run_notice
+from src.workflow.report_ui import methods_section, report_buttons, run_methods
+from src.workflow.input_check import clash_message, name_clashes
 from src.workflow.RunManager import FOLLOW_UP_KEY
 from src.workflow.progress import (
     DONE,
@@ -34,8 +35,11 @@ from src.workflow.progress import (
     RUNNING,
     current_step,
     failures,
+    failures_by_tool,
     file_counts,
     format_duration,
+    left_out_line,
+    list_entries,
     read_progress,
     sample_counts,
     tool_progress,
@@ -62,7 +66,6 @@ from src.workflow.host_paths import folder_reference
 from src.workflow.vendor_files import extract_bruker_zip, has_type
 from src.workflow.process_state import local_workflow_running
 from src.workflow.settings_io import (
-    THREADS_USER_MARKER,
     local_thread_default,
     local_threads_pinned,
     usable_cpu_count,
@@ -1163,7 +1166,18 @@ class StreamlitUI:
             save_folders(self.workflow_dir, key, {**folders, **missing})
 
     def _select_input_file_impl(self, key, name, multiple, display_file_path, reactive, upload=None):
-        """Internal implementation of select_input_file - contains all the widget logic."""
+        """Internal implementation of select_input_file: the widgets, then a
+        warning when selected files would write to the same results."""
+        self._select_input_file_widgets(key, name, multiple, display_file_path, reactive, upload)
+        if multiple:
+            groups = name_clashes(st.session_state.get(
+                f"{self.parameter_manager.param_prefix}{key}", self.params.get(key)
+            ))
+            if groups:
+                st.warning(clash_message(groups), icon=":material/content_copy:")
+
+    def _select_input_file_widgets(self, key, name, multiple, display_file_path, reactive, upload=None):
+        """The widgets of select_input_file."""
         if not name:
             name = f"**{key}**"
         if upload is not None:
@@ -3016,13 +3030,15 @@ class StreamlitUI:
                         help="Export parameter, can be used to import to this workflow.",
                         use_container_width=True,
                     )
-            text = self.export_parameters_markdown()
+            text, stem = run_methods(self.workflow_dir)
             st.download_button(
-                "📑 Method summary",
+                "📑 Methods",
                 data=text,
-                file_name="method-summary.md",
-                mime="text/md",
-                help="Download method summary for publications.",
+                file_name=f"{stem or 'run'}-methods.txt",
+                mime="text/plain",
+                help=("A methods section for a publication, written from the last run."
+                      if text else "Written from a run, once a tool of a run has finished."),
+                disabled=not text,
                 use_container_width=True,
             )
 
@@ -3068,16 +3084,23 @@ class StreamlitUI:
         results_page=None,
         results_label: str = "Open results",
         on_open_results=None,
+        blocked: str = "",
+        name: str = "The workflow",
     ) -> None:
         """Start/Stop, progress and log of the workflow.
 
         ``autostart`` starts the workflow on this render unless one is running
         (the Run button of the configure page). ``results_page`` is linked
         below the success message of a finished run; ``on_open_results`` runs
-        before that button switches to it.
+        before that button switches to it. ``blocked`` says why the workflow
+        cannot start: it is shown, and Start is disabled. While a run is going
+        the page offers browser notifications; when a run this session saw
+        running ends, a hidden tab gets the outcome in its title and, if
+        allowed, a notification naming ``name`` (``run_notice``).
         """
-        with st.expander("**Summary**"):
-            st.markdown(self.export_parameters_markdown())
+        if blocked:
+            st.error(blocked, icon=":material/block:")
+        methods_section(self.workflow_dir, key=f"{self.workflow_dir.name}-run-methods")
 
         c1, c2 = st.columns(2)
         # Select log level, this can be changed at run time or later without re-running the workflow
@@ -3118,7 +3141,7 @@ class StreamlitUI:
             self._show_queue_status(status)
 
         # Started from the configure page's Run button
-        if autostart and not is_running:
+        if autostart and not is_running and not blocked:
             start_workflow_function()
             with st.spinner("**Workflow starting...**"):
                 time.sleep(1)
@@ -3132,7 +3155,8 @@ class StreamlitUI:
                 else:
                     self.executor.stop()
                 st.rerun()
-        elif c1.button("Start Workflow", type="primary", use_container_width=True):
+        elif c1.button("Start Workflow", type="primary", use_container_width=True,
+                       disabled=bool(blocked)):
             start_workflow_function()
             with st.spinner("**Workflow starting...**"):
                 time.sleep(1)
@@ -3142,6 +3166,7 @@ class StreamlitUI:
         # running view replaces the finished one completely: st.rerun()
         # below ends the script early, which otherwise leaves the earlier
         # view's trailing elements on the page.
+        watched_key = f"run-watched::{self.workflow_dir}"
         status_area = st.empty()
         with status_area.container():
             try:
@@ -3150,6 +3175,8 @@ class StreamlitUI:
                 log_snapshot = None
                 st.info(f"Workflow log is temporarily unavailable: {error}")
             if is_running:
+                st.session_state[watched_key] = True
+                st.html(run_notice.ask_html(), unsafe_allow_javascript=True)
                 # Real-time display during execution
                 spinner_text = "**Workflow running...**"
                 if job_status == "queued":
@@ -3189,6 +3216,12 @@ class StreamlitUI:
                 )
                 content = "".join(lines)
                 outcome = classify_log_outcome(content)
+                if st.session_state.pop(watched_key, False):
+                    # A queued job that failed before it cleared the logs
+                    # leaves the previous run's FINISHED marker in them.
+                    notice = "error" if job_status == "failed" else outcome
+                    st.html(run_notice.notice_html(notice, name),
+                            unsafe_allow_javascript=True)
                 if outcome == "finished":
                     st.success("**Workflow completed successfully.**")
                     if results_page is not None:
@@ -3198,7 +3231,8 @@ class StreamlitUI:
                 else:
                     st.error("**Errors occurred, check log file.**")
                 self._show_run_summary(show_failures=outcome != "finished")
-                report_buttons(self.workflow_dir, key=f"{self.workflow_dir.name}-run-report")
+                report_buttons(self.workflow_dir, key=f"{self.workflow_dir.name}-run-report",
+                               methods=False)
                 # Apply line limit to static display
                 if log_lines_count == "all":
                     display_lines = lines
@@ -3280,7 +3314,8 @@ class StreamlitUI:
                     self._show_tool_progress(tool)
             if n > 1 or step["ended"] is not None:
                 lines = []
-                for f in files:
+                shown, left_out = list_entries(files)
+                for f in (files[i] for i in shown):
                     if f["status"] == DONE:
                         lines.append(f":green[:material/check_circle:] {f['name']} :gray[{format_duration(f['ended'] - f['started'])}]")
                     elif f["status"] == FAILED:
@@ -3289,6 +3324,8 @@ class StreamlitUI:
                         lines.append(f":blue[:material/progress_activity:] **{f['name']}** :gray[{format_duration(now - f['started'])}]")
                     else:
                         lines.append(f":gray[:material/radio_button_unchecked: {f['name']}]")
+                if left_out:
+                    lines.append(f":gray[{left_out_line(left_out)}]")
                 file_list.markdown("  \n".join(lines))
             earlier = state["steps"][:-1]
             if earlier:
@@ -3343,13 +3380,16 @@ class StreamlitUI:
             )
             if one_command:
                 self._show_tool_progress(tool)
-            sample_list.markdown("  \n".join(self._sample_lines(state, now)))
+            sample_list.markdown("  \n".join(self._sample_lines(state, now, compact=True)))
 
     @staticmethod
-    def _sample_lines(state: dict, now: float) -> list:
-        """A markdown line per sample, with its time and, while it runs, its tool."""
+    def _sample_lines(state: dict, now: float, compact: bool = False) -> list:
+        """A markdown line per sample, with its time and, while it runs, its
+        tool; ``compact`` lists a long run's samples as ``list_entries`` does."""
         lines = []
-        for s in state["samples"]:
+        samples = state["samples"]
+        shown, left_out = list_entries(samples) if compact else (range(len(samples)), {})
+        for s in (samples[i] for i in shown):
             if s["status"] == DONE:
                 lines.append(f":green[:material/check_circle:] {s['name']} :gray[{format_duration(s['ended'] - s['started'])}]")
             elif s["status"] == FAILED:
@@ -3362,6 +3402,8 @@ class StreamlitUI:
                 lines.append(f":blue[:material/progress_activity:] **{s['name']}** :gray[{format_duration(now - s['started'])}{tool}]")
             else:
                 lines.append(f":gray[:material/radio_button_unchecked: {s['name']}]")
+        if left_out:
+            lines.append(f":gray[{left_out_line(left_out)}]")
         return lines
 
     @staticmethod
@@ -3383,21 +3425,78 @@ class StreamlitUI:
         if not state or not state.get("steps"):
             return
         if show_failures:
-            for failure in failures(state):
-                st.error(
-                    f"**{failure['context']}**"
-                    + (f": {failure['message']}" if failure["message"] else "")
-                )
-                if failure["output"]:
-                    with st.expander(
-                        f"Tool output (exit code {failure['returncode']})"
-                    ):
-                        st.code("\n".join(failure["output"]), language="neon")
+            self._show_failures(state)
+        else:
+            self._show_left_out(failures(state, left_out=True))
+        # The per-sample lines are for following a run; afterwards the
+        # failures above and the totals say what happened
         if len(state.get("samples") or []) > 1:
-            st.markdown("  \n".join(self._sample_lines(state, time.time())))
             st.caption(self._tool_totals(state["steps"]))
             return
         st.caption(" · ".join(self._step_summary(s) for s in state["steps"]))
+
+    def _show_failures(self, state: dict) -> None:
+        """One failed file: its error and tool output. More: per tool one
+        line with the count, a table of the files and their errors, and the
+        tool output of the file picked below it."""
+        found = failures(state)
+        if len(found) == 1:
+            (failure,) = found
+            st.error(
+                f"**{failure['context']}**"
+                + (f": {failure['message']}" if failure["message"] else "")
+            )
+            if failure["output"]:
+                with st.expander(f"Tool output (exit code {failure['returncode']})"):
+                    st.code("\n".join(failure["output"]), language="neon")
+            return
+        for group in failures_by_tool(state):
+            failed = group["failures"]
+            st.error(
+                f"**{group['tool']} failed on {len(failed)} of {group['total']} "
+                f"{'file' if group['total'] == 1 else 'files'}.**"
+            )
+            st.dataframe(
+                [{"File": f["file"] or f["context"], "Error": f["message"]} for f in failed],
+                hide_index=True,
+                width="stretch",
+            )
+            with_output = [f for f in failed if f["output"]]
+            if with_output:
+                with st.expander("Tool output"):
+                    names = [f["file"] or f["context"] for f in with_output]
+                    picked = st.selectbox(
+                        "File",
+                        range(len(with_output)),
+                        format_func=lambda i: names[i],
+                        key=f"{Path(self.workflow_dir).name}-failure-output-{group['tool']}",
+                    )
+                    failure = with_output[picked]
+                    st.caption(f"Exit code {failure['returncode']}")
+                    st.code("\n".join(failure["output"]), language="neon")
+
+    @staticmethod
+    def _show_left_out(left: list) -> None:
+        """A finished run that went on without some files: which, and why."""
+        if not left:
+            return
+        n = len(left)
+        st.warning(
+            f"**{n} file{'s were' if n > 1 else ' was'} left out after an error.** "
+            "The run went on without "
+            + ("them" if n > 1 else "it")
+            + ", so the results do not include "
+            + ("these files" if n > 1 else "this file")
+            + ".  \n"
+            + "  \n".join(
+                f"{f['context']}" + (f": {f['message']}" if f["message"] else "")
+                for f in left
+            )
+        )
+        with st.expander("Tool output of the files left out"):
+            for f in left:
+                st.markdown(f"**{f['context']}** (exit code {f['returncode']})")
+                st.code("\n".join(f["output"]) or "(no output)", language="neon")
 
     @staticmethod
     def _tool_totals(steps: list) -> str:
@@ -3621,134 +3720,3 @@ Started: {status.get('started_at', 'N/A')}""")
                         key=f"{key_prefix}-zip-button",
                         width="stretch",
                     )
-
-    def non_default_params_summary(self):
-        # Display a summary of non-default TOPP parameters and all others (custom and python scripts)
-
-        def path_exists(value):
-            try:
-                return Path(str(value)).exists()
-            except (OSError, ValueError):
-                return False
-
-        def list_item(value):
-            # Imported JSON may have mixed or nested values. Keep them readable
-            # without treating dictionaries/numbers as paths or modifying data.
-            if isinstance(value, dict):
-                return remove_full_paths(value)
-            if isinstance(value, list):
-                return [list_item(item) for item in value]
-            if isinstance(value, str) and path_exists(value):
-                return Path(value).name
-            return value
-
-        def remove_full_paths(d: dict) -> dict:
-            # Create a copy to avoid modifying the original dictionary
-            cleaned_dict = {}
-
-            for key, value in d.items():
-                if isinstance(value, dict):
-                    # Recursively clean nested dictionaries
-                    nested_cleaned = remove_full_paths(value)
-                    if nested_cleaned:  # Only add non-empty dictionaries
-                        cleaned_dict[key] = nested_cleaned
-                elif isinstance(value, list):
-                    # Filter out existing paths from the list
-                    filtered_list = [list_item(item) for item in value]
-                    if filtered_list:  # Only add non-empty lists
-                        cleaned_dict[key] = ", ".join(
-                            item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
-                            for item in filtered_list
-                        )
-                elif not path_exists(value):
-                    # Add entries that are not existing paths
-                    cleaned_dict[key] = value
-
-            return cleaned_dict
-
-        # Don't want file paths to be shown in summary for export
-        params = remove_full_paths(
-            {k: v for k, v in self.params.items() if k != THREADS_USER_MARKER}
-        )
-
-        summary_text = ""
-        python = {}
-        topp = {}
-        general = {}
-
-        for k, v in params.items():
-            if k.startswith("_"):  # _defaults, _flag_params, _follow_up: bookkeeping
-                continue
-            if isinstance(v, dict):
-                topp[k] = v
-            elif ".py" in k:
-                script = k.split(".py")[0] + ".py"
-                if script not in python:
-                    python[script] = {}
-                python[script][k.split(".py")[1][1:]] = v
-            else:
-                general[k] = v
-
-        # Merge _defaults into topp so summary shows custom defaults + user overrides
-        defaults = params.get("_defaults", {})
-        if not isinstance(defaults, dict):
-            general["_defaults (invalid format)"] = defaults
-            defaults = {}
-        for tool_name, default_vals in defaults.items():
-            if not isinstance(default_vals, dict):
-                topp[f"{tool_name} defaults (invalid format)"] = default_vals
-                continue
-            if tool_name not in topp:
-                topp[tool_name] = {}
-            topp[tool_name] = {**default_vals, **topp.get(tool_name, {})}
-
-        markdown = []
-
-        def dict_to_markdown(d: dict):
-            for key, value in d.items():
-                if isinstance(value, dict):
-                    # Add a header for nested dictionaries
-                    markdown.append(f"> **{key}**\n")
-                    dict_to_markdown(value)
-                else:
-                    # Add key-value pairs as list items
-                    markdown.append(f">> {key}: **{value}**\n")
-
-        if len(general) > 0:
-            markdown.append("**General**")
-            dict_to_markdown(general)
-        if len(topp) > 0:
-            markdown.append("**OpenMS TOPP Tools**\n")
-            dict_to_markdown(topp)
-        if len(python) > 0:
-            markdown.append("**Python Scripts**")
-            dict_to_markdown(python)
-        return "\n".join(markdown)
-
-    def export_parameters_markdown(self):
-        markdown = []
-
-        url = f"https://github.com/{st.session_state.settings['github-user']}/{st.session_state.settings['repository-name']}"
-        tools = [p.stem for p in Path(self.parameter_manager.ini_dir).iterdir()]
-        if len(tools) > 1:
-            tools = ", ".join(tools[:-1]) + " and " + tools[-1]
-
-        result = subprocess.run(
-            "FileFilter --help", shell=True, text=True, capture_output=True
-        )
-        version = ""
-        if result.returncode == 0:
-            version = result.stderr.split("Version: ")[1].split("-")[0]
-
-        markdown.append(
-            f"""Data was processed using **{st.session_state.settings['app-name']}** ([{url}]({url})), a web application based on the OpenMS WebApps framework [1].
-OpenMS ([https://www.openms.de](https://www.openms.de)) is a free and open-source software for LC-MS data analysis [2].
-The workflow includes the **OpenMS {version}** TOPP tools {tools} as well as Python scripts. Non-default parameters are listed in the supplementary section below.
-
-[1] Müller, Tom David, et al. "OpenMS WebApps: Building User-Friendly Solutions for MS Analysis." (2025) [https://doi.org/10.1021/acs.jproteome.4c00872](https://doi.org/10.1021/acs.jproteome.4c00872).
-\\
-[2] Pfeuffer, Julianus, et al. "OpenMS 3 enables reproducible analysis of large-scale mass spectrometry data." (2024) [https://doi.org/10.1038/s41592-024-02197-7](https://doi.org/10.1038/s41592-024-02197-7).
-"""
-        )
-        markdown.append(self.non_default_params_summary())
-        return "\n".join(markdown)

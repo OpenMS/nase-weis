@@ -29,7 +29,7 @@ from src.workflow.process_state import (
 @pytest.fixture
 def executor(tmp_path):
     cls = importlib.import_module('src.workflow.CommandExecutor').CommandExecutor
-    return cls(tmp_path, Mock(), SimpleNamespace(get_parameters_from_json=dict))
+    return cls(tmp_path, Mock(), SimpleNamespace(get_parameters_from_json=dict, create_ini=lambda tool: False))
 
 
 def owned_process(marker, monkeypatch):
@@ -259,7 +259,7 @@ def test_concurrent_conversions_do_not_share_or_remove_partial_output(executor, 
     barrier = Barrier(2)
     partials = []
 
-    def convert(_tool, io):
+    def convert(_tool, io, **_kwargs):
         partial = Path(io['out'][0])
         partials.append(partial)
         content = f'complete conversion {partial.parent.name}'
@@ -276,7 +276,11 @@ def test_concurrent_conversions_do_not_share_or_remove_partial_output(executor, 
     assert results == [[str(destination)], [str(destination)]]
     assert len(set(partials)) == 2
     assert destination.read_text().startswith('complete conversion ')
-    assert list(destination.parent.iterdir()) == [destination]
+    # Besides the mzML, only the stamp naming the reader that wrote it.
+    assert sorted(destination.parent.iterdir()) == [
+        destination.parent / '.sample.mzML.reader',
+        destination,
+    ]
 
 
 def test_conversion_exception_removes_only_its_private_partial_output(executor, monkeypatch):
@@ -287,7 +291,7 @@ def test_conversion_exception_removes_only_its_private_partial_output(executor, 
     evidence = output / 'another-complete.mzML'
     evidence.write_text('previous result')
 
-    def fail(_tool, io):
+    def fail(_tool, io, **_kwargs):
         Path(io['out'][0]).write_text('partial conversion')
         raise RuntimeError('native conversion failure')
 
