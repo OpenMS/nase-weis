@@ -3,7 +3,7 @@
 # Bootstrap once per cluster, by an admin (needs Argo CD and Image Updater
 # >= 1.0 in the argocd namespace):
 #
-#   kubectl apply -k 'https://github.com/OpenMS/naseweis//k8s/argocd?ref=main'
+#   kubectl apply -k 'https://github.com/OpenMS/nase-weis//k8s/argocd?ref=main'
 #
 # (or `kubectl apply -k k8s/argocd/` from a checkout). That creates the
 # `naseweis-argocd` Application, which from then on keeps this
