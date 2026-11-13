@@ -120,6 +120,11 @@ with sync_playwright() as p:
             shot(page, "decoy-uploaded")
         for step in ["Configure", "Run"]:
             page.locator('[data-testid="stRadio"]').get_by_text(step, exact=True).first.click(); settle(page)
+            if step == "Configure":
+                box = page.locator('[data-testid="stMultiSelect"]').first
+                box.click(); page.wait_for_timeout(800)
+                page.get_by_role("option", name=re.compile("NME1_Target")).first.click()
+                page.keyboard.press("Escape"); settle(page)
             shot(page, f"decoy-{step.lower()}")
         if click(page, "Start Workflow"):
             wait_run(page, "decoy", minutes=10)
