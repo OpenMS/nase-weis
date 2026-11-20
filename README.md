@@ -223,6 +223,16 @@ and was not deployed as part of local validation.
 See [the modernization validation record](docs/naseweis-validation.md) for
 the template revision, conflict resolutions and tests performed.
 
+## 🛠️ Contributing
+
+Paste this prompt into Claude Desktop to get started; no programming experience required (each app's front page shows it with the app's own name):
+
+```text
+Read https://raw.githubusercontent.com/OpenMS/streamlit-template/main/.claude/skills/contribute/SKILL.md and follow it to set me up to contribute to the OpenMS web app template (https://github.com/OpenMS/streamlit-template): Git, an SSH key for GitHub, forks and clones of the template and openms-insight, and how to open pull requests. Ask me before you install or change anything.
+```
+
+The agent follows [`.claude/skills/contribute/SKILL.md`](.claude/skills/contribute/SKILL.md): it installs Git if needed, sets up an SSH key for GitHub, forks and clones the app, this template and [openms-insight](https://github.com/t0mdavid-m/OpenMS-Insight), and opens pull requests in order: shared changes here first, visualizations and statistics in openms-insight, then the app.
+
 ## Citation
 
 - [NucleicAcidSearchEngine: RNA modification mapping by mass spectrometry](https://doi.org/10.1038/s41467-020-14665-7).
