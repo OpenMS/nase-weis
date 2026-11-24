@@ -84,9 +84,11 @@ def pytest_sessionstart(session):
 
 
 # Template tests that cannot apply to NASEWEIS: they exercise the template's
-# example workflow (which this app replaces) or need a browser the gate image
-# does not ship. Every other skip still fails the gate.
+# example workflow (which this app replaces), the template's own README, or
+# need a browser the gate image does not ship. Every other skip still fails
+# the gate.
 NOT_APPLICABLE = {
+    "tests/test_contribute.py::test_readme_shows_the_templates_prompt",
     "tests/test_run_manager.py::test_merge_feature_tables_matches_features_of_added_runs",
     "tests/test_run_manager.py::test_merge_feature_tables_updates_one_of_two_features_with_the_same_label",
     "tests/test_layout_manager.py::test_duplicate_in_the_editor_sends_its_source",
