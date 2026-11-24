@@ -167,7 +167,8 @@ class Workflow(WorkflowManager):
             destination.parent.mkdir(parents=True, exist_ok=True)
             if not destination.exists():
                 shutil.copyfile(Path("example-data", folder, filename), destination)
-            params[key] = str(destination.resolve())
+            # Listed like Configure lists the folder (relative in a local checkout).
+            params[key] = str(destination)
         self.parameter_manager.write_parameters(params)
         self.parameter_manager.clear_parameter_session_state()
 
