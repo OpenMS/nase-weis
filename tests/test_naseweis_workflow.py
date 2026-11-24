@@ -208,6 +208,24 @@ def test_example_loading_copies_both_inputs(workflow):
     )
 
 
+def test_example_selection_matches_the_listed_files_in_a_relative_workspace(workflow):
+    # A source checkout keeps workspaces at "../workspaces-<app>", a relative
+    # path; Configure lists the input folders the same way, so a resolved path
+    # would never match and the selection would be dropped.
+    import os
+
+    workflow.workflow_dir = Path(os.path.relpath(workflow.workflow_dir))
+    workflow.load_example_data()
+    saved = workflow.parameter_manager.read_parameters_strict()
+    for key, filename in [
+        ("mzML-files", "NME1.mzML"),
+        ("fasta-files", "NME1_Target.fasta"),
+    ]:
+        folder = workflow.workflow_dir / "input-files" / key
+        assert saved[key] in [str(f) for f in folder.iterdir()]
+        assert Path(saved[key]).name == filename
+
+
 @pytest.mark.parametrize(
     "changes,reason",
     [
