@@ -93,7 +93,6 @@ NOT_APPLICABLE = {
     "tests/test_run_manager.py::test_merge_feature_tables_updates_one_of_two_features_with_the_same_label",
     "tests/test_layout_manager.py::test_duplicate_in_the_editor_sends_its_source",
     "tests/test_download_tracking.py::test_script_is_valid_javascript",
-    "tests/test_download_tracking.py::test_script_is_valid_javascript",
 }
 
 
