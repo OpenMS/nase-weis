@@ -7,7 +7,7 @@
 # debug container after build (comment out ENTRYPOINT) and run container with interactive /bin/bash shell
 # prune unused images/etc. to free disc space (e.g. might be needed on gitpod). Use with care.: docker system prune --all --force
 
-ARG OPENMS_NIGHTLY_IMAGE=ghcr.io/openms/openms-executables@sha256:8e3c559cc474a57e12eff10569e2aef033eb867783ab36d45df08e8279880c3d
+ARG OPENMS_NIGHTLY_IMAGE=ghcr.io/openms/openms-executables@sha256:94caae674de3fc6a5cb7f26ccd5274b094986ca9f3c3480e2202a724b289fc92
 FROM ${OPENMS_NIGHTLY_IMAGE} AS stage1
 ARG OPENMS_REPO=https://github.com/OpenMS/OpenMS.git
 ARG OPENMS_BRANCH=nightly

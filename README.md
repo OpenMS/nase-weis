@@ -11,7 +11,7 @@ optional total-area normalization and relative condition comparisons. Native
 feature areas, featureXML, metadata and viewer evidence are retained per sample.
 
 Built on [OpenMS/streamlit-template](https://github.com/OpenMS/streamlit-template),
-with Streamlit 1.54, pinned **OpenMS nightly 3.7** command-line tools and pyOpenMS **3.7.0.dev20261110** from the official nightly wheel index. The framework is merged from `main`, so
+with Streamlit 1.54, pinned **OpenMS nightly 3.7** command-line tools and pyOpenMS **3.7.0.dev20261124** from the official nightly wheel index. The framework is merged from `main`, so
 future template updates retain their Git history.
 
 ## Run locally with containers
@@ -66,7 +66,7 @@ from the pinned template image. Native tools, libraries, data and registry stay
 together. A self-contained official pyOpenMS nightly wheel provides Python parsing;
 searches and database generation use the **3.7 nightly executables**.
 `openms-runtime.json` records the image digest and source commit
-`07075086398bc0c2d8d18e47111ed43fbecfc9e1`. New upstream nightlies do not
+`01540e638431426a39b4d7acce41a5e2c738b235`. New upstream nightlies do not
 silently change existing deployments.
 
 The source-build Dockerfiles and desktop default select the same source

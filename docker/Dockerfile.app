@@ -2,7 +2,7 @@
 # Python bindings and native tools use the verified 2026-11-10 nightly.
 # Native libraries/data stay with their matching executables.
 ARG TEMPLATE_IMAGE=ghcr.io/openms/streamlit-template@sha256:26640815c707bb685d57d197c591956cbc264a4736ab3ccee36c379aa486064e
-ARG OPENMS_NIGHTLY_IMAGE=ghcr.io/openms/openms-executables@sha256:8e3c559cc474a57e12eff10569e2aef033eb867783ab36d45df08e8279880c3d
+ARG OPENMS_NIGHTLY_IMAGE=ghcr.io/openms/openms-executables@sha256:94caae674de3fc6a5cb7f26ccd5274b094986ca9f3c3480e2202a724b289fc92
 FROM ${TEMPLATE_IMAGE} AS python-runtime
 FROM ${OPENMS_NIGHTLY_IMAGE}
 USER root

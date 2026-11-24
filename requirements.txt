@@ -87,7 +87,7 @@ pydeck==0.9.1
     # via streamlit
 # Official nightly wheels; all other dependencies still resolve from PyPI.
 --find-links https://pypi.openms.de/simple/pyopenms/
-pyopenms==3.7.0.dev20261110
+pyopenms==3.7.0.dev20261124
     # via src (pyproject.toml)
 pyopenms-viz==1.0.0
     # via src (pyproject.toml)

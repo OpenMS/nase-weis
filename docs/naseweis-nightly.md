@@ -1,8 +1,8 @@
 # Nightly NASE and DecoyDatabase support
 
 The app targets the **OpenMS `nightly` branch**, pinned to
-[`07075086398bc0c2d8d18e47111ed43fbecfc9e1`](https://github.com/OpenMS/OpenMS/commit/07075086398bc0c2d8d18e47111ed43fbecfc9e1).
-The executable reports `3.7.0-pre-HEAD-2026-11-09`, revision `0707508`.
+[`01540e638431426a39b4d7acce41a5e2c738b235`](https://github.com/OpenMS/OpenMS/commit/01540e638431426a39b4d7acce41a5e2c738b235).
+The executable reports `3.7.0-pre-HEAD-2026-11-23`, revision `01540e6`.
 `nightly` and `develop` are separate branches; parameters found only on a
 newer `develop` are not added here.
 
@@ -68,7 +68,7 @@ The locally validated deployment is `docker/Dockerfile.app`, used by Compose
 and the strict CI regression gate. It takes native tools **and all their
 libraries/data** from the official OpenMS image digest in `openms-runtime.json`.
 It copies the template Python environment and installs the self-contained
-`pyopenms==3.7.0.dev20261110` wheel for ParamXML/mzML parsing from
+`pyopenms==3.7.0.dev20261124` wheel for ParamXML/mzML parsing from
 [the official nightly index](https://pypi.openms.de/simple/pyopenms/).
 `requirements.txt` uses that package-specific wheel page with `--find-links`;
 other Python packages continue to resolve from PyPI. This avoids loading the
@@ -91,6 +91,7 @@ and fragment tolerances, one thread and default hyperscore.
 | --- | ---: | ---: | ---: |
 | OpenMS 3.6.0 | 163 | 299 | 22 / 32 |
 | Nightly `0707508` | 163 | 301 | 22 / 32 |
+| Nightly `01540e6` | 163 | 301 | 22 / 32 |
 
 All 163 filtered assignments and all 299 original unfiltered assignments
 remain. Among shared assignments, 33 filtered scores and 23 q-values change;
@@ -127,3 +128,18 @@ builder toggle. A real search combines MVH, FLASH MS1 correction, FLASH MS2
 deisotoping, window mowing and largest-peak filtering. Linux amd64 Compose is
 validated locally; alternative source images and desktop installers still need
 their platform builds.
+
+Validation on 2026-11-24 uses pyOpenMS `3.7.0.dev20261124` and native revision
+`01540e6` (executables image digest
+`sha256:94caae674de3fc6a5cb7f26ccd5274b094986ca9f3c3480e2202a724b289fc92`).
+The move was prompted by the 2026-11-10 wheel ageing out of the nightly index,
+which keeps only recent builds. All six scientific TSV references are
+byte-for-byte identical to those recorded with revision `0707508`; only the
+runtime manifest and the tool schemas changed. NucleicAcidSearchEngine gains
+advanced `legacy` isotope-detector options (defaults keep the previous
+behaviour), and FeatureFinderMetaboIdent changes its defaults
+(`detect:peak_width` 60 → 20 s, `extract:rt_window` 0 → 240 s). The app sets
+both values itself for quantification and for the RNA comparison preset, so
+its runs are unaffected. The test suite passed
+**2347 tests** with the pinned native tools on `PATH`; none of the skipped
+tests belong to the nightly gate.
