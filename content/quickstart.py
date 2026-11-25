@@ -6,7 +6,7 @@ from src.common.common import page_setup
 from src.common.installers import render_installer_buttons
 from src.Workflow import Workflow
 
-page_setup(page="main")
+page_setup(page="main", captcha=False)
 st.caption("OPENMS WEBAPPS · OLIGONUCLEOTIDE IDENTIFICATION")
 st.title("NASEWEIS")
 st.markdown(
