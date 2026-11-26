@@ -39,7 +39,7 @@ def test_unstarted_user_can_visit_results_raw_run_and_database_results_in_any_or
         if page.endswith("topp_workflow_results.py"):
             assert any("No finished runs yet" in item.value for item in app.info)
         if page.endswith("naseweis_raw_viewer.py"):
-            assert any("Upload an acquisition" in item.value for item in app.info)
+            assert any("Add an acquisition on Describe experiment" in item.value for item in app.info)
     app.switch_page("content/decoy_database.py").run(timeout=30)
     app.radio(key="decoy-database-step").set_value("Results").run(timeout=30)
     assert not app.exception
@@ -84,7 +84,7 @@ def test_raw_viewer_recovers_from_bad_file_then_clears_deleted_evidence(app):
     app.run(timeout=30)
     assert not app.exception
     assert not plots(app)
-    assert any("Upload an acquisition" in item.value for item in app.info)
+    assert any("Add an acquisition on Describe experiment" in item.value for item in app.info)
 
 
 def test_raw_viewer_empty_acquisition_stays_an_explanation_after_page_changes(app):

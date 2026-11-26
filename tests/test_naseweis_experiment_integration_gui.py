@@ -71,11 +71,11 @@ def test_full_configure_selection_deselection_and_clear_keep_lfq_off(app, topp_s
     )
     assert design["file"].tolist() == [Path(path).name for path in paths]
     app.multiselect(key=key).set_value([paths[1]]).run(timeout=30)
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert app.multiselect(key=key).value == [paths[1]]
     app.multiselect(key=key).set_value([]).run(timeout=30)
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert app.multiselect(key=key).value == []
     assert json.loads((folder / "params.json").read_text())["mzML-files"] == []
@@ -98,7 +98,7 @@ def test_configure_and_methods_work_after_experiment_design_snapshot(app, topp_s
         for number, path in enumerate(paths, 1)
     ]
     params_file.write_text(json.dumps(params))
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert app.multiselect(key="naseweis-param-mzML-files").value == paths
     assert app.checkbox(key="naseweis-param-enable-lfq").value is False
@@ -132,7 +132,7 @@ def test_explicit_fitted_preset_persists_and_hiding_controls_does_not_enable_lfq
     }
     for key, value in expected.items():
         assert app.number_input(key=prefix + key).value == value
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     app.toggle(key="advanced").set_value(True).run(timeout=30)
     assert app.selectbox(key=prefix + "model:type").value == "symmetric"
@@ -144,7 +144,7 @@ def test_explicit_fitted_preset_persists_and_hiding_controls_does_not_enable_lfq
     assert saved["FeatureFinderMetaboIdent"]["EMGScoring:init_mom"] is False
     app.checkbox(key="naseweis-param-enable-lfq").uncheck().run(timeout=30)
     app.toggle(key="advanced").set_value(False).run(timeout=30)
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert not app.exception
     assert app.checkbox(key="naseweis-param-enable-lfq").value is False

@@ -275,29 +275,6 @@ def test_explicit_mapping_download_is_allowed_when_automatic_routing_is_disabled
     ]
 
 
-def test_real_naseweis_upload_registers_pride_only_manual_mapping_policy(
-    naseweis_app,  # noqa: F811
-    monkeypatch,
-    listing,
-):
-    monkeypatch.setattr(ui, "resolve", Mock(return_value=listing))
-    naseweis_app.session_state.settings["data_import"] = {"enabled": True}
-    naseweis_app.run(timeout=30)
-    naseweis_app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
-    assert not naseweis_app.exception
-    next(
-        item for item in naseweis_app.text_input if item.label == "PRIDE accession"
-    ).set_value("PXD000001")
-    naseweis_app.button(
-        key=f"FormSubmitter:{ui.LISTING_KEY}-{ui.PRIDE}-form-Look up"
-    ).click().run(timeout=30)
-    assert not naseweis_app.exception
-    table = selection_table(naseweis_app).set_index("File")
-    assert not bool(table.loc["sample-metadata.csv", "Import"])
-    assert table.loc["sample-metadata.csv", "Goes to"] == ui.SKIP
-    assert bool(table.loc["run.mzML", "Import"])
-
-
 def test_configure_mapping_browse_preserves_pride_manual_choice(
     naseweis_app,  # noqa: F811
     topp_schemas,  # noqa: F811

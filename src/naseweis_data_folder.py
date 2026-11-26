@@ -1,26 +1,22 @@
-"""Upload your data."""
+"""Where the data folder of a container installation is, for Describe experiment."""
 
 import os
 
 import streamlit as st
 
-from src.common.common import page_setup
-from src.Workflow import Workflow
 from src.workflow.host_paths import folder_file_uri, folder_reference
 
-page_setup()
-st.title("Upload your data")
-st.write("Add MS/MS acquisitions and an RNA FASTA database to this workspace.")
-st.caption(
-    "Current files lists all available workspace inputs, including PRIDE downloads. "
-    "Choose which acquisitions to analyze on Configure; adding a file does not select it for analysis."
-)
-if data_folder := os.environ.get("LOCAL_DATA_HOST_DIR"):
+
+def data_folder_notice() -> None:
+    """Say where to put files that 📂 Browse reads in place (LOCAL_DATA_HOST_DIR)."""
+    data_folder = os.environ.get("LOCAL_DATA_HOST_DIR")
+    if not data_folder:
+        return
     st.info(
         f"Your data folder: {folder_reference(data_folder)}. Move or copy your input files there, "
-        "then click **Refresh folder**, select files and click **Add selected** below. "
+        "then open **📂 Browse**, click **Refresh folder**, select files and click **Add selected**. "
         "The app reads these files in place; keep them in this folder to view saved runs. "
-        "You can also upload files from your computer."
+        "You can also upload files from your computer in the same dialog."
     )
     if folder_file_uri(data_folder):
         st.caption(
@@ -33,5 +29,3 @@ if data_folder := os.environ.get("LOCAL_DATA_HOST_DIR"):
             "to the folder containing docker-compose.yml."
         )
     st.code(data_folder, language=None)
-Workflow().show_file_upload_section()
-st.page_link("content/naseweis.py", label="Select samples for analysis", icon=":material/tune:")

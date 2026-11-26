@@ -16,7 +16,8 @@ include =
     app.py
     content/quickstart.py
     content/naseweis.py
-    content/topp_workflow_file_upload.py
+    content/topp_workflow_download.py
+    src/naseweis_data_folder.py
     content/topp_workflow_execution.py
     content/topp_workflow_results.py
     content/decoy_database.py

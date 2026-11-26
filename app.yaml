@@ -55,7 +55,7 @@ results:
   - {role: table, workflow: NASEWEIS, title: MS1 feature intensities, source: quantification}
 pages:
   - content/quickstart.py
-  - content/topp_workflow_file_upload.py
+  - content/topp_workflow_download.py
   - content/naseweis.py
   - content/topp_workflow_execution.py
   - content/topp_workflow_results.py
@@ -96,6 +96,7 @@ sync:
     - src/naseweis_coverage.py
     - src/naseweis_result_plots_ui.py
     - src/naseweis_viewers.py
+    - src/naseweis_data_folder.py
     - src/naseweis_msdata.py
     - src/naseweis_annotations.py
     - src/naseweis_plots.py

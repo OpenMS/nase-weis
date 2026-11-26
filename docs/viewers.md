@@ -38,7 +38,7 @@ explanation where an MS1 view is unavailable.
 
 ## Identification evidence
 
-Open **Results → Sequence coverage** for an experiment overview, with or without
+Open **Explore results → Sequence coverage** for an experiment overview, with or without
 LFQ. The wrapped reference sequence has packed oligonucleotide bars grouped by
 condition or acquisition, a shared spectrum-count color scale and markers for
 native RNA modifications, including bracketed bases and D/I/Y codes. Hover shows exact sequences, coordinates
@@ -49,8 +49,8 @@ reference sequences cannot share a coverage axis. Coverage is also available
 for each individual sample and older single-acquisition runs. Download the
 self-contained HTML or vector SVG; neither requires the original acquisition.
 
-Open **Results → Spectra** for the selected saved run, or
-**Results → Sample details → Spectra** in a multi-sample experiment. Select
+Open **Explore results → Spectra** for the selected saved run, or
+**Explore results → Sample details → Spectra** in a multi-sample experiment. Select
 **Open spectrum viewer** to load the RNA identification viewer. Search by RNA
 sequence or complete native spectrum ID and choose a spectrum match; its
 selector includes the signed precursor charge, retention time and native ID.
@@ -98,7 +98,7 @@ those files can contain pre-filter candidates and parallel output ordering.
 
 ## LFQ evidence
 
-Multi-sample **Results → Quantification** includes a condition-versus-condition
+Multi-sample **Explore results → Quantification** includes a condition-versus-condition
 RNA abundance scatter, with the denominator on x, numerator on y and an equality
 diagonal. It uses the same biological-replicate means, area measure and
 normalization as the saved comparison table. Both logarithmic and linear views
@@ -109,7 +109,7 @@ label, hover for means and replicate counts, and export SVG from the camera
 button or download the offline HTML. Experiments with one condition can instead
 compare two individual acquisitions; those values are not condition means.
 
-Open **Results → Quantification → Open LFQ feature viewer**. Each feature
+Open **Explore results → Quantification → Open LFQ feature viewer**. Each feature
 retains its native charge, label, RT, m/z and raw area; coincident features are
 not merged. Choose a feature to extract its original MS1 signal. The default
 XIC half-width is half the saved full extraction window, respecting OpenMS's

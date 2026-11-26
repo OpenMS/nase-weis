@@ -53,10 +53,10 @@ def topp_schemas(monkeypatch, request):
     [
         "content/quickstart.py",
         "content/decoy_database.py",
-        "content/topp_workflow_file_upload.py",
         "content/naseweis.py",
         "content/topp_workflow_execution.py",
         "content/topp_workflow_results.py",
+        "content/topp_workflow_download.py",
     ],
 )
 def test_launch(app, page):
@@ -72,7 +72,7 @@ def test_load_example_and_configure(app):
         button for button in app.button if button.label == "Load example dataset"
     ).click().run(timeout=30)
     assert not app.exception
-    assert app.title[0].value == "Configure your search"
+    assert app.title[0].value == "Describe experiment"
     workspace = Path(app.session_state.workspace)
     params = json.loads((workspace / "naseweis/params.json").read_text())
     assert [Path(path).name for path in params["mzML-files"]] == ["NME1.mzML"]
@@ -148,10 +148,10 @@ def test_configuration_survives_page_changes(app):
     app.switch_page("content/naseweis.py").run()
     app.number_input(key="naseweis-param-FDR_cutoff").set_value(0.01).run()
     # AppTest returns a fragment-only tree after a fragment widget changes.
-    app.switch_page("content/topp_workflow_file_upload.py").run()
+    app.switch_page("content/quickstart.py").run()
     app.switch_page("content/naseweis.py").run()
     app.checkbox(key="naseweis-param-add-decoys").uncheck().run()
-    app.switch_page("content/topp_workflow_file_upload.py").run()
+    app.switch_page("content/quickstart.py").run()
     app.switch_page("content/naseweis.py").run()
     assert not app.exception
     assert app.number_input(key="naseweis-param-FDR_cutoff").value == 0.01
@@ -263,9 +263,9 @@ def test_first_visit_loads_settings_without_touching_personal_workspaces(
     assert Path(fresh.session_state.workspace) == tmp_path / "default"
 
 
-def test_upload_page_can_load_the_paired_example(app):
+def test_describe_page_can_load_the_paired_example(app):
     app.run(timeout=30)
-    app.switch_page("content/topp_workflow_file_upload.py").run()
+    app.switch_page("content/naseweis.py").run()
     next(
         button for button in app.button if button.label == "Load example dataset"
     ).click().run()
@@ -273,9 +273,9 @@ def test_upload_page_can_load_the_paired_example(app):
     saved = json.loads(
         (Path(app.session_state.workspace) / "naseweis/params.json").read_text()
     )
-    assert Path(saved["mzML-files"]).name == "NME1.mzML"
+    assert Path(saved["mzML-files"][0] if isinstance(saved["mzML-files"], list) else saved["mzML-files"]).name == "NME1.mzML"
     assert Path(saved["fasta-files"]).name == "NME1_Target.fasta"
-    assert any("Continue to Configure" in message.value for message in app.success)
+    assert any("NME1.mzML" in option for box in app.multiselect for option in box.options)
 
 
 def test_missing_run_parameters_do_not_break_other_exports(app):
@@ -295,9 +295,8 @@ def test_nightly_configuration_preserves_exports_and_cached_digest_mode(app):
         widget for widget in app.multiselect if widget.label == "Result files"
     )
     exports.set_value(["id_out", "db_out", "lfq_out"]).run()
-    app.switch_page("content/topp_workflow_file_upload.py").run()
+    app.switch_page("content/quickstart.py").run()
     app.switch_page("content/naseweis.py").run()
-    app.toggle(key="advanced").set_value(True).run(timeout=30)
     app.selectbox(key="naseweis-param-database-source").select("Cached digest").run()
     assert not app.exception
     assert any("cached database controls digestion" in info.value for info in app.info)

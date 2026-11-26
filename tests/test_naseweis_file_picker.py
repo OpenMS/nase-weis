@@ -268,12 +268,12 @@ def test_unmounted_configured_directory_does_not_expose_a_browser(
     assert app.text_input(key="path_to_folder_mzML-files")
 
 
-def test_upload_page_explains_the_host_data_folder(naseweis_app, monkeypatch, tmp_path):  # noqa: F811
+def test_describe_page_explains_the_host_data_folder(naseweis_app, monkeypatch, tmp_path):  # noqa: F811
     inbox = tmp_path / "data"
     inbox.mkdir()
     monkeypatch.setenv("LOCAL_DATA_HOST_DIR", str(inbox))
     naseweis_app.run(timeout=30)
-    naseweis_app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    naseweis_app.switch_page("content/naseweis.py").run(timeout=30)
     assert not naseweis_app.exception
     instructions = next(
         info.value for info in naseweis_app.info if str(inbox) in info.value
@@ -285,12 +285,12 @@ def test_upload_page_explains_the_host_data_folder(naseweis_app, monkeypatch, tm
     assert any("If the link does not open your file browser" in caption.value for caption in naseweis_app.caption)
 
 
-def test_upload_page_keeps_relative_host_folder_copyable_without_a_container_uri(
+def test_describe_page_keeps_relative_host_folder_copyable_without_a_container_uri(
     naseweis_app, monkeypatch  # noqa: F811
 ):
     monkeypatch.setenv("LOCAL_DATA_HOST_DIR", "./data")
     naseweis_app.run(timeout=30)
-    naseweis_app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    naseweis_app.switch_page("content/naseweis.py").run(timeout=30)
     assert not naseweis_app.exception
     instructions = next(info.value for info in naseweis_app.info if "Your data folder:" in info.value)
     assert "file:" not in instructions

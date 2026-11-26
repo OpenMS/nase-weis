@@ -17,13 +17,18 @@ from test_gui import (  # noqa: F401
 def test_lfq_is_optional_and_tuning_requires_advanced(app, topp_schemas):  # noqa: F811
     app.run(timeout=30)
     app.switch_page("content/naseweis.py").run(timeout=30)
-    assert [tab.label for tab in app.tabs][:2] == ["Identification", "Quantification"]
+    labels = [tab.label for tab in app.tabs]
+    assert [label for label in labels if "·" in label][:3] == [
+        "**1 · Samples and groups**", "**2 · Database and FDR**", "**3 · Search**"
+    ]
+    assert not any("Quantification" in label for label in labels)
     toggle = "naseweis-param-enable-lfq"
     assert app.checkbox(key=toggle).value is False
     prefix = "naseweis-TOPP-FeatureFinderMetaboIdent:1:"
     assert not any(str(item.key).startswith(prefix) for item in app.number_input)
     app.checkbox(key=toggle).check().run(timeout=30)
     assert not app.exception
+    assert any(tab.label == "**4 · Quantification**" for tab in app.tabs)
     assert not any(str(item.key).startswith(prefix) for item in app.number_input)
     app.toggle(key="advanced").set_value(True).run(timeout=30)
     assert not app.exception
@@ -35,7 +40,7 @@ def test_lfq_is_optional_and_tuning_requires_advanced(app, topp_schemas):  # noq
     app.switch_page("content/naseweis.py").run(timeout=30)
     app.toggle(key="advanced").set_value(False).run(timeout=30)
     assert not any(str(item.key).startswith(prefix) for item in app.number_input)
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     app.switch_page("content/naseweis.py").run(timeout=30)
     assert app.checkbox(key=toggle).value is True
     saved = json.loads((Path(app.session_state.workspace) / "naseweis/params.json").read_text())

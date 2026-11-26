@@ -91,7 +91,18 @@ def _design_ready(workflow, selected):
 
 
 def configure_experiment_inputs(workflow):
-    """Migrate legacy single-file selections before rendering the multi-select."""
+    """Pick the acquisitions, then describe their samples (both parts in one place)."""
+    selected = select_acquisitions(workflow)
+    if selected is None:
+        return
+    configure_sample_design(workflow, selected)
+
+
+def select_acquisitions(workflow):
+    """The acquisitions of the next experiment, or None while the saved selection is invalid.
+
+    Migrates legacy single-file selections before rendering the multi-select.
+    """
     key = "mzML-files"
     widget = f"{workflow.parameter_manager.param_prefix}{key}"
     value = st.session_state.get(widget, workflow.params.get(key, []))
@@ -111,7 +122,7 @@ def configure_experiment_inputs(workflow):
             st.session_state[widget] = []
             st.session_state.pop(f"_pending-{widget}", None)
             st.rerun()
-        return
+        return None
     available = set(workflow.ui._input_file_options(key))
     unavailable = [path for path in selected if path not in available]
     if unavailable:
@@ -124,7 +135,7 @@ def configure_experiment_inputs(workflow):
     if value != selected or workflow.params.get(key) != selected:
         st.session_state[widget] = selected
         if not workflow.parameter_manager.save_parameters():
-            return
+            return None
     workflow.params[key] = selected
     workflow.ui.params[key] = selected
     workflow.ui.select_input_file(
@@ -137,6 +148,22 @@ def configure_experiment_inputs(workflow):
     selected = st.session_state.get(widget, workflow.ui.params.get(key, []))
     workflow.params[key] = list(selected)
     workflow.ui.params[key] = list(selected)
+    return list(selected)
+
+
+def configure_sample_design(workflow, selected=None):
+    """Conditions and replicates of the selected acquisitions, with the LFQ checks."""
+    key = "mzML-files"
+    if selected is None:
+        widget = f"{workflow.parameter_manager.param_prefix}{key}"
+        value = st.session_state.get(widget, workflow.params.get(key, []))
+        value = [value] if isinstance(value, str) and value else (value or [])
+        if not isinstance(value, list) or any(
+            not isinstance(path, str) or not path.strip() for path in value
+        ):
+            st.info("Reset the acquisition selection under **Your analysis** to describe the samples.")
+            return
+        selected = list(value)
     st.caption(
         "Every selected acquisition is included in the next experiment. "
         "Conditions and biological replicate numbers are required for LFQ and "

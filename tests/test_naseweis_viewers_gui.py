@@ -188,11 +188,11 @@ def feature_table(results, *, label="ACGU", alternate=False, boundaries=True):
     )
 
 
-def test_raw_viewer_empty_workspace_links_to_upload(app):
+def test_raw_viewer_empty_workspace_links_to_describe_experiment(app):
     raw_page(app)
-    assert any("Upload an acquisition" in message.value for message in app.info)
+    assert any("Add an acquisition on Describe experiment" in message.value for message in app.info)
     assert not app.get("plotly_chart")
-    assert any(element.proto.label == "Add data" for element in app.get("page_link"))
+    assert any(element.proto.label == "Describe experiment" for element in app.get("page_link"))
 
 
 def test_raw_loading_shows_three_real_plots_and_offline_html_exports(app):

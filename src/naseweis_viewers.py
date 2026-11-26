@@ -215,12 +215,12 @@ def render_raw_viewer(workflow_dir: Path, params: dict, online=False) -> None:
     files = input_acquisitions(workflow_dir, params, online)
     if not files:
         st.info(
-            "Upload an acquisition or load the NME1 example to explore its spectra and chromatograms."
+            "Add an acquisition on Describe experiment, or load the NME1 example there, to explore its spectra and chromatograms."
         )
         st.page_link(
-            "content/topp_workflow_file_upload.py",
-            label="Add data",
-            icon=":material/upload_file:",
+            "content/naseweis.py",
+            label="Describe experiment",
+            icon="⚙️",
         )
         return
     selected = params.get("mzML-files")

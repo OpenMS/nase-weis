@@ -32,7 +32,7 @@ def test_configure_before_upload_explains_how_to_add_inputs_and_keeps_lfq_off(ap
     assert any("No RNA sequence database files yet" in item.value for item in app.caption)
     assert any(button.key == "_browse-mzML-files" for button in app.button)
     assert app.checkbox(key="naseweis-param-enable-lfq").value is False
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert app.checkbox(key="naseweis-param-enable-lfq").value is False
 
@@ -40,7 +40,7 @@ def test_configure_before_upload_explains_how_to_add_inputs_and_keeps_lfq_off(ap
 def test_available_example_files_are_not_reselected_after_the_user_clears_them(app, topp_schemas):
     folder, source = load_example(app)
     app.multiselect(key="naseweis-param-mzML-files").set_value([]).run(timeout=30)
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     assert source.is_file()
     configure(app)
     assert app.multiselect(key="naseweis-param-mzML-files").value == []
@@ -50,7 +50,7 @@ def test_available_example_files_are_not_reselected_after_the_user_clears_them(a
 def test_deleted_selected_acquisition_is_removed_from_configure_selection(app, topp_schemas):
     folder, source = load_example(app)
     source.unlink()
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert any("No MS/MS acquisitions files yet" in item.value for item in app.caption)
     assert json.loads((folder / "params.json").read_text())["mzML-files"] == []
@@ -65,7 +65,7 @@ def test_deleted_external_selection_does_not_fall_back_to_another_available_acqu
     configure(app)
     app.multiselect(key="naseweis-param-mzML-files").set_value([str(external)]).run(timeout=30)
     external.unlink()
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert app.multiselect(key="naseweis-param-mzML-files").value == []
     assert source.is_file()
@@ -78,7 +78,7 @@ def test_deleted_selected_database_is_not_silently_replaced_by_another_database(
     original = folder / "input-files/fasta-files/NME1_Target.fasta"
     other = original.with_name("other.fasta")
     other.write_text(">other\nACGU\n")
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     original.unlink()
     configure(app)
     assert app.selectbox(key="naseweis-param-fasta-files").value is None
@@ -97,7 +97,7 @@ def test_invalid_imported_acquisition_selection_has_targeted_recovery(app, topp_
         "NucleicAcidSearchEngine": {"oligo:missed_cleavages": 3},
     })
     params_file.write_text(json.dumps(saved))
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert any("acquisition selection is invalid" in item.value for item in app.error)
     reset = next(button for button in app.button if button.label == "Reset acquisition selection")
@@ -123,7 +123,7 @@ def test_lfq_settings_survive_leaving_configure_before_an_invalid_run(app, topp_
     app.number_input(key=key).set_value(17.0).run(timeout=30)
     app.switch_page("content/topp_workflow_execution.py").run(timeout=30)
     assert not app.exception
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert app.checkbox(key="naseweis-param-enable-lfq").value is True
     assert app.selectbox(key="naseweis-param-lfq-normalization").value == "none"
@@ -134,13 +134,10 @@ def test_lfq_settings_survive_leaving_configure_before_an_invalid_run(app, topp_
     assert saved["FeatureFinderMetaboIdent"]["extract:mz_window"] == 17.0
 
 
-def test_upload_submit_without_a_file_keeps_the_page_and_inputs_usable(app, monkeypatch):
+def test_describe_page_offers_browse_and_example_without_an_upload_page(app, monkeypatch):
     monkeypatch.setattr("src.workflow.StreamlitUI.native_dialog_available", lambda: False)
     app.run(timeout=30)
-    app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
+    configure(app)
     assert not app.exception
-    button = next(button for button in app.button if button.label == "Add **MS/MS spectra**")
-    button.click().run(timeout=30)
-    assert not app.exception
-    assert any("Nothing to add" in item.value for item in app.error)
+    assert any(button.key == "_browse-mzML-files" for button in app.button)
     assert any(button.label == "Load example dataset" for button in app.button)
