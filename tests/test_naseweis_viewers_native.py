@@ -27,10 +27,11 @@ def test_real_nme1_run_preserves_native_scan_identity_signal_and_rna_annotations
     from src.naseweis_lfq import read_lfq_table
     from src.naseweis_msdata import ms1_overview, scan_index, spectrum_peaks, xic
     from src.naseweis_plots import (
-        chromatogram_figure,
-        feature_map_figure,
-        peakmap_figure,
-        spectrum_figure,
+        SELECTED_ION_COLOR,
+        chromatogram_plot,
+        feature_map_plot,
+        peakmap_plots,
+        spectrum_plot,
     )
     from src.naseweis_results import read_mztab
 
@@ -121,24 +122,23 @@ def test_real_nme1_run_preserves_native_scan_identity_signal_and_rna_annotations
             assert assignment.ion in labelled.iloc[positions[0]]["ion"].split("; ")
         else:
             assert assignment.ion in unmatched["ion"].values
-    spectrum = spectrum_figure(labelled, match["sequence"])
-    assert spectrum.layout.annotations
-    assert any(
-        re.match(r"^(?:a\d+-B|a-B|[dw]\d)", annotation.text)
-        for annotation in spectrum.layout.annotations
-    )
+    spectrum = spectrum_plot(labelled, match["sequence"])
+    assert spectrum.component == "LinePlot"
+    ions = [ion for ion in spectrum.data["ion"].to_list() if ion]
+    assert ions
+    assert any(re.match(r"^(?:a\d+-B|a-B|[dw]\d)", ion) for ion in ions)
     evidence = fragment_assignment_table(peaks, selected)
     placed = evidence.loc[evidence["match_status"].eq("matched")].iloc[0]
     raw_position = int(placed["peak_index"])
     assert placed["observed_mz"] == expected_mz[raw_position]
     assert placed["observed_intensity"] == expected_intensity[raw_position]
-    highlighted = spectrum_figure(
+    highlighted = spectrum_plot(
         labelled, match["sequence"], highlighted_mz=[placed["observed_mz"]]
     )
-    selected_trace = next(trace for trace in highlighted.data if trace.name == "Selected ion")
-    assert list(selected_trace.x) == [expected_mz[raw_position]]
+    picked = highlighted.data.filter(highlighted.data["color"] == SELECTED_ION_COLOR)
+    assert picked["mz"].to_list() == [expected_mz[raw_position]]
     np.testing.assert_allclose(
-        selected_trace.y,
+        picked["intensity"].to_numpy(),
         [float(expected_intensity[raw_position]) / float(expected_intensity.max()) * 100],
     )
     pd.testing.assert_frame_equal(labelled[["mz", "intensity"]], peaks)
@@ -157,10 +157,11 @@ def test_real_nme1_run_preserves_native_scan_identity_signal_and_rna_annotations
     assert sum(spectrum.size() for spectrum in ms1) > 40000
     assert 0 < len(overview) <= 40000
     assert overview["intensity"].sum() == pytest.approx(sum(expected_tic), rel=1e-12)
-    peakmap = peakmap_figure(overview, "NME1 MS1 signal")
-    assert len(peakmap.data[0].x) == len(overview)
-    chromatograms = chromatogram_figure(traces, "NME1 TIC/BPC")
-    assert {trace.name for trace in chromatograms.data} == {"TIC", "BPC"}
+    peakmap = peakmap_plots(overview, "NME1 MS1 signal")[0]
+    assert peakmap.component == "Heatmap"
+    assert peakmap.data.height == len(overview)
+    chromatograms = chromatogram_plot(traces, "NME1 TIC/BPC")
+    assert set(chromatograms.data["series"].to_list()) == {"TIC", "BPC"}
 
     features = read_lfq_table(directory / "quantification/features.tsv")
     assert not features.empty
@@ -177,10 +178,11 @@ def test_real_nme1_run_preserves_native_scan_identity_signal_and_rna_annotations
     np.testing.assert_array_equal(trace["rt"], expected_rt)
     np.testing.assert_allclose(trace["intensity"], expected_xic, rtol=0, atol=1e-8)
     assert (trace["intensity"] >= 0).all() and (trace["intensity"] > 0).any()
-    assert len(chromatogram_figure(trace, str(feature["label"])).data) == 1
-    feature_map = feature_map_figure(features, "NME1 RNA features")
-    hover = feature_map.data[0].customdata
-    assert list(hover[:, 0]) == features["label"].tolist()
-    np.testing.assert_array_equal(hover[:, 1], features["charge"])
-    np.testing.assert_array_equal(hover[:, 2], features["intensity"])
+    xic_plot = chromatogram_plot(trace, str(feature["label"]))
+    assert xic_plot.data["series"].n_unique() == 1
+    feature_map = feature_map_plot(features, "NME1 RNA features")
+    assert feature_map.data.height == len(features)
+    assert feature_map.table["label"].tolist() == features["label"].fillna("").astype(str).tolist()
+    np.testing.assert_array_equal(feature_map.table["charge"], features["charge"])
+    np.testing.assert_array_equal(feature_map.data["intensity"].to_numpy(), features["intensity"])
     assert (features["charge"] < 0).all()
