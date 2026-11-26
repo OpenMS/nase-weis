@@ -1,0 +1,189 @@
+"""Round 3: every component of Explore results drawn on its own.
+
+Each test draws one component of the catalog for one dataset of the demo
+workspace (both runs, the experiment and each acquisition), with a spectrum
+and an oligonucleotide picked where the component needs one, then without a
+pick, and for a run that is gone. A component must never raise or show an
+error, so no view a user can build from the palette breaks.
+"""
+import json
+from pathlib import Path
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+from src.viewer import catalog
+
+LFQ_RUN = "20261126-072337"
+ID_RUN = "20261126-072320"
+
+
+def _page():
+    from types import SimpleNamespace
+
+    import streamlit as st
+
+    from src.common.common import page_setup
+    from src.layout_manager import experiment_state
+    from src.viewer import catalog, panels, sources
+    from src.Workflow import Workflow
+
+    page_setup()
+    wf = Workflow()
+    panels.reset()
+    want = st.session_state["_panel_test"]
+    dataset = want["dataset"]
+    if dataset.startswith("first-sample-of:"):
+        run_id = dataset.split(":", 1)[1]
+        dataset = sources.member_id(run_id, sources.manifest(wf, run_id)["samples"][0]["id"])
+    kind = sources.kind_of(wf, dataset)
+    original = sources.Source.mzml
+    if want.get("no_spectra"):
+        def missing(self):
+            if "the acquisition was moved" not in self.notes:
+                self.notes.append("the acquisition was moved")
+        sources.Source.mzml = missing
+    state = experiment_state("panel-test", 0, dataset)
+    if not st.session_state.get("_panel_picked"):
+        # Picked once, as a click would; a component may clear a pick it
+        # cannot show, and setting it again on every rerun would loop.
+        st.session_state["_panel_picked"] = True
+        for identifier, value in want.get("picks", {}).items():
+            state.set_selection(identifier, value)
+    ctx = SimpleNamespace(index=want.get("index", 0), state=state, dataset=dataset)
+    table = catalog.EXPERIMENT_RENDERERS if kind == sources.EXPERIMENT else catalog.ACQUISITION_RENDERERS
+    renderers = catalog.renderers(wf, table)(SimpleNamespace(
+        dataset=dataset, index=ctx.index, kind=SimpleNamespace(states=lambda c: state)))
+    st.session_state["_panel_kind"] = kind
+    try:
+        for name in want["names"]:
+            renderers[name]()
+    finally:
+        sources.Source.mzml = original
+    st.session_state["_panel_available"] = sorted(catalog.available(wf)(SimpleNamespace(dataset=dataset)))
+
+
+@pytest.fixture
+def page(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_WORKSPACES_DIR", str(tmp_path))
+    settings = json.loads(Path("settings.json").read_text())
+    settings.update(workspaces_dir=str(tmp_path), test=False)
+
+    def draw(dataset, names, **want):
+        test = AppTest.from_function(_page, default_timeout=180)
+        test.session_state.settings = settings
+        test.session_state["_panel_test"] = dict(want, dataset=dataset, names=list(names))
+        test.run()
+        assert not test.exception, [str(e.value)[:800] for e in test.exception]
+        assert not test.error, [e.value for e in test.error]
+        return test
+    return draw
+
+
+def _names(components, skip=("all_results",)):
+    return [c["name"] for c in components if c["name"] not in skip]
+
+
+def _sample(run):
+    return f"first-sample-of:{run}"
+
+
+def _insight(test):
+    return len(test.get("component_instance"))
+
+
+def _texts(test):
+    return " ".join(str(e.value) for e in list(test.info) + list(test.markdown) + list(test.caption))
+
+
+ACQUISITION = _names(catalog.ACQUISITION_COMPONENTS)
+EXPERIMENT = _names(catalog.EXPERIMENT_COMPONENTS)
+INSIGHT_ACQUISITION = ["file_scans", "file_spectrum", "file_chromatogram", "file_peak_map",
+                       "match_table", "score_distribution", "precursor_error"]
+
+
+@pytest.mark.parametrize("run", [LFQ_RUN, ID_RUN])
+@pytest.mark.parametrize("name", ACQUISITION)
+def test_every_acquisition_component_with_a_spectrum_picked(page, run, name):
+    test = page(_sample(run), [name], picks={"scan": 0})
+    assert test.session_state["_panel_kind"] == "acquisition"
+    if name in INSIGHT_ACQUISITION:
+        assert _insight(test) >= 1, _texts(test)
+
+
+@pytest.mark.parametrize("name", ["file_spectrum"])
+def test_the_spectrum_asks_for_a_pick(page, name):
+    test = page(_sample(LFQ_RUN), [name])
+    assert "Pick a spectrum" in _texts(test)
+    assert _insight(test) == 0
+
+
+@pytest.mark.parametrize("name", EXPERIMENT)
+def test_every_experiment_component_of_the_quantified_run(page, name):
+    test = page(LFQ_RUN, [name], picks={"oligo": 0})
+    assert test.session_state["_panel_kind"] == "experiment"
+    assert test.session_state["_panel_available"] == ["quantification"]
+    if name in ("abundance_table", "abundance_profile", "zscore_heatmap"):
+        assert _insight(test) >= 1, _texts(test)
+
+
+def test_the_abundance_profile_asks_for_a_pick(page):
+    test = page(LFQ_RUN, ["abundance_profile"])
+    assert "Pick an oligonucleotide" in _texts(test)
+
+
+@pytest.mark.parametrize("name", EXPERIMENT)
+def test_experiment_components_without_quantification_explain_themselves(page, name):
+    test = page(ID_RUN, [name])
+    assert test.session_state["_panel_available"] == []
+    if name in ("abundance_table", "abundance_profile", "zscore_heatmap"):
+        assert "no finished comparison" in _texts(test)
+
+
+def test_all_results_of_both_kinds(page):
+    page(LFQ_RUN, ["all_results"])
+    page(_sample(ID_RUN), ["all_results"])
+
+
+def test_result_sections_are_drawn_once_per_page(page):
+    test = page(_sample(LFQ_RUN), ["all_results", "summary", "matches"])
+    assert "Shown in All results." in _texts(test)
+
+
+def test_result_sections_are_kept_for_the_first_run(page):
+    test = page(_sample(LFQ_RUN), ["summary"], index=1)
+    assert "shown for the first run" in _texts(test)
+
+
+@pytest.mark.parametrize("dataset", ["19990101-000000", f"{LFQ_RUN}/no-such-sample"])
+def test_a_run_that_is_gone(page, dataset):
+    test = page(dataset, ["summary"])
+    assert "no longer available" in _texts(test)
+    assert test.session_state["_panel_available"] == []
+
+
+SECTIONS_ACQUISITION = list(__import__("src.viewer.panels", fromlist=["x"]).SECTIONS_SINGLE)
+SECTIONS_EXPERIMENT = list(__import__("src.viewer.panels", fromlist=["x"]).SECTIONS_EXPERIMENT)
+
+
+@pytest.mark.parametrize("dataset, names", [(_sample(LFQ_RUN), SECTIONS_ACQUISITION),
+                                            (LFQ_RUN, SECTIONS_EXPERIMENT)])
+def test_every_result_section_of_a_second_run_points_to_the_first(page, dataset, names):
+    test = page(dataset, ["all_results"] + names, index=1)
+    assert _texts(test).count("shown for the first run") == len(names) + 1
+
+
+@pytest.mark.parametrize("dataset, names", [(_sample(LFQ_RUN), SECTIONS_ACQUISITION),
+                                            (LFQ_RUN, SECTIONS_EXPERIMENT)])
+def test_every_result_section_is_shown_once_beside_all_results(page, dataset, names):
+    test = page(dataset, ["all_results"] + names)
+    assert _texts(test).count("Shown in All results.") == len(names)
+
+
+def test_spectra_components_say_when_the_acquisition_is_missing(page):
+    names = ["file_scans", "file_spectrum", "file_chromatogram", "file_peak_map", "match_table"]
+    test = page(_sample(LFQ_RUN), names, picks={"scan": 0}, no_spectra=True)
+    # Said once per component, not repeated for each component drawn before it
+    assert _texts(test).count("the acquisition was moved") == 4
+    assert "moved; the acquisition was moved" not in _texts(test)
+    assert _insight(test) == 1  # the matches, without their spectra

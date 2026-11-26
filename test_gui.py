@@ -463,7 +463,11 @@ def _demo(app):
     settings["demo_workspaces"] = json.loads(Path("settings.json").read_text())["demo_workspaces"]
     app.run(timeout=60)
     _results_page(app)
-    return app.selectbox(key="runs-naseweis-select-widget")
+    return _run_box(app)
+
+
+def _run_box(app):
+    return next(box for box in app.selectbox if box.label == "Run")
 
 
 def test_demo_workspace_explores_the_quantified_example_run(app):
@@ -479,7 +483,7 @@ def test_demo_workspace_explores_the_identification_only_example_run(app):
     runs = _demo(app)
     assert runs.options[1].startswith("Identification only")
     runs.set_value("20261126-072320").run(timeout=60)
-    assert app.selectbox(key="runs-naseweis-select-widget").value == "20261126-072320"
+    assert _run_box(app).value == "20261126-072320"
     assert not app.exception
     assert not app.error
     assert not any(m.value == "**Condition comparison**" for m in app.markdown)

@@ -753,14 +753,19 @@ class Workflow(WorkflowManager):
             return self._sample_snapshot
         return self.runs.params_file(self.run_id) if self.run_id else self.parameter_manager.params_file
 
-    def _single_results(self) -> None:
+    def _result_file(self) -> Path | None:
         # Legacy runs used extensionless names; retain access after migration.
         result_file = self.results_dir / "mztab_results" / "search.mzTab"
         if not result_file.exists():
             result_file = self.results_dir / "mztab_results" / "tab_out"
-        if not result_file.exists():
+        return result_file if result_file.exists() else None
+
+    def load_single(self) -> dict | None:
+        """This acquisition's saved search; None (with a message) when unavailable."""
+        result_file = self._result_file()
+        if result_file is None:
             st.info("No search results yet. Describe the experiment and start a run.")
-            return
+            return None
         try:
             stat = result_file.stat()
             tables = load_results(
@@ -769,7 +774,11 @@ class Workflow(WorkflowManager):
             matches = match_table(tables)
         except (OSError, ValueError, KeyError) as error:
             st.error(f"Could not read this run's results: {error}")
-            return
+            return None
+        return {"file": result_file, "tables": tables, "matches": matches}
+
+    def summary_section(self, loaded: dict) -> None:
+        matches, tables = loaded["matches"], loaded["tables"]
         cols = st.columns(3)
         cols[0].metric("Spectrum matches", len(matches))
         cols[1].metric(
@@ -777,90 +786,121 @@ class Workflow(WorkflowManager):
             matches["Sequence"].nunique() if not matches.empty else 0,
         )
         cols[2].metric("RNA accessions", len(tables.get("NUC", [])))
-        snapshot = self._result_snapshot()
+
+    def matches_section(self, loaded: dict) -> None:
+        matches = loaded["matches"]
+        if matches.empty:
+            st.info(
+                "No matches passed this search's filters. Review the database, digestion, mass tolerances and FDR cutoff."
+            )
+        else:
+            st.dataframe(matches, hide_index=True, use_container_width=True)
+            st.download_button(
+                "Download matches (CSV)",
+                matches.to_csv(index=False).encode(),
+                "naseweis-matches.csv",
+                "text/csv",
+                key=f"matches-csv-{self.results_dir}",
+            )
+
+    def spectra_section(self, loaded: dict) -> None:
         online = st.session_state.get("settings", {}).get("online_deployment", False)
+        render_identification_viewer(
+            self.results_dir, self._result_snapshot(),
+            loaded["tables"].get("OSM", loaded["matches"]),
+            self.workflow_dir, online,
+        )
+
+    def coverage_section(self, loaded: dict) -> None:
+        render_coverage_groups(
+            [("This acquisition", loaded["tables"])], f"coverage-{self.results_dir}"
+        )
+
+    def export_section(self, loaded: dict) -> None:
+        result_file = loaded["file"]
+        st.caption(
+            "mzTab contains all result tables; idXML opens in TOPPView. Parameters record the settings used for this run."
+        )
+        for label, path, mime in [
+            ("Download mzTab", result_file, "text/tab-separated-values"),
+            (
+                "Download idXML",
+                self.results_dir / "idxml_results" / "search.idXML",
+                "application/xml",
+            ),
+            (
+                "Download legacy idXML",
+                self.results_dir / "idxml_results" / "id_out",
+                "application/xml",
+            ),
+        ]:
+            if path.is_file():
+                st.download_button(
+                    label, path.read_bytes(), path.name, mime,
+                    key=f"export-{label}-{self.results_dir}",
+                )
+        for option, (label, relative, mime) in SEARCH_EXPORTS.items():
+            if option == "id_out":
+                continue
+            artifact = self.results_dir / relative
+            if artifact.is_file():
+                st.download_button(
+                    f"Download {label}", artifact.read_bytes(), artifact.name, mime,
+                    key=f"export-{option}-{self.results_dir}",
+                )
+        database_dir = self.results_dir / "database"
+        if database_dir.is_dir():
+            for artifact in sorted(database_dir.glob("*.fasta")):
+                st.download_button(
+                    f"Download {artifact.name}",
+                    artifact.read_bytes(),
+                    artifact.name,
+                    "text/plain",
+                    key=f"export-db-{artifact}",
+                )
+        snapshot = self._result_snapshot()
+        if snapshot.is_file():
+            st.download_button(
+                "Download search parameters",
+                snapshot.read_bytes(),
+                "naseweis-parameters.json",
+                "application/json",
+                key=f"export-params-{self.results_dir}",
+            )
+        log_path = self._log_dir() / "all.log"
+        if log_path.is_file():
+            st.download_button(
+                "Download run log", log_path.read_bytes(), "naseweis-run.log",
+                "text/plain", key=f"export-log-{self.results_dir}",
+            )
+
+    def _log_dir(self) -> Path:
+        log_dir = getattr(self, "_sample_log_dir", None)
+        if log_dir is None:
+            log_dir = (self.runs.run_dir(self.run_id) if self.run_id else self.workflow_dir) / "logs"
+        return log_dir
+
+    def _single_results(self) -> None:
+        loaded = self.load_single()
+        if loaded is None:
+            return
+        self.summary_section(loaded)
         table_tab, spectra_tab, coverage_tab, lfq_tab, download_tab = st.tabs(
             ["Matches", "Spectra", "Sequence coverage", "Quantification", "Export"]
         )
         with table_tab:
-            if matches.empty:
-                st.info(
-                    "No matches passed this search's filters. Review the database, digestion, mass tolerances and FDR cutoff."
-                )
-            else:
-                st.dataframe(matches, hide_index=True, use_container_width=True)
-                st.download_button(
-                    "Download matches (CSV)",
-                    matches.to_csv(index=False).encode(),
-                    "naseweis-matches.csv",
-                    "text/csv",
-                )
+            self.matches_section(loaded)
         with spectra_tab:
-            render_identification_viewer(
-                self.results_dir, snapshot, tables.get("OSM", matches),
-                self.workflow_dir, online,
-            )
+            self.spectra_section(loaded)
         with coverage_tab:
-            render_coverage_groups(
-                [("This acquisition", tables)], f"coverage-{self.results_dir}"
-            )
+            self.coverage_section(loaded)
         with lfq_tab:
             self.quantification_results()
         with download_tab:
-            st.caption(
-                "mzTab contains all result tables; idXML opens in TOPPView. Parameters record the settings used for this run."
-            )
-            for label, path, mime in [
-                ("Download mzTab", result_file, "text/tab-separated-values"),
-                (
-                    "Download idXML",
-                    self.results_dir / "idxml_results" / "search.idXML",
-                    "application/xml",
-                ),
-                (
-                    "Download legacy idXML",
-                    self.results_dir / "idxml_results" / "id_out",
-                    "application/xml",
-                ),
-            ]:
-                if path.is_file():
-                    st.download_button(label, path.read_bytes(), path.name, mime)
-            for option, (label, relative, mime) in SEARCH_EXPORTS.items():
-                if option == "id_out":
-                    continue
-                artifact = self.results_dir / relative
-                if artifact.is_file():
-                    st.download_button(
-                        f"Download {label}", artifact.read_bytes(), artifact.name, mime
-                    )
-            database_dir = self.results_dir / "database"
-            if database_dir.is_dir():
-                for artifact in sorted(database_dir.glob("*.fasta")):
-                    st.download_button(
-                        f"Download {artifact.name}",
-                        artifact.read_bytes(),
-                        artifact.name,
-                        "text/plain",
-                    )
-            snapshot = self._result_snapshot()
-            if snapshot.is_file():
-                st.download_button(
-                    "Download search parameters",
-                    snapshot.read_bytes(),
-                    "naseweis-parameters.json",
-                    "application/json",
-                )
-            log_dir = getattr(self, "_sample_log_dir", None)
-            if log_dir is None:
-                log_dir = (self.runs.run_dir(self.run_id) if self.run_id else self.workflow_dir) / "logs"
-            log_path = log_dir / "all.log"
-            if log_path.is_file():
-                st.download_button("Download run log", log_path.read_bytes(), "naseweis-run.log", "text/plain")
+            self.export_section(loaded)
 
-    def select_run(self, label: str = "Run", key: str = "") -> str | None:
-        """Keep saved evidence accessible after failed, cancelled or interrupted runs."""
-        from src.workflow.run_widgets import run_label, selected_run_key
-
+    def run_statuses(self) -> tuple[list[dict], dict]:
+        """Saved runs whose evidence can be shown, and each run's status."""
         runs = self.runs.list_runs()
         workflow_running = (
             self.get_workflow_status().get("running", False)
@@ -883,6 +923,13 @@ class Workflow(WorkflowManager):
                 ))
             )
         ]
+        return available, statuses
+
+    def select_run(self, label: str = "Run", key: str = "") -> str | None:
+        """Keep saved evidence accessible after failed, cancelled or interrupted runs."""
+        from src.workflow.run_widgets import run_label, selected_run_key
+
+        available, statuses = self.run_statuses()
         if not available:
             return None
         choices = {run["id"]: run for run in available}
@@ -968,4 +1015,7 @@ class Workflow(WorkflowManager):
             ("Download LFQ feature table (TSV)", table_path, "text/tab-separated-values"),
         ]:
             if path.is_file():
-                st.download_button(label, path.read_bytes(), path.name, mime)
+                st.download_button(
+                    label, path.read_bytes(), path.name, mime,
+                    key=f"lfq-{path.name}-{self.results_dir}",
+                )

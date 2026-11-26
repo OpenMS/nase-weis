@@ -140,6 +140,11 @@ watchdog==6.0.0
     # via streamlit
 xlsxwriter
 
+# Explore results draws its panels with OpenMS-Insight through the template's
+# visualization library (src/viz)
+polars==2.2.0
+openms-insight==0.7.8
+
 # Redis Queue dependencies (for online mode)
 redis>=5.0.0
 rq>=1.16.0

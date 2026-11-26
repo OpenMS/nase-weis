@@ -267,12 +267,13 @@ def _sample_labels(samples):
     }
 
 
-def _download_frame(label, frame, filename, *, index_label):
+def _download_frame(label, frame, filename, *, index_label, key=None):
     st.download_button(
         label,
         frame.to_csv(sep="\t", index_label=index_label, na_rep="").encode(),
         filename,
         "text/tab-separated-values",
+        key=key,
     )
 
 
@@ -312,15 +313,16 @@ def _render_comparison(root, samples, prefix):
         st.markdown("**Raw extracted areas**")
         st.dataframe(raw.rename(columns=labels), use_container_width=True)
         _download_frame(
-            "Download abundance matrix (TSV)", matrix, "abundances.tsv", index_label="label"
+            "Download abundance matrix (TSV)", matrix, "abundances.tsv", key=f"{prefix}-abundances.tsv", index_label="label"
         )
         _download_frame(
-            "Download raw areas (TSV)", raw, "raw-abundances.tsv", index_label="label"
+            "Download raw areas (TSV)", raw, "raw-abundances.tsv", key=f"{prefix}-raw-abundances.tsv", index_label="label"
         )
         _download_frame(
             "Download sample design (TSV)",
             design,
             "sample-design.tsv",
+            key=f"{prefix}-sample-design.tsv",
             index_label="sample_id",
         )
         st.download_button(
@@ -328,6 +330,7 @@ def _render_comparison(root, samples, prefix):
             json.dumps(metadata, indent=2).encode(),
             "comparison.json",
             "application/json",
+            key=f"{prefix}-comparison.json",
         )
     if matrix.empty:
         st.info("No quantified RNA targets are available for comparison.")
@@ -428,23 +431,22 @@ def _render_comparison(root, samples, prefix):
         "Download condition comparison (TSV)",
         exported,
         "condition-comparison.tsv",
+        key=f"{prefix}-condition-comparison.tsv",
         index_label="label",
     )
 
 
-def render_experiment_results(workflow, render_sample):
-    """Render saved experiment outputs; return False for a legacy single run."""
-    from src.naseweis_experiment import load_manifest, sample_results
+def experiment_context(workflow):
+    """Read a run's experiment; None for a legacy single run.
+
+    Raises OSError or ValueError when the manifest cannot be read.
+    """
+    from src.naseweis_experiment import load_manifest
 
     root = Path(workflow.results_dir)
-    try:
-        manifest = load_manifest(root)
-    except (OSError, ValueError) as error:
-        st.error(f"Could not read this experiment: {error}")
-        return True
+    manifest = load_manifest(root)
     if manifest is None:
-        return False
-    samples = manifest["samples"]
+        return None
     partial_run = getattr(workflow, "_result_run_status", None) in {
         "failed", "cancelled", "interrupted"
     }
@@ -456,73 +458,121 @@ def render_experiment_results(workflow, render_sample):
             return "not completed"
         return sample["status"]
 
-    prefix = (
-        "experiment-" + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
+    return {
+        "root": root,
+        "manifest": manifest,
+        "samples": manifest["samples"],
+        "partial_run": partial_run,
+        "displayed_status": displayed_status,
+        "prefix": (
+            "experiment-"
+            + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
+        ),
+    }
+
+
+def experiment_summary_section(context):
+    samples = context["samples"]
+    finished = sum(sample["status"] == "finished" for sample in samples)
+    st.metric("Completed acquisitions", f"{finished} / {len(samples)}")
+    columns = [
+        "id",
+        "file",
+        "condition",
+        "replicate",
+        "fraction",
+        "status",
+        "error",
+    ]
+    table = pd.DataFrame(samples).reindex(columns=columns)
+    table["status"] = [context["displayed_status"](sample) for sample in samples]
+    st.dataframe(
+        table.dropna(axis=1, how="all"), hide_index=True, use_container_width=True
     )
+    if finished < len(samples):
+        st.warning(
+            "This experiment has incomplete acquisitions. Review their statuses and available sample results below."
+        )
+
+
+def experiment_coverage_section(context):
+    render_experiment_coverage(context["root"], context["samples"], context["prefix"])
+
+
+def comparison_ready(context):
+    """True when the experiment holds a finished comparison of all its samples."""
+    manifest, samples = context["manifest"], context["samples"]
+    return bool(
+        manifest.get("lfq_enabled", False)
+        and not context["partial_run"]
+        and manifest.get("status") == "finished"
+        and manifest.get("comparison_status") == "finished"
+        and all(sample["status"] == "finished" for sample in samples)
+    )
+
+
+def experiment_quantification_section(context):
+    manifest = context["manifest"]
+    if not manifest.get("lfq_enabled", False):
+        st.info(
+            "This is an identification-only experiment. Label-free quantification was not enabled for this run."
+        )
+    elif not comparison_ready(context):
+        st.warning(
+            "Comparison is unavailable for this incomplete experiment. A complete cohort is required; available acquisition results remain accessible under Sample details."
+        )
+    else:
+        _render_comparison(context["root"], context["samples"], context["prefix"])
+
+
+def sample_details_section(context, render_sample):
+    from src.naseweis_experiment import sample_results
+
+    samples, root = context["samples"], context["root"]
+    displayed_status = context["displayed_status"]
+    if not samples:
+        st.info("This experiment has no acquisitions.")
+        return
+    by_id = {sample["id"]: sample for sample in samples}
+    labels = _sample_labels(samples)
+    selected = st.selectbox(
+        "Acquisition details",
+        list(by_id),
+        format_func=lambda sample_id: (
+            f"{labels[sample_id]} · {displayed_status(by_id[sample_id])}"
+        ),
+        key=f"{context['prefix']}-sample",
+    )
+    sample = by_id[selected]
+    try:
+        available = sample_results(root, selected).is_dir()
+    except (OSError, ValueError) as error:
+        st.error(f"Could not open this acquisition's results: {error}")
+    else:
+        if available:
+            render_sample(sample)
+        else:
+            st.info("No sample result files are available yet.")
+
+
+def render_experiment_results(workflow, render_sample):
+    """Render saved experiment outputs; return False for a legacy single run."""
+    try:
+        context = experiment_context(workflow)
+    except (OSError, ValueError) as error:
+        st.error(f"Could not read this experiment: {error}")
+        return True
+    if context is None:
+        return False
     summary, coverage, quantification, details = st.tabs(
         ["Experiment summary", "Sequence coverage", "Quantification", "Sample details"]
     )
     with summary:
-        finished = sum(sample["status"] == "finished" for sample in samples)
-        st.metric("Completed acquisitions", f"{finished} / {len(samples)}")
-        columns = [
-            "id",
-            "file",
-            "condition",
-            "replicate",
-            "fraction",
-            "status",
-            "error",
-        ]
-        table = pd.DataFrame(samples).reindex(columns=columns)
-        table["status"] = [displayed_status(sample) for sample in samples]
-        st.dataframe(
-            table.dropna(axis=1, how="all"), hide_index=True, use_container_width=True
-        )
-        if finished < len(samples):
-            st.warning(
-                "This experiment has incomplete acquisitions. Review their statuses and available sample results below."
-            )
+        experiment_summary_section(context)
     with coverage:
-        render_experiment_coverage(root, samples, prefix)
+        experiment_coverage_section(context)
     with quantification:
-        if not manifest.get("lfq_enabled", False):
-            st.info(
-                "This is an identification-only experiment. Label-free quantification was not enabled for this run."
-            )
-        elif (
-            partial_run
-            or manifest.get("status") != "finished"
-            or manifest.get("comparison_status") != "finished"
-            or not all(sample["status"] == "finished" for sample in samples)
-        ):
-            st.warning(
-                "Comparison is unavailable for this incomplete experiment. A complete cohort is required; available acquisition results remain accessible under Sample details."
-            )
-        else:
-            _render_comparison(root, samples, prefix)
+        experiment_quantification_section(context)
     with details:
-        if not samples:
-            st.info("This experiment has no acquisitions.")
-        else:
-            by_id = {sample["id"]: sample for sample in samples}
-            labels = _sample_labels(samples)
-            selected = st.selectbox(
-                "Acquisition details",
-                list(by_id),
-                format_func=lambda sample_id: (
-                    f"{labels[sample_id]} · {displayed_status(by_id[sample_id])}"
-                ),
-                key=f"{prefix}-sample",
-            )
-            sample = by_id[selected]
-            try:
-                available = sample_results(root, selected).is_dir()
-            except (OSError, ValueError) as error:
-                st.error(f"Could not open this acquisition's results: {error}")
-            else:
-                if available:
-                    render_sample(sample)
-                else:
-                    st.info("No sample result files are available yet.")
+        sample_details_section(context, render_sample)
     return True
