@@ -70,6 +70,10 @@ deploy:
   images: [full]
   docker_compose: true
   desktop: [windows, linux, macos]
+  desktop_app:
+    name: NASEWEIS
+    topp_tools: [DecoyDatabase, NucleicAcidSearchEngine, FileConverter, FeatureFinderMetaboIdent, TextExporter]
+    openms: "OpenMS/OpenMS@01540e638431426a39b4d7acce41a5e2c738b235"
   online_deployment: false
 sync:
   app_owned:

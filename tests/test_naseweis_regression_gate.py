@@ -30,20 +30,25 @@ def test_all_app_pages_and_owned_analysis_modules_have_coverage():
     )
 
 
-def test_main_ci_calls_the_strict_gate_without_duplicate_event_triggers():
+def test_regression_gate_runs_on_its_own_triggers_outside_the_template_ci():
     # BaseLoader preserves GitHub's "on" key instead of YAML 1.1 treating it
-    # as a boolean. Check the event graph as well as the script invocation.
+    # as a boolean. ci.yml is template-owned, so the app-owned gate carries
+    # its own pull_request and push triggers and ci.yml does not call it
+    # (no duplicate run of the gate per event).
     ci = yaml.load(
         (ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader
     )
-    job = ci["jobs"]["regressions"]
-    assert "pull_request" in ci["on"]
-    assert "main" in ci["on"]["push"]["branches"]
-    assert job["uses"] == "./.github/workflows/naseweis-regressions.yml"
-    reusable = yaml.load((ROOT / job["uses"]).read_text(), Loader=yaml.BaseLoader)
-    assert "workflow_call" in reusable["on"]
+    assert not any(
+        job.get("uses") == "./.github/workflows/naseweis-regressions.yml"
+        for job in ci["jobs"].values()
+    )
+    reusable = yaml.load(
+        (ROOT / ".github/workflows/naseweis-regressions.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    assert "pull_request" in reusable["on"]
+    assert "main" in reusable["on"]["push"]["branches"]
     assert "workflow_dispatch" in reusable["on"]
-    assert not {"push", "pull_request"}.intersection(reusable["on"])
     steps = reusable["jobs"]["pinned-openms-regressions"]["steps"]
     assert any(
         step.get("run") == "python3 scripts/check_regressions.py --container"
