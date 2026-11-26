@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from tests import naseweis_drawn
 from test_naseweis_annotations import store_annotations
 
 from test_gui import _finished_run, _results_page, app  # noqa: F401
@@ -87,7 +88,30 @@ def click(app, label):
 
 
 def plots(app):
-    return [json.loads(element.proto.spec) for element in app.get("plotly_chart")]
+    """Every Insight plot the last run drew, as {"data": [traces], "ion": labels}.
+
+    A trace per series (one for a plot without series), x and y from the
+    component's own columns, so the values are the ones the plot receives.
+    """
+    figures = []
+    for item in naseweis_drawn.plots(app.drawn):
+        if item.component not in ("LinePlot", "SeriesPlot", "Heatmap"):
+            continue  # Sequence coverage is a track, not a plot of values.
+        frame, settings = item.data, item.settings
+        x = settings.get("x_column") or ("mz" if "mz" in frame else frame.columns[0])
+        y = settings.get("y_column") or ("intensity" if "intensity" in frame else frame.columns[-1])
+        if x not in frame or y not in frame:
+            raise AssertionError(f"{item.component} {item.key}: {list(frame.columns)} {settings}")
+        series = settings.get("series_column")
+        groups = frame.groupby(series, sort=False) if series in frame else [(item.component, frame)]
+        figures.append({
+            "component": item.component,
+            "settings": settings,
+            "data": [{"name": name, "x": list(rows[x]), "y": list(rows[y])} for name, rows in groups],
+            "ion": [ion for ion in frame.get("ion", []) if ion],
+            "frame": frame,
+        })
+    return figures
 
 
 def array(values):
@@ -191,7 +215,7 @@ def feature_table(results, *, label="ACGU", alternate=False, boundaries=True):
 def test_raw_viewer_empty_workspace_links_to_describe_experiment(app):
     raw_page(app)
     assert any("Add an acquisition on Describe experiment" in message.value for message in app.info)
-    assert not app.get("plotly_chart")
+    assert not plots(app)
     assert any(element.proto.label == "Describe experiment" for element in app.get("page_link"))
 
 
@@ -209,7 +233,7 @@ def test_raw_loading_shows_three_real_plots_and_offline_html_exports(app):
     assert len(figures) == 3
     assert (
         sum(
-            button.proto.label == "Download interactive plot (HTML)"
+            button.proto.label == "Download plotted values (TSV)"
             for button in app.get("download_button")
         )
         == 3
@@ -220,7 +244,7 @@ def test_raw_loading_shows_three_real_plots_and_offline_html_exports(app):
     np.testing.assert_allclose(tic, [65.0, 49.0])
     widget(app.checkbox, "Show marginal signal").check().run(timeout=30)
     assert not app.exception
-    assert len(plots(app)[0]["data"]) > 1
+    assert len(plots(app)) == 5  # Heatmap with a summed RT and m/z profile.
 
 
 def test_raw_spectrum_filters_use_levels_literal_native_ids_and_empty_scans(app):
@@ -406,7 +430,7 @@ def test_saved_native_rna_fragment_assignments_label_the_acquired_peaks(
     )
     _results_page(app)
     click(app, "Open spectrum viewer")
-    labels = {item["text"] for item in plots(app)[0]["layout"]["annotations"]}
+    labels = set(plots(app)[0]["ion"])
     assert {"w1; d1", "a2-B"} <= labels or {"d1; w1", "a2-B"} <= labels
     assert (
         any(
@@ -515,7 +539,7 @@ def test_lfq_feature_selection_shows_native_areas_and_exact_original_xics(
     np.testing.assert_allclose(
         values, [60, 40]
     )  # 25 ppm half-window, including neighboring isotope-free peaks.
-    assert len(plots(app)[1]["layout"]["shapes"]) == 2
+    assert trace_values(plots(app)[1], "Feature")[0].size  # The part inside the boundaries.
     feature = widget(app.selectbox, "LFQ feature")
     feature.select(1).run(timeout=30)
     assert not app.exception

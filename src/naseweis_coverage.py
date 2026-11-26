@@ -307,3 +307,44 @@ def render_coverage_html(model, *, block_size=50):
         + '</title><style>body{margin:8px;background:#fff}.coverage{overflow-x:auto}</style>'
         + '</head><body><div class="coverage">' + svg + "</div></body></html>"
     )
+
+
+def coverage_plot(model, *, block_size=50):
+    """The coverage ``model`` as the visualization library's sequence coverage
+    (an Insight ``SequenceCoverage``): one track per group, the shared count
+    bins, native modification tokens marked. Counts that are unknown (no
+    scan-level evidence) stay unknown and are drawn in the empty colour."""
+    import polars as pl
+
+    from src.naseweis_plots import Plot
+    from src.viz.identification import sequence_coverage
+
+    hits, counts, notes = [], [], []
+    for group in model["groups"]:
+        assignments = group.get("assignments")
+        note = (
+            f"{group['oligonucleotides']} oligonucleotides · {group['coverage']:.1%} covered"
+            + ("" if assignments is None else f" · {assignments} spectrum matches")
+        )
+        for hit in group["hits"]:
+            hits.append({**hit, "track": group["name"]})
+            counts.append(hit["count"])
+            notes.append(note)
+    data = sequence_coverage.rows(hits, model["accession"]).with_columns(
+        count=pl.Series(counts, dtype=pl.Int64), note=pl.Series(notes, dtype=pl.Utf8),
+    )
+    settings = sequence_coverage.settings(
+        list(model["reference"]), reference_name=str(model["accession"]),
+        count_label="Spectrum matches", filters={}, interactivity={},
+        track_order=[group["name"] for group in model["groups"]],
+        track_note_column="note", block_size=int(block_size), count_bins=list(COUNT_BINS),
+        title=f"Sequence coverage · {model['coverage']:.1%} of {model['length']} nt",
+        notes=list(model.get("warnings") or []),
+    )
+    table = pd.DataFrame([
+        {"track": hit["track"], "sequence": hit["sequence"], "start": hit["start"], "end": hit["end"],
+         "spectrum_matches": hit["count"],
+         "modifications": ";".join(f"{m['position']}:{m['token']}" for m in hit["modifications"])}
+        for hit in hits
+    ])
+    return Plot("SequenceCoverage", data, settings, table, 680)

@@ -39,6 +39,7 @@ include =
     src/naseweis_msdata.py
     src/naseweis_annotations.py
     src/naseweis_plots.py
+    src/naseweis_insight.py
     src/naseweis_provenance.py
     src/workflow/host_paths.py
     src/workflow/process_state.py

@@ -2,10 +2,11 @@
 
 Component names are stored in saved views: never rename one.
 
-The first view of each kind, **All results**, is the page as NASE-weis always
-showed it (every result section in its tabs), so nothing a run showed before
-is lost; the other views arrange the same results and the OpenMS-Insight
-components side by side.
+The first view of each kind, **All results**, is one dashboard: every result
+section NASE-weis has shown and the OpenMS-Insight components on one page, so
+nothing a run showed before is lost. One view per former tab (Summary, Matches,
+Spectra, Coverage, Quantification, Export; for an experiment Summary, Coverage,
+Quantification, Samples) shows one part of it.
 """
 from __future__ import annotations
 
@@ -59,17 +60,54 @@ EXPERIMENT_COMPONENTS = [
      "needs": QUANT},
 ]
 
+# "All results" is one dashboard: every result of the run as components on
+# one page. Components that need quantification are added by ``rows`` when the
+# shown run has it, so the view is never locked for a run without it.
+ACQUISITION_ALL = [
+    ["summary"],
+    ["match_table", "file_spectrum"],
+    ["spectrum_viewer"],
+    ["coverage"],
+    ["file_chromatogram", "file_peak_map"],
+    ["matches"],
+    ["downloads"],
+]
+ACQUISITION_QUANT_ROWS = [["quantification"]]
+EXPERIMENT_ALL = [
+    ["experiment_summary"],
+    ["experiment_coverage"],
+    ["sample_details"],
+]
+EXPERIMENT_QUANT_ROWS = [["experiment_quantification"], ["abundance_table", "abundance_profile"],
+                         ["zscore_heatmap"]]
+# A view saved before the dashboard named this single component
 ALL = [["all_results"]]
 
 ACQUISITION_PRESETS = [
-    {"name": "all", "label": "All results", "layout": ALL,
-     "help": "Every result of the acquisition in tabs: summary, matches, spectra, "
-             "coverage, quantification and downloads."},
+    {"name": "all", "label": "All results", "layout": ACQUISITION_ALL,
+     "help": "Every result of the acquisition on one page: summary, matches with the "
+             "picked spectrum, its annotated fragments, coverage, MS data, quantification "
+             "and downloads."},
+    {"name": "summary", "label": "Summary",
+     "layout": [["summary"], ["score_distribution", "precursor_error"]],
+     "help": "How many spectra, oligonucleotides and RNAs were found, and how their "
+             "scores and precursor mass errors are distributed."},
+    {"name": "matches", "label": "Matches",
+     "layout": [["match_table", "file_spectrum"], ["spectrum_viewer"], ["matches"]],
+     "help": "The spectrum matches; a click shows the matched spectrum and its annotated "
+             "fragments."},
     {"name": "spectra", "label": "Spectra",
      "layout": [["file_scans", "file_spectrum"], ["file_chromatogram", "file_peak_map"],
                 ["match_table"]],
      "help": "The acquisition's scans, the picked spectrum, its chromatograms and peak map, "
              "with the identified spectra linked to them."},
+    {"name": "coverage", "label": "Coverage", "layout": [["coverage"]],
+     "help": "Which residues of each RNA the identified oligonucleotides cover."},
+    {"name": "quantification", "label": "Quantification", "layout": [["quantification"]],
+     "help": "MS1 feature intensities of the identified oligonucleotides and their "
+             "extracted ion chromatograms."},
+    {"name": "export", "label": "Export", "layout": [["downloads"]],
+     "help": "The result files, the search database, parameters and run log."},
     {"name": "identification", "label": "Identification quality",
      "layout": [["summary"], ["score_distribution", "precursor_error"], ["match_table"]],
      "help": "How many oligonucleotides were found, how their scores and precursor mass "
@@ -77,13 +115,23 @@ ACQUISITION_PRESETS = [
 ]
 
 EXPERIMENT_PRESETS = [
-    {"name": "all", "label": "All results", "layout": ALL,
-     "help": "Every result of the experiment in tabs: summary, coverage, condition "
-             "comparison and the details of each sample."},
+    {"name": "all", "label": "All results", "layout": EXPERIMENT_ALL,
+     "help": "Every result of the experiment on one page: summary, coverage, the "
+             "condition comparison with the abundances, and the details of each sample."},
+    {"name": "summary", "label": "Summary", "layout": [["experiment_summary"]],
+     "help": "The experiment's acquisitions, their conditions and status."},
+    {"name": "coverage", "label": "Coverage", "layout": [["experiment_coverage"]],
+     "help": "Which residues of each RNA the oligonucleotides cover, per condition."},
+    {"name": "quantification", "label": "Quantification",
+     "layout": [["experiment_quantification"], ["abundance_table", "abundance_profile"]],
+     "help": "The condition comparison, the abundance table and the picked "
+             "oligonucleotide by condition."},
     {"name": "abundances", "label": "Abundances",
      "layout": [["abundance_table", "abundance_profile"], ["zscore_heatmap"]],
      "help": "The abundance of each oligonucleotide in every sample, the picked one by "
              "condition, and the most variable ones as z-scores."},
+    {"name": "samples", "label": "Samples", "layout": [["sample_details"]],
+     "help": "The results of each acquisition of the experiment."},
 ]
 
 ACQUISITION_RENDERERS = {c["name"]: getattr(panels, c["name"]) for c in ACQUISITION_COMPONENTS}
@@ -116,15 +164,24 @@ def available(wf):
         if src is None:
             return set()
         if src.sample is None and sources.kind_of(wf, ctx.dataset) == sources.EXPERIMENT:
-            from src.naseweis_experiment_ui import comparison_ready, experiment_context
-
-            try:
-                context = experiment_context(src.wf)
-            except (OSError, ValueError):
-                return set()
-            return {QUANT} if context is not None and comparison_ready(context) else set()
-        return {QUANT} if src.lfq_table() is not None else set()
+            # Started with quantification: its section then says why a comparison
+            # is missing (an incomplete cohort) instead of offering to add it.
+            return {QUANT} if _experiment_quant(src)[0] else set()
+        return {QUANT} if src.lfq_table() is not None or src.lfq_requested() else set()
     return find
+
+
+def _experiment_quant(src) -> tuple[bool, bool]:
+    """(started with quantification, holds a finished comparison) of an experiment."""
+    from src.naseweis_experiment_ui import comparison_ready, experiment_context
+
+    try:
+        context = experiment_context(src.wf)
+    except (OSError, ValueError):
+        return False, False
+    if context is None:
+        return False, False
+    return bool(context["manifest"].get("lfq_enabled", False)), comparison_ready(context)
 
 
 def unavailable_options(wf):
@@ -148,3 +205,48 @@ def unavailable_options(wf):
 
 def views_path(wf, kind: str) -> Path:
     return Path(wf.workflow_dir).parent / "layouts" / f"naseweis-{kind}.json"
+
+
+def _dashboard(kind: str):
+    if kind == sources.EXPERIMENT:
+        return EXPERIMENT_ALL, EXPERIMENT_QUANT_ROWS, 2
+    return ACQUISITION_ALL, ACQUISITION_QUANT_ROWS, len(ACQUISITION_ALL) - 1
+
+
+def rows(wf, kind: str):
+    """The ``rows`` hook: the dashboard gets the quantification of a run that has
+    it, and the component ``all_results`` of a view saved before the dashboard
+    becomes the dashboard's rows."""
+    base, quant, at = _dashboard(kind)
+    find = available(wf)
+
+    def _ready(ctx) -> bool:
+        src = sources.resolve(wf, ctx.dataset)
+        return src is not None and _experiment_quant(src)[1]
+
+    def dashboard(ctx) -> list[list[str]]:
+        shown = [list(row) for row in base]
+        if QUANT in find(ctx):
+            # An incomplete cohort keeps only the section's note on why.
+            added = quant if kind != sources.EXPERIMENT or _ready(ctx) else quant[:1]
+            shown[at:at] = [list(row) for row in added]
+        elif kind != sources.EXPERIMENT:
+            # A run searched without quantification keeps the section, drawn as
+            # the note that offers to add it, so the dashboard says why it is missing.
+            shown[at:at] = [list(quant[0])]
+        return shown
+
+    def hook(ctx, shown, saved):
+        if [list(row) for row in shown] == base:
+            return dashboard(ctx)
+        out = []
+        for row in shown:
+            if "all_results" in row:
+                out.extend(dashboard(ctx))
+                rest = [name for name in row if name != "all_results"]
+                if rest:
+                    out.append(rest)
+            else:
+                out.append(list(row))
+        return out
+    return hook

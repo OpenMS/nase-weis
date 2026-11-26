@@ -74,6 +74,9 @@ deploy:
     name: NASEWEIS
     topp_tools: [DecoyDatabase, NucleicAcidSearchEngine, FileConverter, FeatureFinderMetaboIdent, TextExporter]
     openms: "OpenMS/OpenMS@01540e638431426a39b4d7acce41a5e2c738b235"
+    # The app runs this OpenMS nightly (openms-runtime.json, docker/Dockerfile.app);
+    # the template's full Dockerfile builds a release, which cannot clone a commit.
+    same_openms_as_images: false
   online_deployment: false
 sync:
   app_owned:
@@ -105,6 +108,7 @@ sync:
     - src/naseweis_msdata.py
     - src/naseweis_annotations.py
     - src/naseweis_plots.py
+    - src/naseweis_insight.py
     - src/naseweis_provenance.py
     - src/DecoyWorkflow.py
     - openms-runtime.json

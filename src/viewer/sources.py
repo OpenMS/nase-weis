@@ -79,6 +79,19 @@ class Source:
         path = Path(self.wf.results_dir, LFQ_TABLE)
         return path if path.is_file() else None
 
+    def lfq_requested(self) -> bool:
+        """The run was started with quantification, whether or not it finished:
+        its section then says why it has no features instead of offering to add it."""
+        import json
+
+        from src.naseweis_tools import enabled
+
+        try:
+            saved = json.loads(Path(self.wf._result_snapshot()).read_text())
+        except (OSError, ValueError):
+            return False
+        return isinstance(saved, dict) and enabled(saved.get("enable-lfq", False))
+
 
 def resolve(wf, dataset: str) -> Source | None:
     """``dataset`` as a Source; None when the run is gone."""

@@ -13,7 +13,6 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from src.common.common import follow_app_theme
 from src.naseweis_annotations import (
     annotate_peaks,
     fragment_assignment_table,
@@ -28,12 +27,14 @@ from src.naseweis_msdata import (
     spectrum_peaks,
     xic,
 )
+from src.naseweis_insight import show_plot, show_table
 from src.naseweis_plots import (
-    chromatogram_figure,
-    feature_map_figure,
+    chromatogram_plot,
+    feature_map_plot,
+    feature_xic_plot,
     ion_series,
-    peakmap_figure,
-    spectrum_figure,
+    peakmap_plots,
+    spectrum_plot,
 )
 
 VIEW_ERRORS = (OSError, ValueError, RuntimeError)
@@ -194,26 +195,9 @@ def cached_annotations(revision):
     return read_annotations(revision[0])
 
 
-def show_viewer_plot(figure, key: str, filename: str) -> None:
-    """Keep zoom/pan/export controls and provide a self-contained offline plot."""
-    follow_app_theme(figure)
-    st.plotly_chart(
-        figure,
-        key=key,
-        use_container_width=True,
-        config={
-            "displaylogo": False,
-            "scrollZoom": True,
-            "toImageButtonOptions": {"filename": filename, "format": "svg"},
-        },
-    )
-    st.download_button(
-        "Download interactive plot (HTML)",
-        figure.to_html(full_html=True, include_plotlyjs=True),
-        f"{filename}.html",
-        "text/html",
-        key=f"{key}-html",
-    )
+def show_viewer_plot(plot, key: str, filename: str) -> None:
+    """Draw an Insight plot spec with its zoom, export and a TSV of its values."""
+    show_plot(plot, key, filename)
 
 
 def render_raw_viewer(workflow_dir: Path, params: dict, online=False) -> None:
@@ -278,11 +262,12 @@ def render_raw_viewer(workflow_dir: Path, params: dict, online=False) -> None:
                 st.info(ms1_error)
             elif not points.empty:
                 marginals = st.checkbox("Show marginal signal", key=f"{key}-marginals")
-                show_viewer_plot(
-                    peakmap_figure(points, Path(path).name, marginals=marginals),
-                    f"{key}-peakmap",
-                    "naseweis-ms1-peakmap",
-                )
+                for part, plot in enumerate(peakmap_plots(points, Path(path).name, marginals=marginals)):
+                    show_viewer_plot(
+                        plot,
+                        f"{key}-peakmap" if part == 0 else f"{key}-peakmap-{part}",
+                        plot.settings.get("svg_filename", "naseweis-ms1-peakmap"),
+                    )
                 st.caption(
                     "The overview sums intensities within display bins. Individual spectra and XICs use the original peak data. Zoom, pan and hover using the plot controls."
                 )
@@ -322,12 +307,12 @@ def render_raw_viewer(workflow_dir: Path, params: dict, online=False) -> None:
                     st.info("This spectrum has no peaks.")
                 else:
                     show_viewer_plot(
-                        spectrum_figure(peaks, str(choices.loc[index, "native_id"])),
+                        spectrum_plot(peaks, str(choices.loc[index, "native_id"])),
                         f"{key}-scan-plot",
                         "naseweis-spectrum",
                     )
                 with st.expander("Scan metadata"):
-                    st.dataframe(choices, hide_index=True, use_container_width=True)
+                    show_table(choices, f"{key}-scan-metadata", "naseweis-scans")
         with chromatogram_tab:
             if ms1_error:
                 st.info(ms1_error)
@@ -347,7 +332,7 @@ def render_raw_viewer(workflow_dir: Path, params: dict, online=False) -> None:
                     )
                 if not signals.empty:
                     show_viewer_plot(
-                        chromatogram_figure(signals, Path(path).name),
+                        chromatogram_plot(signals, Path(path).name),
                         f"{key}-chromatograms",
                         "naseweis-chromatograms",
                     )
@@ -552,7 +537,7 @@ def render_identification_viewer(
         else:
             with plot_area:
                 show_viewer_plot(
-                    spectrum_figure(peaks, str(match.get("sequence", native_id)), highlighted_mz=highlighted_mz),
+                    spectrum_plot(peaks, str(match.get("sequence", native_id)), highlighted_mz=highlighted_mz),
                     f"{key}-spectrum",
                     "naseweis-matched-spectrum",
                 )
@@ -562,13 +547,13 @@ def render_identification_viewer(
                     "Some scored fragments are absent or ambiguous in the acquired scan, for example after deisotoping or decharging. Their native assignments are retained below."
                 )
             with st.expander("All native assignment metadata"):
-                st.dataframe(annotations, hide_index=True, use_container_width=True)
+                show_table(annotations, f"{key}-annotations", "naseweis-fragments")
             st.download_button(
                 "Download fragment assignments (TSV)",
                 annotations.to_csv(sep="\t", index=False),
                 "naseweis-fragments.tsv",
                 "text/tab-separated-values",
-                key=f"{key}-annotations",
+                key=f"{key}-annotations-download",
             )
             st.caption(
                 "Labels come from NASE's saved assignments. Acquired peak heights are preserved; processed fragment masses are labelled only when they uniquely match an acquired peak."
@@ -607,7 +592,7 @@ def render_lfq_viewer(
         return
     try:
         show_viewer_plot(
-            feature_map_figure(features, "RNA MS1 features"),
+            feature_map_plot(features, "RNA MS1 features"),
             f"{key}-map",
             "naseweis-lfq-feature-map",
         )
@@ -656,17 +641,11 @@ def render_lfq_viewer(
             trace = cached_xic(
                 revision, mz, tolerance, unit, rt_range if limited else None
             )
-        figure = chromatogram_figure(trace, str(feature.get("label", "RNA feature")))
-        if boundaries:
-            figure.add_vrect(
-                x0=boundaries[0],
-                x1=boundaries[1],
-                fillcolor="#ffcb4f",
-                opacity=0.18,
-                line_width=0,
-            )
-        figure.add_vline(x=float(feature["rt"]), line_dash="dot", line_color="#3157e9")
-        show_viewer_plot(figure, f"{key}-xic-plot", "naseweis-lfq-xic")
+        show_viewer_plot(
+            feature_xic_plot(trace, str(feature.get("label", "RNA feature")), boundaries),
+            f"{key}-xic-plot",
+            "naseweis-lfq-xic",
+        )
         st.caption(
             "The XIC sums raw MS1 signal within the displayed tolerance; the shaded interval marks native feature boundaries. LFQ areas can include multiple isotope traces and are not identical to a single-m/z XIC. Adjusting this view does not change saved quantification."
         )

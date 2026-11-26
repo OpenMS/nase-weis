@@ -88,13 +88,30 @@ def all_results(ctx, src: Source) -> None:
         src.wf._single_results()
 
 
+TITLES = {"matches": "Matches", "spectrum_viewer": "Spectra", "coverage": "Sequence coverage",
+          "quantification": "Quantification", "downloads": "Export",
+          "experiment_summary": "Experiment summary", "experiment_coverage": "Sequence coverage",
+          "experiment_quantification": "Quantification", "sample_details": "Sample details"}
+
+
+def _titled(section: str, draw) -> None:
+    """Draw a result section under the heading Explore results always gave it."""
+    title = TITLES.get(section)
+    if title is None:
+        draw()
+        return
+    with st.container(border=True):
+        st.subheader(title)
+        draw()
+
+
 def _single(section: str):
     def render(ctx, src: Source) -> None:
         if not claim(ctx, section):
             return
         loaded = _loaded(src)
         if loaded is not None:
-            getattr(src.wf, f"{section}_section")(loaded)
+            _titled(section, lambda: getattr(src.wf, f"{section}_section")(loaded))
     return render
 
 
@@ -108,7 +125,7 @@ def downloads(ctx, src: Source) -> None:
         return
     loaded = _loaded(src)
     if loaded is not None:
-        src.wf.export_section(loaded)
+        _titled("downloads", lambda: src.wf.export_section(loaded))
 
 
 def spectrum_viewer(ctx, src: Source) -> None:
@@ -116,12 +133,12 @@ def spectrum_viewer(ctx, src: Source) -> None:
         return
     loaded = _loaded(src)
     if loaded is not None:
-        src.wf.spectra_section(loaded)
+        _titled("spectrum_viewer", lambda: src.wf.spectra_section(loaded))
 
 
 def quantification(ctx, src: Source) -> None:
     if claim(ctx, "quantification"):
-        src.wf.quantification_results()
+        _titled("quantification", src.wf.quantification_results)
 
 
 def _context(src: Source):
@@ -142,7 +159,7 @@ def _experiment(section: str):
         if context is not None:
             from src import naseweis_experiment_ui as ui
 
-            getattr(ui, f"{section}_section")(context)
+            _titled(section, lambda: getattr(ui, f"{section}_section")(context))
     return render
 
 
@@ -158,7 +175,7 @@ def sample_details(ctx, src: Source) -> None:
     if context is not None:
         from src.naseweis_experiment_ui import sample_details_section
 
-        sample_details_section(context, src.wf._render_sample_results)
+        _titled("sample_details", lambda: sample_details_section(context, src.wf._render_sample_results))
 
 
 # --- OpenMS-Insight components: one acquisition ------------------------------
@@ -169,7 +186,19 @@ def _spectra(ctx, src: Source, title: str):
         st.markdown(f"**{title}**")
         st.info("The spectra of this acquisition are not available: " + "; ".join(src.notes))
         return None
+    if _readable(path) is None:
+        st.markdown(f"**{title}**")
+        st.error(f"Could not read the spectra of {Path(path).name}; the file may be damaged or not mzML.")
+        return None
     return path
+
+
+def _readable(path):
+    """The acquisition's tables, or None when the file cannot be read."""
+    try:
+        return run_files.tables(path)
+    except Exception:  # pylint: disable=broad-except  # pyOpenMS raises plain RuntimeError
+        return None
 
 
 def _version(path: Path) -> str:
@@ -304,7 +333,8 @@ def match_table(ctx, src: Source) -> None:
     if loaded is None:
         return
     path = src.mzml()
-    scans = run_files.tables(path)["scans"] if path is not None else None
+    tables = _readable(path) if path is not None else None
+    scans = tables["scans"] if tables is not None else None
     data = psm_frame(loaded["tables"], loaded["matches"], scans)
     if data.is_empty():
         st.markdown("**Spectrum matches**")

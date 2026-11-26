@@ -284,7 +284,7 @@ def test_real_results_sample_picker_uses_own_snapshot_spectra_and_downloads(
     spectrum = next(
         figure
         for figure in plots(app)
-        if figure["layout"].get("xaxis", {}).get("title", {}).get("text") == "m/z"
+        if figure["settings"].get("x_column") == "mz"
     )
     assert peak_coordinates(spectrum) == [(100.0, 50.0), (200.0, 100.0)]
     next(box for box in app.selectbox if box.label == "Acquisition details").set_value(
@@ -309,7 +309,7 @@ def test_real_results_sample_picker_uses_own_snapshot_spectra_and_downloads(
     spectrum = next(
         figure
         for figure in plots(app)
-        if figure["layout"].get("xaxis", {}).get("title", {}).get("text") == "m/z"
+        if figure["settings"].get("x_column") == "mz"
     )
     assert peak_coordinates(spectrum) == [
         (900.0, 100.0),
@@ -340,6 +340,6 @@ def test_sample_fingerprint_failure_does_not_disable_another_samples_viewer(
     spectrum = next(
         figure
         for figure in plots(app)
-        if figure["layout"].get("xaxis", {}).get("title", {}).get("text") == "m/z"
+        if figure["settings"].get("x_column") == "mz"
     )
     assert peak_coordinates(spectrum)[0] == (900.0, 100.0)

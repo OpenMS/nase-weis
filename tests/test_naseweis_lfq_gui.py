@@ -65,12 +65,32 @@ def _lfq_run(app, *, table=None, enabled=True):  # noqa: F811
     return results
 
 
+def _drawn_table(app, prefix):
+    return next((item.data for item in app.drawn
+                 if item.component == "Table" and item.key.startswith(prefix)), None)
+
+
+def _lfq(app):
+    """The rows of the LFQ feature table the last run drew, or None."""
+    return _drawn_table(app, "lfq-features-")
+
+
+def _quantification_note(app):
+    """The dashboard keeps the section of a run searched without quantification
+    and offers to add it."""
+    return (any("Needs quantification" in item.value for item in app.markdown)
+            and any(button.label.startswith("Add quantification") for button in app.button))
+
+
+def _matches(app):
+    return _drawn_table(app, "matches-")
+
+
 def test_lfq_table_and_native_downloads_come_from_saved_run(app):  # noqa: F811
     results = _lfq_run(app, table="#rt\tmz\tintensity\tcharge\tlabel\n60\t500.2\t1234.5\t-2\tACGU\n")
     _results_page(app)
-    assert "Quantification" in [tab.label for tab in app.tabs]
-    assert len(app.dataframe) == 2
-    table = app.dataframe[1].value
+    assert "Quantification" in [item.value for item in app.subheader]
+    table = _lfq(app)
     assert table.loc[0, "label"] == "ACGU"
     assert table.loc[0, "intensity"] == 1234.5
     assert _downloads(app) >= {"Download LFQ features (featureXML)", "Download LFQ feature table (TSV)"}
@@ -79,12 +99,12 @@ def test_lfq_table_and_native_downloads_come_from_saved_run(app):  # noqa: F811
     _results_page(app)
     picker = next(box for box in app.selectbox if box.label == "Run")
     picker.select(newer).run(timeout=30)
-    assert len(app.dataframe) == 1
+    assert _lfq(app) is None
     assert "Download LFQ feature table (TSV)" not in _downloads(app)
-    assert any("not enabled" in item.value for item in app.info)
+    assert _quantification_note(app)
     picker = next(box for box in app.selectbox if box.label == "Run")
     picker.select(results.parent.name).run(timeout=30)
-    assert app.dataframe[1].value.loc[0, "label"] == "ACGU"
+    assert _lfq(app).loc[0, "label"] == "ACGU"
 
 
 @pytest.mark.parametrize("table", [None, "#rt\tmz\tintensity\tcharge\tlabel\n", "broken table\n"])
@@ -92,7 +112,7 @@ def test_empty_missing_or_corrupt_lfq_keeps_identification_results(app, table): 
     _lfq_run(app, table=table)
     _results_page(app)
     assert not app.exception
-    assert app.dataframe[0].value.loc[0, "Sequence"] == "ACGU"
+    assert _matches(app).loc[0, "Sequence"] == "ACGU"
     assert "Download mzTab" in _downloads(app)
     assert "Download LFQ features (featureXML)" in _downloads(app)
     if table is None:
@@ -108,7 +128,7 @@ def test_lfq_without_snapshot_has_an_explanation(app):  # noqa: F811
     (results.parent / "params.json").unlink()
     _results_page(app)
     assert not app.exception
-    assert any("not enabled" in item.value for item in app.info)
+    assert _quantification_note(app)
 
 
 def test_failed_lfq_run_keeps_partial_identifications_accessible(app):  # noqa: F811
@@ -126,7 +146,7 @@ def test_failed_lfq_run_keeps_partial_identifications_accessible(app):  # noqa: 
     picker = next(box for box in app.selectbox if box.label == "Run")
     assert any("Failed / partial results" in label for label in picker.options)
     picker.select(results.parent.name).run(timeout=30)
-    assert app.dataframe[0].value.loc[0, "Sequence"] == "ACGU"
+    assert _matches(app).loc[0, "Sequence"] == "ACGU"
     assert "Download mzTab" in _downloads(app)
     assert "Download run log" in _downloads(app)
     assert any("This run failed" in item.value for item in app.warning)

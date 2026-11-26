@@ -1,11 +1,12 @@
 """Saved-result coverage and comparative LFQ plots; viewing never reruns tools."""
 
 import streamlit as st
-from streamlit.components.v1 import html
 
+from src.naseweis_insight import show_plot
 from src.naseweis_comparison_plots import condition_scatter, paired_condition_rows
 from src.naseweis_coverage import (
     build_coverage,
+    coverage_plot,
     render_coverage_html,
     render_coverage_svg,
 )
@@ -35,12 +36,13 @@ def render_coverage_groups(groups, prefix):
     )
     try:
         model = build_coverage(groups, accession)
+        figure = coverage_plot(model, block_size=block_size)
         plot = render_coverage_html(model, block_size=block_size)
         svg = render_coverage_svg(model, block_size=block_size)
     except (ValueError, KeyError, IndexError, TypeError) as error:
         st.warning(f"Coverage is unavailable: {error}")
         return
-    html(plot, height=680, scrolling=True)
+    show_plot(figure, f"{prefix}-plot", "naseweis-coverage")
     st.download_button(
         "Download coverage (HTML)", plot, "naseweis-coverage.html", "text/html",
         key=f"{prefix}-html",
@@ -143,17 +145,8 @@ def render_lfq_scatter(contrasts, numerator, denominator, prefix, *, measure, no
     except ValueError as error:
         st.warning(f"The abundance comparison plot is unavailable: {error}")
         return
-    config = {"toImageButtonOptions": {"format": "svg", "filename": "naseweis-lfq-comparison"}}
-    st.plotly_chart(
-        figure, use_container_width=True, key=f"{prefix}-scatter",
-        config=config,
-    )
-    st.caption("Zoom and hover for RNA identities, means and replicate counts. Use the camera button for SVG export.")
-    st.download_button(
-        "Download abundance comparison (HTML)",
-        figure.to_html(full_html=True, include_plotlyjs=True, config=config),
-        "naseweis-lfq-comparison.html", "text/html", key=f"{prefix}-scatter-html",
-    )
+    show_plot(figure, f"{prefix}-scatter", "naseweis-lfq-comparison")
+    st.caption("Hover for RNA identities, means and replicate counts; zoom with the mouse. The plot's menu exports SVG.")
 
 
 def render_acquisition_scatter(matrix, design, labels, prefix, *, measure, normalization):

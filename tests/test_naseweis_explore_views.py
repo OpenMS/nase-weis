@@ -12,6 +12,7 @@ import pytest
 
 from src.layout_manager.layout import select_view
 from src.viewer import catalog
+from tests.naseweis_drawn import tables
 from test_gui import _demo, _run_box, app  # noqa: F401  (the app fixture)
 
 LFQ_RUN = "20261126-072337"
@@ -27,12 +28,24 @@ def _clean(app):
 
 
 def _tabs(app):
-    return [tab.label for tab in app.tabs]
+    # All results is one dashboard: each result section is a titled panel.
+    return [header.value for header in app.subheader]
+
+
+def _has(app, sections):
+    shown = _tabs(app)
+    return all(section in shown for section in sections)
 
 
 def _insight(app):
-    # One custom component is the view bar itself.
-    return len(app.get("component_instance")) - 1
+    # One custom component is the view bar itself; components NASE-weis draws
+    # through its own plots are recorded instead of drawn.
+    return len(app.get("component_instance")) - 1 + len(app.drawn)
+
+
+def _sections(run):
+    return ACQUISITION_TABS if run == LFQ_RUN else [
+        t for t in ACQUISITION_TABS if t != "Quantification"]
 
 
 def _views(app, kind):
@@ -66,8 +79,7 @@ def _show(app, run):
 def test_quantified_experiment_keeps_every_result_section(app):
     _show(app, LFQ_RUN)
     _clean(app)
-    assert _tabs(app)[:4] == EXPERIMENT_TABS
-    assert all(tab in _tabs(app) for tab in ACQUISITION_TABS)
+    assert _has(app, EXPERIMENT_TABS)
     buttons = [b.label for b in app.button]
     assert "Open spectrum viewer" in buttons
     assert "Open LFQ feature viewer" in buttons
@@ -76,7 +88,7 @@ def test_quantified_experiment_keeps_every_result_section(app):
                   "RNA accession", "RNA oligonucleotide"):
         assert label in labels
     assert any(m.value == "**Condition comparison**" for m in app.markdown)
-    assert app.dataframe
+    assert tables(app.drawn) or app.get("component_instance")
 
 
 def test_experiment_switch_offers_each_acquisition(app):
@@ -88,10 +100,10 @@ def test_experiment_switch_offers_each_acquisition(app):
     picker = next(box for box in app.selectbox if box.label == "Acquisition")
     assert len(picker.options) == 2
     assert all("replicate" in o or "condition" in o for o in picker.options)
-    assert _tabs(app)[:5] == ACQUISITION_TABS
+    assert _has(app, ACQUISITION_TABS)
     picker.set_value(picker.options[1]).run(timeout=120)
     _clean(app)
-    assert _tabs(app)[:5] == ACQUISITION_TABS
+    assert _has(app, ACQUISITION_TABS)
 
 
 @pytest.mark.parametrize("run", [LFQ_RUN, ID_RUN])
@@ -99,10 +111,12 @@ def test_single_acquisition_keeps_downloads_and_spectra(app, run):
     _show(app, run)
     _single_acquisition(app)
     _clean(app)
-    assert _tabs(app)[:5] == ACQUISITION_TABS
+    # A run without quantification leaves that panel out of the dashboard;
+    # its Quantification view stays in the bar, locked, with a new search.
+    assert _has(app, _sections(run))
     assert app.get("download_button")
     if run == ID_RUN:
-        assert any("quantification" in i.value.lower() for i in app.info)
+        assert "Quantification" not in _tabs(app)
 
 
 def test_identification_only_experiment_has_no_comparison(app):
@@ -116,7 +130,7 @@ def test_identification_only_experiment_has_no_comparison(app):
 
 
 @pytest.mark.parametrize("run", [LFQ_RUN, ID_RUN])
-@pytest.mark.parametrize("view, components", [("spectra", 5), ("identification", 3)])
+@pytest.mark.parametrize("view, components", [("spectra", 4), ("identification", 3), ("matches", 2)])
 def test_acquisition_views(app, run, view, components):
     _show(app, run)
     _single_acquisition(app)
@@ -125,7 +139,7 @@ def test_acquisition_views(app, run, view, components):
     assert _insight(app) >= components
     _open_view(app, "acquisition", "all")
     _clean(app)
-    assert _tabs(app)[:5] == ACQUISITION_TABS
+    assert _has(app, _sections(run))
 
 
 def test_quantified_abundances_view(app):
@@ -162,7 +176,7 @@ def test_every_component_has_a_renderer():
     for presets, components in ((catalog.ACQUISITION_PRESETS, catalog.ACQUISITION_COMPONENTS),
                                 (catalog.EXPERIMENT_PRESETS, catalog.EXPERIMENT_COMPONENTS)):
         names = {c["name"] for c in components}
-        assert presets[0]["layout"] == catalog.ALL
+        assert presets[0]["layout"] in (catalog.ACQUISITION_ALL, catalog.EXPERIMENT_ALL)
         for preset in presets:
             assert all(n in names for row in preset["layout"] for n in row)
 

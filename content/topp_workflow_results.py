@@ -78,6 +78,7 @@ def kind(name: str, components, presets, table) -> DatasetKind:
         analyses=catalog.ANALYSES,
         unavailable_options=catalog.unavailable_options(wf),
         states=catalog.states(name),
+        rows=catalog.rows(wf, name),
         before=partial_warning,
         dataset_label="run",
         experiment_label="Run",

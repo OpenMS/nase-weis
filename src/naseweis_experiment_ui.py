@@ -6,9 +6,10 @@ import math
 from pathlib import Path
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
+from src.naseweis_insight import show_plot, show_table
+from src.naseweis_plots import abundance_bars_plot
 from src.naseweis_result_plots_ui import (
     render_acquisition_scatter,
     render_experiment_coverage,
@@ -309,9 +310,10 @@ def _render_comparison(root, samples, prefix):
     labels = _sample_labels(samples)
     with st.expander("Abundance tables and downloads"):
         st.markdown("**RNA abundance matrix**")
-        st.dataframe(matrix.rename(columns=labels), use_container_width=True)
+        show_table(_labelled(matrix.rename(columns=labels)), f"{prefix}-abundance-table",
+                   "naseweis-abundances")
         st.markdown("**Raw extracted areas**")
-        st.dataframe(raw.rename(columns=labels), use_container_width=True)
+        show_table(_labelled(raw.rename(columns=labels)), f"{prefix}-raw-table", "naseweis-raw-areas")
         _download_frame(
             "Download abundance matrix (TSV)", matrix, "abundances.tsv", key=f"{prefix}-abundances.tsv", index_label="label"
         )
@@ -340,24 +342,16 @@ def _render_comparison(root, samples, prefix):
             "RNA oligonucleotide", list(matrix.index), key=f"{prefix}-target"
         )
         values = matrix.loc[target]
-        figure = go.Figure(
-            go.Bar(
-                x=[labels.get(column, column) for column in matrix.columns],
-                y=[None if pd.isna(value) else float(value) for value in values],
-                name=str(target),
-            )
-        )
-        figure.update_layout(
-            title=str(target),
-            xaxis_title="Acquisition",
-            yaxis_title=(
-                "Relative RNA abundance"
-                if normalization == "total"
-                else MEASURES.get(measure, measure)
+        show_plot(
+            abundance_bars_plot(
+                [labels.get(column, column) for column in matrix.columns],
+                list(values),
+                str(target),
+                "Relative RNA abundance" if normalization == "total" else MEASURES.get(measure, measure),
             ),
-            showlegend=False,
+            f"{prefix}-abundance",
+            "naseweis-abundance",
         )
-        st.plotly_chart(figure, use_container_width=True, key=f"{prefix}-abundance")
     conditions = sorted(
         {
             str(value).strip()
@@ -400,15 +394,13 @@ def _render_comparison(root, samples, prefix):
         measure=measure, normalization=normalization,
     )
     leading = ["log2_fold_change", "ratio"]
-    st.dataframe(
-        contrasts[leading + [column for column in contrasts if column not in leading]],
-        use_container_width=True,
-        column_config={
-            "_index": "RNA oligonucleotide",
-            "log2_fold_change": st.column_config.NumberColumn(
-                "Log2 fold change", format="%.3g"
-            ),
-            "ratio": st.column_config.NumberColumn("Ratio", format="%.3g"),
+    show_table(
+        _labelled(contrasts[leading + [column for column in contrasts if column not in leading]]),
+        f"{prefix}-contrast-table", "naseweis-condition-comparison",
+        titles={
+            "label": "RNA oligonucleotide",
+            "log2_fold_change": "Log2 fold change",
+            "ratio": "Ratio",
             "numerator_mean": f"{numerator} mean",
             "numerator_std": f"{numerator} SD",
             "numerator_n": f"{numerator} replicates",
@@ -486,13 +478,20 @@ def experiment_summary_section(context):
     ]
     table = pd.DataFrame(samples).reindex(columns=columns)
     table["status"] = [context["displayed_status"](sample) for sample in samples]
-    st.dataframe(
-        table.dropna(axis=1, how="all"), hide_index=True, use_container_width=True
-    )
+    show_table(table.dropna(axis=1, how="all"), f"{context['prefix']}-samples", "naseweis-samples",
+               title="Acquisitions", titles={c: c.capitalize() for c in columns})
     if finished < len(samples):
         st.warning(
             "This experiment has incomplete acquisitions. Review their statuses and available sample results below."
         )
+
+
+def _labelled(frame):
+    """``frame`` with its index (the oligonucleotides) as the column ``label``."""
+    shown = frame.copy()
+    shown.index = shown.index.astype(str)
+    shown.index.name = "label"
+    return shown.reset_index()
 
 
 def experiment_coverage_section(context):
@@ -564,15 +563,13 @@ def render_experiment_results(workflow, render_sample):
         return True
     if context is None:
         return False
-    summary, coverage, quantification, details = st.tabs(
-        ["Experiment summary", "Sequence coverage", "Quantification", "Sample details"]
-    )
-    with summary:
-        experiment_summary_section(context)
-    with coverage:
-        experiment_coverage_section(context)
-    with quantification:
-        experiment_quantification_section(context)
-    with details:
-        sample_details_section(context, render_sample)
+    for title, draw in (
+        ("Experiment summary", lambda: experiment_summary_section(context)),
+        ("Sequence coverage", lambda: experiment_coverage_section(context)),
+        ("Quantification", lambda: experiment_quantification_section(context)),
+        ("Sample details", lambda: sample_details_section(context, render_sample)),
+    ):
+        with st.container(border=True):
+            st.subheader(title)
+            draw()
     return True

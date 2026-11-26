@@ -1,5 +1,6 @@
 """NASEWEIS workflow: optional RNA decoys, NASE search and result inspection."""
 
+import hashlib
 import json
 import shutil
 from copy import copy, deepcopy
@@ -16,6 +17,7 @@ from src.naseweis_experiment_ui import (
     render_experiment_results,
     select_acquisitions,
 )
+from src.naseweis_insight import show_table
 from src.naseweis_lfq import (
     FEATURE_FINDER_DEFAULTS,
     LFQ_FEATURES,
@@ -794,7 +796,8 @@ class Workflow(WorkflowManager):
                 "No matches passed this search's filters. Review the database, digestion, mass tolerances and FDR cutoff."
             )
         else:
-            st.dataframe(matches, hide_index=True, use_container_width=True)
+            show_table(matches, f"matches-{self._view_key()}", "naseweis-matches",
+                       title="Spectrum matches")
             st.download_button(
                 "Download matches (CSV)",
                 matches.to_csv(index=False).encode(),
@@ -874,6 +877,10 @@ class Workflow(WorkflowManager):
                 "text/plain", key=f"export-log-{self.results_dir}",
             )
 
+    def _view_key(self) -> str:
+        """A short key for this acquisition's widgets (its results folder)."""
+        return hashlib.sha1(str(self.results_dir).encode()).hexdigest()[:12]
+
     def _log_dir(self) -> Path:
         log_dir = getattr(self, "_sample_log_dir", None)
         if log_dir is None:
@@ -885,19 +892,16 @@ class Workflow(WorkflowManager):
         if loaded is None:
             return
         self.summary_section(loaded)
-        table_tab, spectra_tab, coverage_tab, lfq_tab, download_tab = st.tabs(
-            ["Matches", "Spectra", "Sequence coverage", "Quantification", "Export"]
-        )
-        with table_tab:
-            self.matches_section(loaded)
-        with spectra_tab:
-            self.spectra_section(loaded)
-        with coverage_tab:
-            self.coverage_section(loaded)
-        with lfq_tab:
-            self.quantification_results()
-        with download_tab:
-            self.export_section(loaded)
+        for title, draw in (
+            ("Matches", lambda: self.matches_section(loaded)),
+            ("Spectra", lambda: self.spectra_section(loaded)),
+            ("Sequence coverage", lambda: self.coverage_section(loaded)),
+            ("Quantification", self.quantification_results),
+            ("Export", lambda: self.export_section(loaded)),
+        ):
+            with st.container(border=True):
+                st.subheader(title)
+                draw()
 
     def run_statuses(self) -> tuple[list[dict], dict]:
         """Saved runs whose evidence can be shown, and each run's status."""
@@ -980,16 +984,13 @@ class Workflow(WorkflowManager):
                     if "label" in table:
                         cols[1].metric("Oligonucleotide labels", table["label"].nunique())
                     leading = [column for column in ("label", "charge", "intensity", "rt", "mz", "expected_rt", "sum_formula") if column in table]
-                    st.dataframe(
+                    show_table(
                         table[leading + [column for column in table if column not in leading]],
-                        hide_index=True, use_container_width=True,
-                        column_config={
-                            "label": "Oligonucleotide", "charge": "Charge",
-                            "intensity": st.column_config.NumberColumn("Raw peak area", format="%.3g"),
-                            "rt": st.column_config.NumberColumn("RT (s)", format="%.2f"),
-                            "mz": st.column_config.NumberColumn("m/z", format="%.5f"),
-                            "expected_rt": st.column_config.NumberColumn("Expected RT (s)", format="%.2f"),
-                        },
+                        f"lfq-features-{self._view_key()}", "naseweis-lfq-features",
+                        title="MS1 features",
+                        titles={"label": "Oligonucleotide", "charge": "Charge", "intensity": "Raw peak area",
+                                "rt": "RT (s)", "mz": "m/z", "expected_rt": "Expected RT (s)",
+                                "sum_formula": "Sum formula"},
                     )
                     snapshot = self._result_snapshot()
                     render_lfq_viewer(

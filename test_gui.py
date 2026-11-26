@@ -8,6 +8,8 @@ import pytest
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1 import element_tree
 
+from tests.naseweis_drawn import attach, tables
+
 # Import UI dependencies before tests that temporarily mock Streamlit at collection.
 from src.common.common import page_setup  # noqa: F401
 
@@ -31,6 +33,7 @@ def app(tmp_path, monkeypatch):
     # Most tests start from an empty workspace; test_demo_* seed the examples.
     settings["demo_workspaces"] = {k: v for k, v in settings["demo_workspaces"].items() if k != "new_workspace"}
     test.session_state.settings = settings
+    attach(test, monkeypatch)
     return test
 
 
@@ -170,10 +173,16 @@ def test_configuration_survives_page_changes(app):
     assert saved["FDR_cutoff"] == 0.01 and saved["add-decoys"] is False
 
 
+def _matches(app):
+    """The rows of the spectrum match table the last run drew."""
+    return next(item.data for item in app.drawn
+                if item.component == "Table" and item.key.startswith("matches-"))
+
+
 def test_saved_results_use_their_own_fdr_and_offer_all_exports(app):
     _finished_run(app)
     _results_page(app)
-    table = app.dataframe[0].value
+    table = _matches(app)
     assert table.loc[0, "q-value (%)"] == 1.0  # current config has FDR disabled
     assert table.loc[0, "Sequence"] == "ACGU"
     assert [str(metric.value) for metric in app.metric] == ["1", "1", "1"]
@@ -199,7 +208,7 @@ def test_selecting_an_older_run_does_not_reuse_newer_results(app):
         # The widget values are run IDs; labels include a display name/date.
         picker.select(run_id).run()
         assert not app.exception
-        table = app.dataframe[0].value
+        table = _matches(app)
         assert table.loc[0, "Sequence"] == sequence
         assert ("q-value (%)" in table) is has_q
         picker = next(box for box in app.selectbox if box.label == "Run")
@@ -208,7 +217,7 @@ def test_selecting_an_older_run_does_not_reuse_newer_results(app):
 def test_legacy_results_are_still_readable_and_downloadable(app):
     _finished_run(app, legacy=True)
     _results_page(app)
-    assert app.dataframe[0].value.loc[0, "Sequence"] == "ACGU"
+    assert _matches(app).loc[0, "Sequence"] == "ACGU"
     assert "Download legacy idXML" in _downloads(app)
     assert "Download mzTab" in _downloads(app)
 
@@ -232,7 +241,7 @@ def test_corrupt_results_show_an_actionable_error(app):
     assert any(
         "Could not read this run's results" in error.value for error in app.error
     )
-    assert not app.dataframe
+    assert not tables(app.drawn)
 
 
 def test_missing_result_file_explains_what_to_do_next(app):
@@ -246,7 +255,7 @@ def test_missing_optional_export_does_not_hide_the_table(app):
     results = _finished_run(app)
     (results / "idxml_results/search.idXML").unlink()
     _results_page(app)
-    assert len(app.dataframe[0].value) == 1
+    assert len(_matches(app)) == 1
     assert "Download idXML" not in _downloads(app)
     assert "Download mzTab" in _downloads(app)
 
@@ -293,7 +302,7 @@ def test_missing_run_parameters_do_not_break_other_exports(app):
     results = _finished_run(app)
     (results.parent / "params.json").unlink()
     _results_page(app)
-    assert len(app.dataframe[0].value) == 1
+    assert len(_matches(app)) == 1
     assert "Download search parameters" not in _downloads(app)
     assert "Download mzTab" in _downloads(app)
 
