@@ -55,12 +55,17 @@ def read_run_snapshot(path: Path) -> dict:
     return value
 
 
+EXAMPLE_DATA = Path("example-data")
+
+
 def acquisition_revision(selected, workflow_dir: Path, online: bool = False):
     """Respect workspace boundaries online and registered external files locally."""
     if not isinstance(selected, str) or not selected:
         raise ValueError("This run has no saved acquisition path.")
     path = Path(selected).resolve()
-    if online and not path.is_relative_to(workflow_dir.parent.resolve()):
+    # The example runs of the demo workspace name the app's own example data.
+    shipped = path.is_relative_to(EXAMPLE_DATA.resolve())
+    if online and not shipped and not path.is_relative_to(workflow_dir.parent.resolve()):
         raise ValueError("The saved acquisition is outside this online workspace.")
     return file_revision(path)
 

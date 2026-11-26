@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "lfq_enabled": false,
+  "status": "finished",
+  "comparison_status": "not_requested",
+  "samples": [
+    {
+      "id": "sample_001",
+      "file": "NME1.mzML",
+      "path": "example-data/mzML/NME1.mzML",
+      "condition": "NME1",
+      "replicate": 1,
+      "fraction": 1,
+      "status": "finished"
+    }
+  ]
+}

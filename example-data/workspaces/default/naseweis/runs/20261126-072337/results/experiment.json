@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "lfq_enabled": true,
+  "status": "finished",
+  "comparison_status": "finished",
+  "samples": [
+    {
+      "id": "sample_001",
+      "file": "NME1.mzML",
+      "path": "example-data/mzML/NME1.mzML",
+      "condition": "original",
+      "replicate": 1,
+      "fraction": 1,
+      "status": "finished"
+    },
+    {
+      "id": "sample_002",
+      "file": "NME1_simulated_replicate.mzML",
+      "path": "example-data/mzML/NME1_simulated_replicate.mzML",
+      "condition": "simulated",
+      "replicate": 1,
+      "fraction": 1,
+      "status": "finished"
+    }
+  ]
+}

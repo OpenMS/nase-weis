@@ -22,6 +22,10 @@ from src.workflow.ExperimentalDesign import (
     save_design,
 )
 
+EXAMPLE_MZML = ["example-data/mzML/NME1.mzML"]
+EXAMPLE_FASTA = ["example-data/fasta/NME1_Target.fasta"]
+_EXAMPLE_NAMES = {Path(f).name for f in EXAMPLE_MZML}
+
 NORMALIZATIONS = {"total": "Total area", "none": "None"}
 MEASURES = {"intensity": "Native feature area", "model_area": "Fitted model area"}
 
@@ -125,12 +129,15 @@ def select_acquisitions(workflow):
         return None
     available = set(workflow.ui._input_file_options(key))
     unavailable = [path for path in selected if path not in available]
-    if unavailable:
+    # The example leaves once files of the user's own are added: no warning for it
+    missing = [Path(path).name for path in unavailable if Path(path).name not in _EXAMPLE_NAMES]
+    if missing:
         st.warning(
             "Previously selected acquisitions are no longer available in this workspace: "
-            + ", ".join(Path(path).name for path in unavailable)
+            + ", ".join(missing)
             + ". Add them again with Browse or select other inputs."
         )
+    if unavailable:
         selected = [path for path in selected if path in available]
     if value != selected or workflow.params.get(key) != selected:
         st.session_state[widget] = selected
@@ -143,7 +150,7 @@ def select_acquisitions(workflow):
         name="MS/MS acquisitions",
         multiple=True,
         reactive=True,
-        upload={"file_types": ["mzML", "raw", "d"]},
+        upload={"file_types": ["mzML", "raw", "d"], "fallback": EXAMPLE_MZML},
     )
     selected = st.session_state.get(widget, workflow.ui.params.get(key, []))
     workflow.params[key] = list(selected)

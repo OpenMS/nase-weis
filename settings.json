@@ -36,10 +36,11 @@
         "max_timeout": 604800
     },
     "demo_workspaces": {
-        "enabled": false,
+        "enabled": true,
         "source_dirs": [
             "example-data/workspaces"
-        ]
+        ],
+        "new_workspace": "default"
     },
     "developer_mode": {},
     "workspace_sync": {

@@ -20,7 +20,7 @@ Choose your acquisitions and your RNA database below. The search settings start 
 - **RNA database**: the expected sequences as FASTA. Decoys are added for the false discovery rate
   unless the file already has them. A cached digest from an earlier search can be used instead.
 
-No data at hand? **Load example dataset** adds the NME1 spectra with their database.
+No data at hand? The NME1 example spectra and their database are already selected; they make way for your own files as soon as you add them.
 """,
     background="""
 - **mzML** is the open file format for raw MS data. Other vendor formats convert to it with

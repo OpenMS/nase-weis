@@ -4,6 +4,7 @@
 # ruff: noqa: F811
 
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -30,14 +31,15 @@ def configure(app):
 
 
 def seed_inputs(app):
+    """Two acquisitions of the user's own, in place before Describe experiment."""
     app.run(timeout=30)
-    next(
-        button for button in app.button if button.label == "Load example dataset"
-    ).click().run(timeout=30)
     folder = Path(app.session_state.workspace) / "naseweis"
-    second = acquisition(folder / "input-files/mzML-files/second.mzML", second=True)
+    files = folder / "input-files/mzML-files"
+    files.mkdir(parents=True, exist_ok=True)
+    first = files / "first.mzML"
+    shutil.copy("example-data/mzML/NME1.mzML", first)
+    second = acquisition(files / "second.mzML", second=True)
     configure(app)
-    first = folder / "input-files/mzML-files/NME1.mzML"
     return folder, [str(first), str(second)]
 
 
@@ -60,9 +62,8 @@ def test_start_without_selected_acquisitions_keeps_guidance_visible_and_creates_
 def test_full_configure_selection_deselection_and_clear_keep_lfq_off(app, topp_schemas):
     folder, paths = seed_inputs(app)
     key = "naseweis-param-mzML-files"
-    assert app.multiselect(key=key).value == [paths[0]]
-    assert app.checkbox(key="naseweis-param-enable-lfq").value is False
-    app.multiselect(key=key).set_value(paths).run(timeout=30)
+    assert app.multiselect(key=key).value == paths
+    assert app.button_group(key="naseweis-param-enable-lfq").value is False
     assert not app.exception
     design = next(
         element.value
@@ -81,7 +82,7 @@ def test_full_configure_selection_deselection_and_clear_keep_lfq_off(app, topp_s
     assert json.loads((folder / "params.json").read_text())["mzML-files"] == []
     app.toggle(key="advanced").set_value(True).run(timeout=30)
     assert not app.exception
-    assert app.checkbox(key="naseweis-param-enable-lfq").value is False
+    assert app.button_group(key="naseweis-param-enable-lfq").value is False
     assert not any(
         button.key == "naseweis-rna-comparison-preset" for button in app.button
     )
@@ -101,7 +102,7 @@ def test_configure_and_methods_work_after_experiment_design_snapshot(app, topp_s
     app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert app.multiselect(key="naseweis-param-mzML-files").value == paths
-    assert app.checkbox(key="naseweis-param-enable-lfq").value is False
+    assert app.button_group(key="naseweis-param-enable-lfq").value is False
     assert any(button.label == "📑 Methods" for button in app.get("download_button"))
     assert json.loads(params_file.read_text())["_sample_design"] == params["_sample_design"]
 
@@ -111,8 +112,8 @@ def test_explicit_fitted_preset_persists_and_hiding_controls_does_not_enable_lfq
 ):
     folder, paths = seed_inputs(app)
     app.multiselect(key="naseweis-param-mzML-files").set_value(paths).run(timeout=30)
-    assert app.checkbox(key="naseweis-param-enable-lfq").value is False
-    app.checkbox(key="naseweis-param-enable-lfq").check().run(timeout=30)
+    assert app.button_group(key="naseweis-param-enable-lfq").value is False
+    app.button_group(key="naseweis-param-enable-lfq").set_value([True]).run(timeout=30)
     app.selectbox(key="naseweis-param-lfq-normalization").set_value("none").run(
         timeout=30
     )
@@ -142,12 +143,12 @@ def test_explicit_fitted_preset_persists_and_hiding_controls_does_not_enable_lfq
         == saved["FeatureFinderMetaboIdent"]
     )
     assert saved["FeatureFinderMetaboIdent"]["EMGScoring:init_mom"] is False
-    app.checkbox(key="naseweis-param-enable-lfq").uncheck().run(timeout=30)
+    app.button_group(key="naseweis-param-enable-lfq").set_value([False]).run(timeout=30)
     app.toggle(key="advanced").set_value(False).run(timeout=30)
     app.switch_page("content/quickstart.py").run(timeout=30)
     configure(app)
     assert not app.exception
-    assert app.checkbox(key="naseweis-param-enable-lfq").value is False
+    assert app.button_group(key="naseweis-param-enable-lfq").value is False
     saved = json.loads((folder / "params.json").read_text())
     assert saved["enable-lfq"] is False
     assert saved["lfq-measure"] == "model_area"

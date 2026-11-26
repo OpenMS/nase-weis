@@ -6,18 +6,30 @@ from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
+from streamlit.testing.v1 import element_tree
 
 # Import UI dependencies before tests that temporarily mock Streamlit at collection.
 from src.common.common import page_setup  # noqa: F401
 
 
+def _indices(self):
+    # A single-select segmented control holds one value, not a list; AppTest
+    # iterates it when the page reruns after another widget changed.
+    value = self.value
+    values = [] if value is None else value if isinstance(value, list) else [value]
+    return [self.options.index(self.format_func(v)) for v in values]
+
+
 @pytest.fixture
 def app(tmp_path, monkeypatch):
+    monkeypatch.setattr(element_tree.ButtonGroup, "indices", property(_indices))
     # The runtime image sets this variable; always isolate each test even there.
     monkeypatch.setenv("LOCAL_WORKSPACES_DIR", str(tmp_path))
     test = AppTest.from_file("app.py")
     settings = json.loads(Path("settings.json").read_text())
     settings.update(workspaces_dir=str(tmp_path), test=False)
+    # Most tests start from an empty workspace; test_demo_* seed the examples.
+    settings["demo_workspaces"] = {k: v for k, v in settings["demo_workspaces"].items() if k != "new_workspace"}
     test.session_state.settings = settings
     return test
 
@@ -66,13 +78,13 @@ def test_launch(app, page):
     assert not app.exception
 
 
-def test_load_example_and_configure(app):
+def test_example_is_preloaded_on_describe_experiment(app):
     app.run(timeout=30)
-    next(
-        button for button in app.button if button.label == "Load example dataset"
-    ).click().run(timeout=30)
+    assert not any(button.label == "Load example dataset" for button in app.button)
+    app.switch_page("content/naseweis.py").run(timeout=30)
     assert not app.exception
     assert app.title[0].value == "Describe experiment"
+    assert not any(button.label == "Load example dataset" for button in app.button)
     workspace = Path(app.session_state.workspace)
     params = json.loads((workspace / "naseweis/params.json").read_text())
     assert [Path(path).name for path in params["mzML-files"]] == ["NME1.mzML"]
@@ -141,10 +153,6 @@ def _downloads(app):
 
 def test_configuration_survives_page_changes(app):
     app.run(timeout=30)
-    next(
-        button for button in app.button if button.label == "Load example dataset"
-    ).click().run(timeout=30)
-    # Follow the programmatic page switch explicitly in AppTest before interacting.
     app.switch_page("content/naseweis.py").run()
     app.number_input(key="naseweis-param-FDR_cutoff").set_value(0.01).run()
     # AppTest returns a fragment-only tree after a fragment widget changes.
@@ -263,19 +271,22 @@ def test_first_visit_loads_settings_without_touching_personal_workspaces(
     assert Path(fresh.session_state.workspace) == tmp_path / "default"
 
 
-def test_describe_page_can_load_the_paired_example(app):
+def test_preloaded_example_makes_way_for_the_users_own_files(app):
     app.run(timeout=30)
     app.switch_page("content/naseweis.py").run()
-    next(
-        button for button in app.button if button.label == "Load example dataset"
-    ).click().run()
+    folder = Path(app.session_state.workspace) / "naseweis/input-files/mzML-files"
+    assert (folder / "NME1.mzML").is_file()
+    own = folder / "own.mzML"
+    own.write_text("the user's acquisition")
+    app.switch_page("content/quickstart.py").run()
+    app.switch_page("content/naseweis.py").run()
     assert not app.exception
+    assert not (folder / "NME1.mzML").exists()
+    assert not any("no longer available" in item.value for item in app.warning)
     saved = json.loads(
         (Path(app.session_state.workspace) / "naseweis/params.json").read_text()
     )
-    assert Path(saved["mzML-files"][0] if isinstance(saved["mzML-files"], list) else saved["mzML-files"]).name == "NME1.mzML"
-    assert Path(saved["fasta-files"]).name == "NME1_Target.fasta"
-    assert any("NME1.mzML" in option for box in app.multiselect for option in box.options)
+    assert saved["mzML-files"] == []
 
 
 def test_missing_run_parameters_do_not_break_other_exports(app):
@@ -445,3 +456,31 @@ def test_rnome_controls_require_advanced_and_keep_saved_values(app, topp_schemas
     app.toggle(key="advanced").set_value(True).run(timeout=30)
     assert app.selectbox(key=prefix + "scoring:method").value == "mvh"
     assert not app.exception
+
+
+def _demo(app):
+    settings = app.session_state.settings
+    settings["demo_workspaces"] = json.loads(Path("settings.json").read_text())["demo_workspaces"]
+    app.run(timeout=60)
+    _results_page(app)
+    return app.selectbox(key="runs-naseweis-select-widget")
+
+
+def test_demo_workspace_explores_the_quantified_example_run(app):
+    runs = _demo(app)
+    assert len(runs.options) == 2
+    assert runs.options[0].startswith("Label-free quantification")
+    assert any(m.value == "**Condition comparison**" for m in app.markdown)
+    samples = next(box for box in app.selectbox if box.label == "Acquisition details")
+    assert len(samples.options) == 2 and all("finished" in o for o in samples.options)
+
+
+def test_demo_workspace_explores_the_identification_only_example_run(app):
+    runs = _demo(app)
+    assert runs.options[1].startswith("Identification only")
+    runs.set_value("20261126-072320").run(timeout=60)
+    assert app.selectbox(key="runs-naseweis-select-widget").value == "20261126-072320"
+    assert not app.exception
+    assert not app.error
+    assert not any(m.value == "**Condition comparison**" for m in app.markdown)
+    assert any("NME1" in str(box.options) for box in app.selectbox if "accession" in box.label)

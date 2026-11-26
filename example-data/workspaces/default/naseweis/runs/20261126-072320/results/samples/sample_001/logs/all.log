@@ -1,0 +1,78 @@
+Starting sample workflow.
+
+Generating RNA decoys...
+
+Running command:
+DecoyDatabase -in example-data/fasta/NME1_Target.fasta -out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta -type RNA -method shuffle -decoy_string DECOY_ -decoy_string_position prefix -threads 3
+Waiting for command to finish...
+
+STDERR: Warning: Only one FASTA input file was provided, which might not contain contaminants. You probably want to have them! Just add the contaminant file to the input file list 'in'.
+
+DecoyDatabase took 0.01 s (wall), 0.01 s (CPU), 0.00 s (system), 0.01 s (user); Peak Memory Usage: 179 MB.
+
+Process finished:
+DecoyDatabase -in example-data/fasta/NME1_Target.fasta -out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta -type RNA -method shuffle -decoy_string DECOY_ -decoy_string_position prefix -threads 3
+Total time to run command: 0.07 seconds
+
+Searching RNA oligonucleotides...
+
+Running command:
+NucleicAcidSearchEngine -in example-data/mzML/NME1.mzML -database example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta -out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/mztab_results/search.mzTab -id_out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/idxml_results/search.idXML -oligo:enzyme RNase_T1 -fdr:decoy_pattern DECOY_ -fdr:remove_decoys -fdr:cutoff 0.05 -threads 3
+Waiting for command to finish...
+
+Progress of 'loading mzML':
+
+
+
+-- done [took 0.44 s (CPU), 0.29 s (Wall)] --
+
+Progress of 'loading database from FASTA file...':
+
+
+
+-- done [took 0.00 s (CPU), 0.00 s (Wall)] --
+
+Performing in-silico digestion...
+
+Progress of 'filtering spectra...':
+
+STDERR: Warning: no charge state information available for 332 out of 2116 spectra.
+
+Spectra without charge information will be skipped (see parameter 'precursor:include_unknown_charge')
+
+
+
+-- done [took 0.12 s (CPU), 0.06 s (Wall)] --
+
+Progress of 'scoring oligonucleotide models against spectra...':
+
+
+
+-- done [took 0.02 s (CPU), 0.02 s (Wall)] --
+
+Undigested nucleic acids: 2
+
+Oligonucleotides: 164
+
+Search hits (spectrum matches): 410
+
+Progress of 'post-processing search hits...':
+
+
+
+-- done [took 0.02 s (CPU), 0.00 s (Wall)] --
+
+Identified spectra: 346
+
+Performing FDR calculations...
+
+Search hits after FDR filtering: 163
+
+Identified spectra after FDR filtering: 163
+
+NucleicAcidSearchEngine took 0.52 s (wall), 0.87 s (CPU), 0.29 s (system), 0.58 s (user); Peak Memory Usage: 179 MB.
+
+Process finished:
+NucleicAcidSearchEngine -in example-data/mzML/NME1.mzML -database example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta -out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/mztab_results/search.mzTab -id_out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/idxml_results/search.idXML -oligo:enzyme RNase_T1 -fdr:decoy_pattern DECOY_ -fdr:remove_decoys -fdr:cutoff 0.05 -threads 3
+Total time to run command: 0.56 seconds
+

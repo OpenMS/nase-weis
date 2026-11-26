@@ -1,0 +1,124 @@
+{
+    "fasta-files": "example-data/fasta/NME1_Target.fasta",
+    "max_threads": 2,
+    "mzML-files": "example-data/mzML/NME1_simulated_replicate.mzML",
+    "enable-lfq": true,
+    "_sample_design": [
+        {
+            "file": "example-data/mzML/NME1_simulated_replicate.mzML",
+            "condition": "simulated",
+            "replicate": 1,
+            "fraction": 1
+        }
+    ],
+    "FeatureFinderMetaboIdent": {
+        "extract:mz_window": 50.0,
+        "extract:rt_window": 240.0,
+        "extract:n_isotopes": 2,
+        "extract:isotope_pmin": 0.05,
+        "detect:peak_width": 0.0,
+        "detect:min_peak_width": 0.2,
+        "detect:signal_to_noise": 0.8,
+        "model:type": "none",
+        "model:add_zeros": 0.2,
+        "model:unweighted_fit": false,
+        "model:no_imputation": false,
+        "model:each_trace": false,
+        "model:check:min_area": 1.0,
+        "model:check:boundaries": 0.5,
+        "model:check:width": 10.0,
+        "model:check:asymmetry": 10.0,
+        "EMGScoring:max_iteration": 100,
+        "EMGScoring:init_mom": "false"
+    },
+    "_defaults": {
+        "FeatureFinderMetaboIdent": {},
+        "TextExporter": {
+            "no_ids": true,
+            "feature:add_metavalues": 0,
+            "feature:minimal": false,
+            "out_type": "tsv",
+            "quoting": "none",
+            "replacement": "_"
+        }
+    },
+    "_flag_params": {
+        "FeatureFinderMetaboIdent": [
+            "force",
+            "model:each_trace",
+            "model:no_imputation",
+            "model:unweighted_fit",
+            "no_progress",
+            "test"
+        ],
+        "TextExporter": [
+            "consensus:add_metavalues",
+            "consensus:sort_by_maps",
+            "consensus:sort_by_size",
+            "feature:minimal",
+            "force",
+            "id:add_usi",
+            "id:first_dim_rt",
+            "id:peptides_only",
+            "id:protein_groups",
+            "id:proteins_only",
+            "no_ids",
+            "no_progress",
+            "test"
+        ],
+        "NucleicAcidSearchEngine": [
+            "decharge_ms2",
+            "fdr:remove_decoys",
+            "force",
+            "modifications:resolve_ambiguities",
+            "no_progress",
+            "precursor:correct_with_flash",
+            "precursor:include_unknown_charge",
+            "precursor:use_adducts",
+            "precursor:use_avg_mass",
+            "preprocessing:filter_nlargest",
+            "preprocessing:filter_window_mower",
+            "preprocessing:legacy:sum_intensities",
+            "preprocessing:remove_precursor_peak",
+            "report:precursor_percentage",
+            "scoring:use_mass_accuracy",
+            "test"
+        ],
+        "DecoyDatabase": [
+            "force",
+            "no_progress",
+            "only_decoy",
+            "test"
+        ]
+    },
+    "TextExporter": {
+        "no_ids": true,
+        "feature:add_metavalues": 0,
+        "feature:minimal": false,
+        "out_type": "tsv",
+        "quoting": "none",
+        "replacement": "_"
+    },
+    "NucleicAcidSearchEngine": {
+        "oligo:enzyme": "RNase_T1",
+        "fdr:decoy_pattern": "DECOY_",
+        "fdr:remove_decoys": true,
+        "fdr:cutoff": 0.05
+    },
+    "DecoyDatabase": {
+        "type": "RNA",
+        "method": "shuffle",
+        "decoy_string": "DECOY_",
+        "decoy_string_position": "prefix"
+    },
+    "_acquisition_fingerprint": {
+        "path": "example-data/mzML/NME1_simulated_replicate.mzML",
+        "size": 18360165,
+        "mtime_ns": 1795677786063686728,
+        "ctime_ns": 1795677786063686728,
+        "inode": 770351,
+        "device": 65024,
+        "sha256": "061788c8fa80f98b1a822e270738acd219b1b785be05edf8820d4657b85ec780"
+    },
+    "_database_used": "example-data/workspaces/default/naseweis/runs/20261126-072337/results/samples/sample_001/results/database/target-decoy.fasta"
+}

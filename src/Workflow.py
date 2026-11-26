@@ -9,6 +9,8 @@ import streamlit as st
 
 from src.naseweis_experiment import run_experiment, sample_results, sample_snapshot
 from src.naseweis_experiment_ui import (
+    EXAMPLE_FASTA,
+    EXAMPLE_MZML,
     configure_comparison,
     configure_sample_design,
     render_experiment_results,
@@ -162,34 +164,35 @@ class Workflow(WorkflowManager):
         self.params = params
         super()._new_run()
 
-    def load_example_data(self) -> None:
-        """Copy and select the paired NME1 dataset without replacing user files."""
-        params = self.parameter_manager.read_parameters_strict()
-        for key, folder, filename in [
-            ("mzML-files", "mzML", "NME1.mzML"),
-            ("fasta-files", "fasta", "NME1_Target.fasta"),
+    def preload_examples(self) -> None:
+        """Put the NME1 example in place and select it until the user chooses.
+
+        The example files are copied while an input has no files of its own and
+        taken out again once it has (the template's fallback). A selection the
+        user saved, even an empty one, is left alone.
+        """
+        for key, files, multiple in [
+            ("mzML-files", EXAMPLE_MZML, True),
+            ("fasta-files", EXAMPLE_FASTA, False),
         ]:
-            destination = self.workflow_dir / "input-files" / key / filename
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if not destination.exists():
-                shutil.copyfile(Path("example-data", folder, filename), destination)
-            # Listed like Describe experiment lists the folder (relative in a local checkout).
-            params[key] = str(destination)
-        self.parameter_manager.write_parameters(params)
-        self.parameter_manager.clear_parameter_session_state()
+            self.ui._ensure_fallback(key, files)
+            if key in self.params:
+                continue
+            options = self.ui._input_file_options(key)
+            if not options:
+                continue
+            params = self.parameter_manager.read_parameters_strict()
+            params[key] = options if multiple else options[0]
+            self.parameter_manager.write_parameters(params)
+            self.params = params
+            self.ui.params = params
 
     def analysis_section(self) -> None:
         """Your analysis: the acquisitions, the RNA database, whether they are
         quantified, and what a start will do. Drawn in the page, not in a
         fragment, so the step tabs of configure() follow these choices."""
         with self.ui.analysis_box():
-            if st.button(
-                "Load example dataset",
-                icon=":material/science:",
-                help="Copy the NME1 spectra and their RNA database into this workspace and select them.",
-            ):
-                self.load_example_data()
-                st.rerun()
+            self.preload_examples()
             select_acquisitions(self)
             source = self.ui.choice(
                 "database-source",
@@ -214,15 +217,23 @@ class Workflow(WorkflowManager):
                     "fasta-files",
                     name="RNA sequence database",
                     multiple=False,
-                    upload={"file_types": ["fasta", "fa", "faa"]},
+                    upload={"file_types": ["fasta", "fa", "faa"], "fallback": EXAMPLE_FASTA},
                 )
-            self.ui.input_widget(
+            widget = f"{self.parameter_manager.param_prefix}enable-lfq"
+            if widget in st.session_state and st.session_state[widget] not in (False, True):
+                st.session_state[widget] = enabled(st.session_state[widget])
+            self.ui.choice(
                 "enable-lfq",
-                False,
-                "Quantify modified RNAs across the acquisitions (label-free)",
-                "Runs FeatureFinderMetaboIdent and TextExporter after a successful NASE search. Requires MS1 scans and at least two acquisitions.",
-                "checkbox",
-                reactive=True,
+                [False, True],
+                labels={False: "Identification only", True: "Label-free quantification"},
+                default=enabled(self.params.get("enable-lfq", False)),
+                label="Quantification",
+                help="Identification searches each acquisition for modified RNA oligonucleotides.",
+                option_help={
+                    True: "Also compares the modified RNA abundances across the acquisitions "
+                    "(FeatureFinderMetaboIdent and TextExporter after a successful search). "
+                    "Needs MS1 scans and at least two acquisitions.",
+                },
             )
             self.ui.analysis_summary(self.analysis_summary_text())
 
@@ -245,7 +256,7 @@ class Workflow(WorkflowManager):
         database = params.get("digest-files" if cached else "fasta-files")
         count = len(selected)
         if not count:
-            return "Select the MS/MS acquisitions to search, or load the example dataset."
+            return "Select the MS/MS acquisitions to search."
         what = f"Searches {count} acquisition{'s' if count != 1 else ''}"
         if isinstance(database, str) and database:
             what += f" against {Path(database).name}"

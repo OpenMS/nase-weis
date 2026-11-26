@@ -1,0 +1,62 @@
+{
+    "fasta-files": "example-data/fasta/NME1_Target.fasta",
+    "max_threads": 2,
+    "mzML-files": "example-data/mzML/NME1.mzML",
+    "enable-lfq": false,
+    "_sample_design": [
+        {
+            "file": "example-data/mzML/NME1.mzML",
+            "condition": "NME1",
+            "replicate": 1,
+            "fraction": 1
+        }
+    ],
+    "NucleicAcidSearchEngine": {
+        "oligo:enzyme": "RNase_T1",
+        "fdr:decoy_pattern": "DECOY_",
+        "fdr:remove_decoys": true,
+        "fdr:cutoff": 0.05
+    },
+    "DecoyDatabase": {
+        "type": "RNA",
+        "method": "shuffle",
+        "decoy_string": "DECOY_",
+        "decoy_string_position": "prefix"
+    },
+    "_flag_params": {
+        "NucleicAcidSearchEngine": [
+            "decharge_ms2",
+            "fdr:remove_decoys",
+            "force",
+            "modifications:resolve_ambiguities",
+            "no_progress",
+            "precursor:correct_with_flash",
+            "precursor:include_unknown_charge",
+            "precursor:use_adducts",
+            "precursor:use_avg_mass",
+            "preprocessing:filter_nlargest",
+            "preprocessing:filter_window_mower",
+            "preprocessing:legacy:sum_intensities",
+            "preprocessing:remove_precursor_peak",
+            "report:precursor_percentage",
+            "scoring:use_mass_accuracy",
+            "test"
+        ],
+        "DecoyDatabase": [
+            "force",
+            "no_progress",
+            "only_decoy",
+            "test"
+        ]
+    },
+    "_acquisition_fingerprint": {
+        "path": "example-data/mzML/NME1.mzML",
+        "size": 18146239,
+        "mtime_ns": 1795547990138349126,
+        "ctime_ns": 1795547990138349126,
+        "inode": 770428,
+        "device": 65024,
+        "sha256": "141aed27a88d8031c8b21025527624a236c558c24e6e81dfb2b6e1dfc2cd41f6"
+    },
+    "_database_used": "example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta"
+}

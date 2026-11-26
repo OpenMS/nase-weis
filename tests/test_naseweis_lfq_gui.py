@@ -23,10 +23,10 @@ def test_lfq_is_optional_and_tuning_requires_advanced(app, topp_schemas):  # noq
     ]
     assert not any("Quantification" in label for label in labels)
     toggle = "naseweis-param-enable-lfq"
-    assert app.checkbox(key=toggle).value is False
+    assert app.button_group(key=toggle).value is False
     prefix = "naseweis-TOPP-FeatureFinderMetaboIdent:1:"
     assert not any(str(item.key).startswith(prefix) for item in app.number_input)
-    app.checkbox(key=toggle).check().run(timeout=30)
+    app.button_group(key=toggle).set_value([True]).run(timeout=30)
     assert not app.exception
     assert any(tab.label == "**4 · Quantification**" for tab in app.tabs)
     assert not any(str(item.key).startswith(prefix) for item in app.number_input)
@@ -42,13 +42,13 @@ def test_lfq_is_optional_and_tuning_requires_advanced(app, topp_schemas):  # noq
     assert not any(str(item.key).startswith(prefix) for item in app.number_input)
     app.switch_page("content/quickstart.py").run(timeout=30)
     app.switch_page("content/naseweis.py").run(timeout=30)
-    assert app.checkbox(key=toggle).value is True
+    assert app.button_group(key=toggle).value is True
     saved = json.loads((Path(app.session_state.workspace) / "naseweis/params.json").read_text())
     assert saved["enable-lfq"] is True
     assert saved["FeatureFinderMetaboIdent"]["extract:mz_window"] == 25.0
     app.toggle(key="advanced").set_value(True).run(timeout=30)
     assert app.number_input(key=prefix + "extract:mz_window").value == 25.0
-    app.checkbox(key=toggle).uncheck().run(timeout=30)
+    app.button_group(key=toggle).set_value([False]).run(timeout=30)
     assert not any(str(item.key).startswith(prefix) for item in app.number_input)
 
 
