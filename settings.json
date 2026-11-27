@@ -61,8 +61,10 @@
         "online": "auto"
     },
     "preload": [
+        "polars",
         "pandas",
-        "pyopenms"
+        "pyopenms",
+        "openms_insight"
     ],
     "data_import": {
         "enabled": true,
