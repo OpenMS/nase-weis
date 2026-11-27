@@ -13,7 +13,7 @@ class _Streamlit:
     def __init__(self):
         self.shown = []
 
-    def markdown(self, text):
+    def markdown(self, text, **_):
         self.shown.append(("markdown", text))
 
     def info(self, text):

@@ -80,7 +80,7 @@ def page(tmp_path, monkeypatch):
     return draw
 
 
-def _names(components, skip=("all_results",)):
+def _names(components, skip=()):
     return [c["name"] for c in components if c["name"] not in skip]
 
 
@@ -140,14 +140,18 @@ def test_experiment_components_without_quantification_explain_themselves(page, n
         assert "no finished comparison" in _texts(test)
 
 
-def test_all_results_of_both_kinds(page):
-    page(LFQ_RUN, ["all_results"])
-    page(_sample(ID_RUN), ["all_results"])
+SECTIONS_ACQUISITION = list(__import__("src.viewer.panels", fromlist=["x"]).SECTIONS_SINGLE)
+SECTIONS_EXPERIMENT = list(__import__("src.viewer.panels", fromlist=["x"]).SECTIONS_EXPERIMENT)
+
+
+def test_result_sections_of_both_kinds(page):
+    page(LFQ_RUN, SECTIONS_EXPERIMENT)
+    page(_sample(ID_RUN), SECTIONS_ACQUISITION)
 
 
 def test_result_sections_are_drawn_once_per_page(page):
-    test = page(_sample(LFQ_RUN), ["all_results", "summary", "matches"])
-    assert "Shown in All results." in _texts(test)
+    test = page(_sample(LFQ_RUN), ["summary", "summary", "matches"])
+    assert "Shown above in this view." in _texts(test)
 
 
 def test_result_sections_are_kept_for_the_first_run(page):
@@ -162,22 +166,18 @@ def test_a_run_that_is_gone(page, dataset):
     assert test.session_state["_panel_available"] == []
 
 
-SECTIONS_ACQUISITION = list(__import__("src.viewer.panels", fromlist=["x"]).SECTIONS_SINGLE)
-SECTIONS_EXPERIMENT = list(__import__("src.viewer.panels", fromlist=["x"]).SECTIONS_EXPERIMENT)
-
-
 @pytest.mark.parametrize("dataset, names", [(_sample(LFQ_RUN), SECTIONS_ACQUISITION),
                                             (LFQ_RUN, SECTIONS_EXPERIMENT)])
 def test_every_result_section_of_a_second_run_points_to_the_first(page, dataset, names):
-    test = page(dataset, ["all_results"] + names, index=1)
-    assert _texts(test).count("shown for the first run") == len(names) + 1
+    test = page(dataset, names, index=1)
+    assert _texts(test).count("shown for the first run") == len(names)
 
 
 @pytest.mark.parametrize("dataset, names", [(_sample(LFQ_RUN), SECTIONS_ACQUISITION),
                                             (LFQ_RUN, SECTIONS_EXPERIMENT)])
-def test_every_result_section_is_shown_once_beside_all_results(page, dataset, names):
-    test = page(dataset, ["all_results"] + names)
-    assert _texts(test).count("Shown in All results.") == len(names)
+def test_every_result_section_is_shown_once_per_view(page, dataset, names):
+    test = page(dataset, names + names)
+    assert _texts(test).count("Shown above in this view.") == len(names)
 
 
 def test_spectra_components_say_when_the_acquisition_is_missing(page):

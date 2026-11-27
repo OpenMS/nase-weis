@@ -2,7 +2,7 @@
 
 Starts the app on a fresh workspace seeded from the demo and runs
 tests/browser/linked_panels.js, which clicks through the Abundances, Spectra
-and Identification quality views and checks that each panel follows a pick.
+and Search quality views and checks that each panel follows a pick.
 Skipped where Node or Playwright is not installed.
 """
 import os

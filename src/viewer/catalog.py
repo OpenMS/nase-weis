@@ -2,11 +2,9 @@
 
 Component names are stored in saved views: never rename one.
 
-The first view of each kind, **All results**, is one dashboard: every result
-section NASE-weis has shown and the OpenMS-Insight components on one page, so
-nothing a run showed before is lost. One view per former tab (Summary, Matches,
-Spectra, Coverage, Quantification, Export; for an experiment Summary, Coverage,
-Quantification, Samples) shows one part of it.
+One view per former result tab (Summary, Matches, Spectra, Coverage,
+Quantification, Export; for an experiment Summary, Coverage, Quantification,
+Samples), so every result section NASE-weis has shown stays in a view.
 """
 from __future__ import annotations
 
@@ -15,7 +13,7 @@ from pathlib import Path
 import streamlit as st
 
 from src.layout_manager import experiment_state
-from src.viewer import panels, sources
+from src.viewer import panels, sources, teaching
 from src.workflow.guide import FEATURES, IDENTIFICATION, MS_DATA, QUANTIFICATION
 
 RESULTS = "Results"
@@ -30,11 +28,11 @@ ANALYSES = {
 }
 
 ACQUISITION_COMPONENTS = [
-    {"name": "all_results", "label": "All results", "group": RESULTS},
     {"name": "summary", "label": "Summary", "group": RESULTS},
     {"name": "matches", "label": "Matches", "group": RESULTS},
     {"name": "spectrum_viewer", "label": "Spectrum viewer", "group": RESULTS},
     {"name": "coverage", "label": "Sequence coverage", "group": RESULTS},
+    {"name": "rna_table", "label": "Identified RNAs", "group": IDENTIFICATION},
     {"name": "quantification", "label": "MS1 quantification", "group": RESULTS, "needs": QUANT},
     {"name": "downloads", "label": "Downloads", "group": RESULTS},
     {"name": "file_scans", "label": "Scans", "group": MS_DATA},
@@ -47,9 +45,9 @@ ACQUISITION_COMPONENTS = [
 ]
 
 EXPERIMENT_COMPONENTS = [
-    {"name": "all_results", "label": "All results", "group": RESULTS},
     {"name": "experiment_summary", "label": "Experiment summary", "group": RESULTS},
     {"name": "experiment_coverage", "label": "Sequence coverage", "group": RESULTS},
+    {"name": "rna_table", "label": "Identified RNAs", "group": IDENTIFICATION},
     {"name": "experiment_quantification", "label": "Condition comparison", "group": RESULTS,
      "needs": QUANT},
     {"name": "sample_details", "label": "Sample details", "group": RESULTS},
@@ -60,79 +58,35 @@ EXPERIMENT_COMPONENTS = [
      "needs": QUANT},
 ]
 
-# "All results" is one dashboard: every result of the run as components on
-# one page. Components that need quantification are added by ``rows`` when the
-# shown run has it, so the view is never locked for a run without it.
-ACQUISITION_ALL = [
-    ["summary"],
-    ["match_table", "file_spectrum"],
-    ["spectrum_viewer"],
-    ["coverage"],
-    ["file_chromatogram", "file_peak_map"],
-    ["matches"],
-    ["downloads"],
-]
-ACQUISITION_QUANT_ROWS = [["quantification"]]
-EXPERIMENT_ALL = [
-    ["experiment_summary"],
-    ["experiment_coverage"],
-    ["sample_details"],
-]
-EXPERIMENT_QUANT_ROWS = [["experiment_quantification"], ["abundance_table", "abundance_profile"],
-                         ["zscore_heatmap"]]
-# A view saved before the dashboard named this single component
-ALL = [["all_results"]]
-
 ACQUISITION_PRESETS = [
-    {"name": "all", "label": "All results", "layout": ACQUISITION_ALL,
-     "help": "Every result of the acquisition on one page: summary, matches with the "
-             "picked spectrum, its annotated fragments, coverage, MS data, quantification "
-             "and downloads."},
     {"name": "summary", "label": "Summary",
-     "layout": [["summary"], ["score_distribution", "precursor_error"]],
-     "help": "How many spectra, oligonucleotides and RNAs were found, and how their "
-             "scores and precursor mass errors are distributed."},
+     "layout": [["summary"], ["score_distribution", "precursor_error"]]},
     {"name": "matches", "label": "Matches",
-     "layout": [["match_table", "file_spectrum"], ["spectrum_viewer"], ["matches"]],
-     "help": "The spectrum matches; a click shows the matched spectrum and its annotated "
-             "fragments."},
+     "layout": [["match_table", "file_spectrum"], ["spectrum_viewer"], ["matches"]]},
     {"name": "spectra", "label": "Spectra",
      "layout": [["file_scans", "file_spectrum"], ["file_chromatogram", "file_peak_map"],
-                ["match_table"]],
-     "help": "The acquisition's scans, the picked spectrum, its chromatograms and peak map, "
-             "with the identified spectra linked to them."},
-    {"name": "coverage", "label": "Coverage", "layout": [["coverage"]],
-     "help": "Which residues of each RNA the identified oligonucleotides cover."},
-    {"name": "quantification", "label": "Quantification", "layout": [["quantification"]],
-     "help": "MS1 feature intensities of the identified oligonucleotides and their "
-             "extracted ion chromatograms."},
-    {"name": "export", "label": "Export", "layout": [["downloads"]],
-     "help": "The result files, the search database, parameters and run log."},
-    {"name": "identification", "label": "Identification quality",
-     "layout": [["summary"], ["score_distribution", "precursor_error"], ["match_table"]],
-     "help": "How many oligonucleotides were found, how their scores and precursor mass "
-             "errors are distributed, and the identified spectra."},
+                ["match_table"]]},
+    {"name": "coverage", "label": "Identification", "layout": [["rna_table"], ["coverage"]]},
+    {"name": "quantification", "label": "Quantification", "layout": [["quantification"]]},
+    {"name": "export", "label": "Export", "layout": [["downloads"]]},
+    {"name": "identification", "label": "Search quality",
+     "layout": [["summary"], ["score_distribution", "precursor_error"], ["match_table"]]},
 ]
 
 EXPERIMENT_PRESETS = [
-    {"name": "all", "label": "All results", "layout": EXPERIMENT_ALL,
-     "help": "Every result of the experiment on one page: summary, coverage, the "
-             "condition comparison with the abundances, and the details of each sample."},
-    {"name": "summary", "label": "Summary", "layout": [["experiment_summary"]],
-     "help": "The experiment's acquisitions, their conditions and status."},
-    {"name": "coverage", "label": "Coverage", "layout": [["experiment_coverage"]],
-     "help": "Which residues of each RNA the oligonucleotides cover, per condition."},
+    {"name": "summary", "label": "Summary", "layout": [["experiment_summary"]]},
+    {"name": "coverage", "label": "Identification",
+     "layout": [["rna_table"], ["experiment_coverage"]]},
     {"name": "quantification", "label": "Quantification",
-     "layout": [["experiment_quantification"], ["abundance_table", "abundance_profile"]],
-     "help": "The condition comparison, the abundance table and the picked "
-             "oligonucleotide by condition."},
+     "layout": [["experiment_quantification"], ["abundance_table", "abundance_profile"]]},
     {"name": "abundances", "label": "Abundances",
-     "layout": [["abundance_table", "abundance_profile"], ["zscore_heatmap"]],
-     "help": "The abundance of each oligonucleotide in every sample, the picked one by "
-             "condition, and the most variable ones as z-scores."},
-    {"name": "samples", "label": "Samples", "layout": [["sample_details"]],
-     "help": "The results of each acquisition of the experiment."},
+     "layout": [["abundance_table", "abundance_profile"], ["zscore_heatmap"]]},
+    {"name": "samples", "label": "Samples", "layout": [["sample_details"]]},
 ]
+
+for _kind, _presets in (("", ACQUISITION_PRESETS), ("experiment", EXPERIMENT_PRESETS)):
+    for _preset in _presets:
+        _preset["help"] = teaching.view(_preset["name"], _kind)
 
 ACQUISITION_RENDERERS = {c["name"]: getattr(panels, c["name"]) for c in ACQUISITION_COMPONENTS}
 EXPERIMENT_RENDERERS = {c["name"]: getattr(panels, c["name"]) for c in EXPERIMENT_COMPONENTS}
@@ -207,46 +161,28 @@ def views_path(wf, kind: str) -> Path:
     return Path(wf.workflow_dir).parent / "layouts" / f"naseweis-{kind}.json"
 
 
-def _dashboard(kind: str):
-    if kind == sources.EXPERIMENT:
-        return EXPERIMENT_ALL, EXPERIMENT_QUANT_ROWS, 2
-    return ACQUISITION_ALL, ACQUISITION_QUANT_ROWS, len(ACQUISITION_ALL) - 1
-
-
-def rows(wf, kind: str):
-    """The ``rows`` hook: the dashboard gets the quantification of a run that has
-    it, and the component ``all_results`` of a view saved before the dashboard
-    becomes the dashboard's rows."""
-    base, quant, at = _dashboard(kind)
-    find = available(wf)
-
-    def _ready(ctx) -> bool:
+def comparison_button(wf):
+    """**Edit comparison** beside the selector of an experiment with a finished comparison."""
+    def draw(ctx) -> None:
         src = sources.resolve(wf, ctx.dataset)
-        return src is not None and _experiment_quant(src)[1]
+        if src is None or src.sample is not None:
+            return
+        from src.naseweis_experiment_ui import (
+            comparison_ready, comparison_steps, experiment_context, reset_comparison_choices)
+        from src.layout_manager.comparison import edit_comparison
 
-    def dashboard(ctx) -> list[list[str]]:
-        shown = [list(row) for row in base]
-        if QUANT in find(ctx):
-            # An incomplete cohort keeps only the section's note on why.
-            added = quant if kind != sources.EXPERIMENT or _ready(ctx) else quant[:1]
-            shown[at:at] = [list(row) for row in added]
-        elif kind != sources.EXPERIMENT:
-            # A run searched without quantification keeps the section, drawn as
-            # the note that offers to add it, so the dashboard says why it is missing.
-            shown[at:at] = [list(quant[0])]
-        return shown
-
-    def hook(ctx, shown, saved):
-        if [list(row) for row in shown] == base:
-            return dashboard(ctx)
-        out = []
-        for row in shown:
-            if "all_results" in row:
-                out.extend(dashboard(ctx))
-                rest = [name for name in row if name != "all_results"]
-                if rest:
-                    out.append(rest)
-            else:
-                out.append(list(row))
-        return out
-    return hook
+        try:
+            context = experiment_context(src.wf)
+        except (OSError, ValueError):
+            return
+        if context is None or not comparison_ready(context):
+            return
+        prefix = context["prefix"]
+        edit_comparison(
+            f"{prefix}-comparison", comparison_steps(context),
+            intro="Pick the two conditions to compare and how abundances are normalized. "
+                  "Every quantification component of this experiment follows.",
+            on_reset=lambda: reset_comparison_choices(prefix),
+            button_help="Conditions and normalization of the comparison shown below.",
+        )
+    return draw

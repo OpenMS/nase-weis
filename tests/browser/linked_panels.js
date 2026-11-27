@@ -52,7 +52,10 @@ const url = process.argv[2] || "http://localhost:8501";
   await abundanceRows.nth(1).click(); await settle(3000);
   assert.notEqual(await text(insight()[1]), profile, "abundance profile follows the picked oligonucleotide");
   await noException("Abundances");
-  await view("All results");
+  await view("Identification");
+  assert.ok(insight().length >= 1, "Identification shows the table of identified RNAs");
+  await noException("Identification");
+  await view("Summary");
 
   // Single acquisition: Spectra. A scan redraws the spectrum, a match picks its scan
   await page.getByText("Single acquisition", { exact: true }).click(); await settle(3000);
@@ -111,9 +114,9 @@ const url = process.argv[2] || "http://localhost:8501";
   await noException("Spectra");
 
   // The pick stays when the view changes
-  await view("Identification quality");
-  assert.equal(insight().length, 3, "Identification quality shows scores, errors and matches");
-  await noException("Identification quality");
+  await view("Search quality");
+  assert.equal(insight().length, 3, "Search quality shows scores, errors and matches");
+  await noException("Search quality");
   await view("Spectra");
   const back = await drawn();
   assert.ok(await same(back, afterMatch), `the picked spectrum stays across views (${await differing(back, afterMatch)})`);

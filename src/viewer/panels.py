@@ -7,8 +7,7 @@ visualization library (``src/viz``), linked through the experiment's state so
 a picked spectrum or oligonucleotide stays picked across components.
 
 A result section uses Streamlit widget keys of its run, so it is drawn once per
-page: in the first experiment, and not again when "All results" already holds
-it (``claim``).
+page: in the first experiment, and once when a view holds it twice (``claim``).
 """
 from __future__ import annotations
 
@@ -21,13 +20,13 @@ import polars as pl
 import streamlit as st
 
 from src.naseweis_viewers import viewer_key
-from src.viewer import run_files
+from src.viewer import run_files, teaching
 from src.viewer.sources import Source
 
-SPECTRUM, PSM, OLIGO = "scan", "psm", "oligo"
+SPECTRUM, PSM, OLIGO, RNA = "scan", "psm", "oligo", "rna"
 _drawn: set[str] = set()
 
-# The result sections the "All results" component holds
+# The result sections of a run and of an experiment
 SECTIONS_SINGLE = ("summary", "matches", "spectrum_viewer", "coverage", "quantification", "downloads")
 SECTIONS_EXPERIMENT = ("experiment_summary", "experiment_coverage", "experiment_quantification", "sample_details")
 
@@ -43,7 +42,7 @@ def claim(ctx, *names: str) -> bool:
         st.info("Result sections are shown for the first run. Pick this run above to see them.")
         return False
     if _drawn.intersection(names):
-        st.caption("Shown in All results.")
+        st.caption("Shown above in this view.")
         return False
     _drawn.update(names)
     return True
@@ -71,26 +70,9 @@ def _loaded(src: Source):
 
 # --- result sections -------------------------------------------------------
 
-def all_results(ctx, src: Source) -> None:
-    """Every result section, in tabs, as Explore results always showed them."""
-    from src.naseweis_experiment_ui import experiment_context
-
-    try:
-        experiment = src.sample is None and experiment_context(src.wf) is not None
-    except (OSError, ValueError):
-        experiment = src.sample is None
-    names = SECTIONS_EXPERIMENT if experiment else SECTIONS_SINGLE
-    if not claim(ctx, *names):
-        return
-    if src.sample is None:
-        src.wf.results()
-    else:
-        src.wf._single_results()
-
-
-TITLES = {"matches": "Matches", "spectrum_viewer": "Spectra", "coverage": "Sequence coverage",
+TITLES = {"matches": "Matches", "spectrum_viewer": "Spectra", "coverage": "Sequence coverage map",
           "quantification": "Quantification", "downloads": "Export",
-          "experiment_summary": "Experiment summary", "experiment_coverage": "Sequence coverage",
+          "experiment_summary": "Experiment summary", "experiment_coverage": "Sequence coverage map",
           "experiment_quantification": "Quantification", "sample_details": "Sample details"}
 
 
@@ -101,8 +83,13 @@ def _titled(section: str, draw) -> None:
         draw()
         return
     with st.container(border=True):
-        st.subheader(title)
+        st.subheader(title, help=teaching.component(section))
         draw()
+
+
+def _heading(title: str, name: str) -> None:
+    """The title an Insight component would draw, for a component that shows a note instead."""
+    st.markdown(f"**{title}**", help=teaching.component(name))
 
 
 def _single(section: str):
@@ -117,7 +104,89 @@ def _single(section: str):
 
 summary = _single("summary")
 matches = _single("matches")
-coverage = _single("coverage")
+
+
+# --- identification: the RNA table and the coverage map it picks -----------
+
+def _rna_groups(src: Source):
+    """``[(group, mzTab tables)]`` of the shown run: the acquisition, or every
+    acquisition of an experiment; None when there are none to read."""
+    cached = getattr(src, "_rna_groups", None)
+    if cached is not None:
+        return cached
+    if src.sample is None and _is_experiment(src):
+        from src.naseweis_result_plots_ui import experiment_coverage_tables
+
+        context = _context(src)
+        groups = experiment_coverage_tables(context["root"], context["samples"]) if context else []
+    else:
+        loaded = _loaded(src)
+        groups = [("This acquisition", loaded["tables"])] if loaded is not None else []
+    src._rna_groups = groups
+    return groups
+
+
+def _is_experiment(src: Source) -> bool:
+    from src.viewer import sources
+
+    return sources.kind_of(src.wf, src.dataset) == sources.EXPERIMENT
+
+
+def _rnas(src: Source) -> pd.DataFrame:
+    cached = getattr(src, "_rnas", None)
+    if cached is None:
+        from src.naseweis_result_plots_ui import rna_summary
+
+        cached = rna_summary(_rna_groups(src))
+        src._rnas = cached
+    return cached
+
+
+def picked_rna(ctx, src: Source) -> str | None:
+    """The accession of the RNA picked in the RNA table, None while none is."""
+    picked = ctx.state.get_selection(RNA)
+    rows = _rnas(src)
+    if picked is None or rows.empty:
+        return None
+    match = rows.loc[rows["rna_idx"] == int(picked), "accession"]
+    return str(match.iloc[0]) if len(match) else None
+
+
+def rna_table(ctx, src: Source) -> None:
+    """The identified RNAs as an Insight table; a click shows that RNA's coverage."""
+    from openms_insight import Table
+
+    from src.viz.plumbing import fingerprint
+
+    rows = _rnas(src)
+    if rows.empty:
+        _heading("Identified RNAs", "rna_table")
+        st.info("No identified oligonucleotide maps to an RNA of the database.")
+        return
+    frame = pl.from_pandas(rows)
+    columns = [
+        {"field": "accession", "title": "RNA"},
+        {"field": "length", "title": "Length", "sorter": "number"},
+        {"field": "oligonucleotides", "title": "Oligonucleotides", "sorter": "number"},
+        {"field": "matches", "title": "Spectrum matches", "sorter": "number"},
+        {"field": "coverage", "title": "Coverage (%)", "sorter": "number"},
+    ]
+    Table(cache_id=f"rnas-{fingerprint(frame)}", cache_path=str(src.cache_dir), data=frame.lazy(),
+          column_definitions=columns, index_field="rna_idx", interactivity={RNA: "rna_idx"},
+          title="Identified RNAs")(state_manager=ctx.state, height=300, key=key(ctx, src, "rnas"),
+                                   help=teaching.component("rna_table"))
+
+
+def coverage(ctx, src: Source) -> None:
+    if not claim(ctx, "coverage"):
+        return
+    loaded = _loaded(src)
+    if loaded is None:
+        return
+    from src.naseweis_result_plots_ui import render_coverage_groups
+
+    _titled("coverage", lambda: render_coverage_groups(
+        [("This acquisition", loaded["tables"])], f"coverage-{src.wf.results_dir}", picked_rna(ctx, src)))
 
 
 def downloads(ctx, src: Source) -> None:
@@ -164,8 +233,28 @@ def _experiment(section: str):
 
 
 experiment_summary = _experiment("experiment_summary")
-experiment_coverage = _experiment("experiment_coverage")
-experiment_quantification = _experiment("experiment_quantification")
+
+
+def experiment_coverage(ctx, src: Source) -> None:
+    if not claim(ctx, "experiment_coverage"):
+        return
+    context = _context(src)
+    if context is not None:
+        from src.naseweis_result_plots_ui import render_experiment_coverage
+
+        _titled("experiment_coverage", lambda: render_experiment_coverage(
+            context["root"], context["samples"], context["prefix"], picked_rna(ctx, src)))
+
+
+def experiment_quantification(ctx, src: Source) -> None:
+    if not claim(ctx, "experiment_quantification"):
+        return
+    context = _context(src)
+    if context is not None:
+        from src.naseweis_experiment_ui import experiment_quantification_section
+
+        _titled("experiment_quantification",
+                lambda: experiment_quantification_section(context, controls=False))
 
 
 def sample_details(ctx, src: Source) -> None:
@@ -180,14 +269,14 @@ def sample_details(ctx, src: Source) -> None:
 
 # --- OpenMS-Insight components: one acquisition ------------------------------
 
-def _spectra(ctx, src: Source, title: str):
+def _spectra(ctx, src: Source, title: str, name: str):
     path = src.mzml()
     if path is None:
-        st.markdown(f"**{title}**")
+        _heading(title, name)
         st.info("The spectra of this acquisition are not available: " + "; ".join(src.notes))
         return None
     if _readable(path) is None:
-        st.markdown(f"**{title}**")
+        _heading(title, name)
         st.error(f"Could not read the spectra of {Path(path).name}; the file may be damaged or not mzML.")
         return None
     return path
@@ -211,13 +300,13 @@ def file_scans(ctx, src: Source) -> None:
     from src.viz.ms_data import scan_table
     from src.viz.plumbing import component
 
-    path = _spectra(ctx, src, "Scans")
+    path = _spectra(ctx, src, "Scans", "file_scans")
     if path is None:
         return
     table = component(Table, src.cache_dir, f"scans_{_version(path)}",
                       lambda: {"data": run_files.tables(path)["scans"].drop("native_id").lazy()},
                       **scan_table.settings(SPECTRUM, clears=(), peaks=True, title="Scans"))
-    table(state_manager=ctx.state, height=376, key=key(ctx, src, "scans"))
+    table(state_manager=ctx.state, height=376, key=key(ctx, src, "scans"), help=teaching.component("file_scans"))
 
 
 def file_spectrum(ctx, src: Source) -> None:
@@ -227,11 +316,11 @@ def file_spectrum(ctx, src: Source) -> None:
     from src.viz.ms_data import spectrum
     from src.viz.plumbing import component, only_accepted
 
-    path = _spectra(ctx, src, "Spectrum")
+    path = _spectra(ctx, src, "Spectrum", "file_spectrum")
     if path is None:
         return
     if ctx.state.get_selection(SPECTRUM) is None:
-        st.markdown("**Spectrum**")
+        _heading("Spectrum", "file_spectrum")
         st.info("Pick a spectrum in the scan table, the matches, the chromatogram or the peak map.")
         return
     settings = spectrum.settings(SPECTRUM, styling=spectrum_styling(), signal_column=None, title="Spectrum")
@@ -239,7 +328,7 @@ def file_spectrum(ctx, src: Source) -> None:
                      lambda: {"data": run_files.spectra(run_files.tables(path)["peaks"]).lazy()},
                      **only_accepted(DeconvolvedSpectrum, **settings),
                      **zoom(DeconvolvedSpectrum, "file_spectrum"))
-    plot(state_manager=ctx.state, height=360, key=key(ctx, src, "spectrum"))
+    plot(state_manager=ctx.state, height=360, key=key(ctx, src, "spectrum"), help=teaching.component("file_spectrum"))
 
 
 def file_chromatogram(ctx, src: Source) -> None:
@@ -248,19 +337,19 @@ def file_chromatogram(ctx, src: Source) -> None:
     from src.viz.ms_data import chromatogram
     from src.viz.plumbing import component, only_accepted
 
-    path = _spectra(ctx, src, "Chromatogram (MS1)")
+    path = _spectra(ctx, src, "Chromatogram (MS1)", "file_chromatogram")
     if path is None:
         return
     data = run_files.tables(path)["chromatogram"]
     if data.is_empty():
-        st.markdown("**Chromatogram (MS1)**")
+        _heading("Chromatogram (MS1)", "file_chromatogram")
         st.info("This acquisition holds no MS1 spectra.")
         return
     settings = chromatogram.settings(["TIC", "Base peak"], level=1, spectrum=SPECTRUM)
     plot = component(SeriesPlot, src.cache_dir, f"chromatogram_{_version(path)}",
                      lambda: {"data": data.lazy()},
                      **only_accepted(SeriesPlot, **settings), **zoom(SeriesPlot, "file_chromatogram"))
-    plot(state_manager=ctx.state, height=320, key=key(ctx, src, "chromatogram"))
+    plot(state_manager=ctx.state, height=320, key=key(ctx, src, "chromatogram"), help=teaching.component("file_chromatogram"))
 
 
 def file_peak_map(ctx, src: Source) -> None:
@@ -269,19 +358,19 @@ def file_peak_map(ctx, src: Source) -> None:
     from src.viz.ms_data import raw_heatmap
     from src.viz.plumbing import component, only_accepted
 
-    path = _spectra(ctx, src, "Peak map (MS1)")
+    path = _spectra(ctx, src, "Peak map (MS1)", "file_peak_map")
     if path is None:
         return
     data = run_files.tables(path)["ms1"]
     if data.is_empty():
-        st.markdown("**Peak map (MS1)**")
+        _heading("Peak map (MS1)", "file_peak_map")
         st.info("This acquisition holds no MS1 spectra.")
         return
     settings = raw_heatmap.settings(title="Peak map (MS1)", spectrum=SPECTRUM,
                                     zoom_identifier=f"file_peak_map_zoom_{viewer_key(src.dataset)}")
     plot = component(Heatmap, src.cache_dir, f"ms1_{_version(path)}", lambda: {"data": data.lazy()},
                      **only_accepted(Heatmap, **settings))
-    plot(state_manager=ctx.state, height=420, key=key(ctx, src, "peak_map"))
+    plot(state_manager=ctx.state, height=420, key=key(ctx, src, "peak_map"), help=teaching.component("file_peak_map"))
 
 
 def psm_frame(tables: dict, matches: pd.DataFrame, scans: pl.DataFrame | None) -> pl.DataFrame:
@@ -337,7 +426,7 @@ def match_table(ctx, src: Source) -> None:
     scans = tables["scans"] if tables is not None else None
     data = psm_frame(loaded["tables"], loaded["matches"], scans)
     if data.is_empty():
-        st.markdown("**Spectrum matches**")
+        _heading("Spectrum matches", "match_table")
         st.info("No matches passed this search's filters.")
         return
     columns = [dict(c, title="Oligonucleotide") if c.get("field") == "sequence" else
@@ -347,7 +436,7 @@ def match_table(ctx, src: Source) -> None:
     table = component(Table, src.cache_dir, f"psms_{stamp}_{path is not None}", lambda: {"data": data.lazy()},
                       **psm_table.settings(ascending=False, file="file", spectrum=SPECTRUM, psm=PSM,
                                            column_definitions=columns, title="Spectrum matches"))
-    table(state_manager=ctx.state, height=376, key=key(ctx, src, "psms"))
+    table(state_manager=ctx.state, height=376, key=key(ctx, src, "psms"), help=teaching.component("match_table"))
 
 
 def _histogram(values, bins: int = 30) -> pd.DataFrame:
@@ -368,7 +457,7 @@ def _series(ctx, src, name, data: pd.DataFrame, settings: dict) -> None:
     SeriesPlot(cache_id=f"{name}-{fingerprint(frame, sorted(settings.items(), key=lambda kv: kv[0]))}",
                cache_path=str(src.cache_dir), data=frame.lazy(), **zoom(SeriesPlot, name),
                **only_accepted(SeriesPlot, **settings))(
-        key=key(ctx, src, name), state_manager=ctx.state, height=320)
+        key=key(ctx, src, name), state_manager=ctx.state, height=320, help=teaching.component(name))
 
 
 def score_distribution(ctx, src: Source) -> None:
@@ -380,7 +469,7 @@ def score_distribution(ctx, src: Source) -> None:
     osm = loaded["tables"].get("OSM", pd.DataFrame())
     data = _histogram(osm.get("search_engine_score[1]", []))
     if data.empty:
-        st.markdown("**Search scores**")
+        _heading("Search scores", "score_distribution")
         st.info("No matches passed this search's filters.")
         return
     data["kind"] = "target"
@@ -397,7 +486,7 @@ def precursor_error(ctx, src: Source) -> None:
         return
     osm = loaded["tables"].get("OSM", pd.DataFrame())
     if osm.empty:
-        st.markdown("**Precursor mass error**")
+        _heading("Precursor mass error", "precursor_error")
         st.info("No matches passed this search's filters.")
         return
     exp = pd.to_numeric(osm.get("exp_mass_to_charge"), errors="coerce")
@@ -408,7 +497,7 @@ def precursor_error(ctx, src: Source) -> None:
         error = error[offset.fillna(0).eq(0)]
     data = _histogram(error)
     if data.empty:
-        st.markdown("**Precursor mass error**")
+        _heading("Precursor mass error", "precursor_error")
         st.info("No precursor errors in this acquisition.")
         return
     st.caption(f"Median {np.nanmedian(error):+.2f} ppm, matches without an isotope offset.")
@@ -433,10 +522,16 @@ def _comparison(src: Source):
     except (OSError, ValueError) as error:
         st.error(f"Could not read this experiment's comparison: {error}")
         return None
+    from src.naseweis_comparison import normalized
+    from src.naseweis_experiment_ui import _conditions, comparison_choices
+
     design = loaded["design"]
     groups = {s: (str(design.loc[s, "condition"]) or "Unassigned") for s in design.index}
     names = {s: str(design.loc[s, "file"]) for s in design.index}
-    return loaded["abundances"], groups, names
+    saved = loaded["metadata"].get("normalization", "none")
+    _, _, picked = comparison_choices(context["prefix"], _conditions(design), saved)
+    abundances = loaded["abundances"] if picked == saved else normalized(loaded["raw"], picked)
+    return abundances, groups, names
 
 
 def _abundance_rows(abundances: pd.DataFrame) -> pd.DataFrame:
@@ -463,7 +558,7 @@ def abundance_table(ctx, src: Source) -> None:
     ]
     Table(cache_id=f"abundances-{fingerprint(frame)}", cache_path=str(src.cache_dir), data=frame.lazy(),
           column_definitions=columns, index_field="oligo_idx", interactivity={OLIGO: "oligo_idx"},
-          title="Abundances")(state_manager=ctx.state, height=376, key=key(ctx, src, "abundances"))
+          title="Abundances")(state_manager=ctx.state, height=376, key=key(ctx, src, "abundances"), help=teaching.component("abundance_table"))
 
 
 def abundance_profile(ctx, src: Source) -> None:
@@ -478,12 +573,13 @@ def abundance_profile(ctx, src: Source) -> None:
     long["group"] = long["sample"].map(groups)
     long["sample"] = long["sample"].map(lambda s: names.get(s, s))
     if ctx.state.get_selection(OLIGO) is None:
-        st.markdown("**Abundance profile**")
+        _heading("Abundance profile", "abundance_profile")
         st.info("Pick an oligonucleotide in the abundance table.")
         return
     show_profile(long, "oligo_idx", OLIGO, "nase-abundance-profile", cache_path=src.cache_dir,
                  key=key(ctx, src, "profile"), state_manager=ctx.state, height=420,
                  table_args={"hover_column": "label"}, title="Abundance profile",
+                 help=teaching.component("abundance_profile"),
                  y_label="Normalized abundance")
 
 
@@ -501,7 +597,8 @@ def zscore_heatmap(ctx, src: Source) -> None:
     shown = show_zscore_heatmap(matrix, "label", "nase-zscore", cache_path=src.cache_dir,
                                 key=key(ctx, src, "zscores"), state_manager=ctx.state, top=50,
                                 groups={names.get(s, s): g for s, g in groups.items()}, height=420,
-                                title="Abundance z-scores", y_label="RNA oligonucleotides")
+                                title="Abundance z-scores", y_label="RNA oligonucleotides",
+                                help=teaching.component("zscore_heatmap"))
     if shown is None:
-        st.markdown("**Abundance z-scores**")
+        _heading("Abundance z-scores", "zscore_heatmap")
         st.info("No oligonucleotide differs between the samples.")

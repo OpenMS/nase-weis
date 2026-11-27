@@ -278,8 +278,82 @@ def _download_frame(label, frame, filename, *, index_label, key=None):
     )
 
 
-def _render_comparison(root, samples, prefix):
-    from src.naseweis_comparison import compare_conditions, load_comparison
+def _conditions(design):
+    return sorted({str(v).strip() for v in design["condition"].dropna() if str(v).strip()})
+
+
+def _choice_keys(prefix):
+    return f"{prefix}-cmp-numerator", f"{prefix}-cmp-denominator", f"{prefix}-cmp-normalization"
+
+
+def comparison_choices(prefix, conditions, saved_normalization):
+    """(numerator, denominator, normalization) picked in Edit comparison, or
+    the defaults: the last condition over the first other one, and the
+    normalization the run was compared with."""
+    num_key, den_key, norm_key = _choice_keys(prefix)
+    numerator = st.session_state.get(num_key)
+    if numerator not in conditions:
+        numerator = conditions[-1] if conditions else None
+    others = [c for c in conditions if c != numerator]
+    denominator = st.session_state.get(den_key)
+    if denominator not in others:
+        denominator = others[0] if others else None
+    normalization = st.session_state.get(norm_key)
+    if normalization not in NORMALIZATIONS:
+        normalization = saved_normalization if saved_normalization in NORMALIZATIONS else "total"
+    return numerator, denominator, normalization
+
+
+def reset_comparison_choices(prefix):
+    for name in _choice_keys(prefix):
+        st.session_state.pop(name, None)
+
+
+def comparison_steps(context):
+    """The steps of Edit comparison for an experiment with a finished comparison."""
+    from src.naseweis_comparison import load_comparison
+
+    prefix = context["prefix"]
+    num_key, den_key, norm_key = _choice_keys(prefix)
+    try:
+        comparison = load_comparison(context["root"])
+    except (OSError, ValueError, KeyError):
+        return []
+    conditions = _conditions(comparison["design"])
+    saved = comparison["metadata"].get("normalization", "none")
+
+    def conditions_step():
+        numerator, denominator, _ = comparison_choices(prefix, conditions, saved)
+        if len(conditions) < 2:
+            st.info("Assign at least two conditions in the experimental design to compare them.")
+            return
+        st.caption("Ratios and log2 fold changes are numerator / denominator.")
+        picked = st.selectbox("Numerator condition", conditions, index=conditions.index(numerator),
+                              key=f"{num_key}-widget")
+        st.session_state[num_key] = picked
+        others = [c for c in conditions if c != picked]
+        if denominator not in others:
+            denominator = others[0]
+        st.session_state[den_key] = st.selectbox(
+            "Denominator condition", others, index=others.index(denominator), key=f"{den_key}-widget")
+
+    def normalization_step():
+        _, _, normalization = comparison_choices(prefix, conditions, saved)
+        st.caption("Total area divides each oligonucleotide's area by the sum of the quantified "
+                   "areas in its sample. None keeps the extracted areas.")
+        options = list(NORMALIZATIONS)
+        picked = st.segmented_control("Normalization", options, default=normalization,
+                                      format_func=NORMALIZATIONS.get, key=f"{norm_key}-widget")
+        st.session_state[norm_key] = picked or normalization
+
+    return [("1. Conditions", conditions_step), ("2. Normalization", normalization_step)]
+
+
+def _render_comparison(root, samples, prefix, controls=True):
+    """The condition comparison of an experiment. ``controls`` draws the
+    condition pickers here; without them the choices of Edit comparison
+    (``comparison_choices``) are used, with the normalization picked there."""
+    from src.naseweis_comparison import compare_conditions, load_comparison, normalized
 
     try:
         comparison = load_comparison(root)
@@ -300,6 +374,11 @@ def _render_comparison(root, samples, prefix):
         return
     measure = metadata.get("measure", "intensity")
     normalization = metadata.get("normalization", "none")
+    conditions = _conditions(design)
+    if not controls:
+        numerator, denominator, picked = comparison_choices(prefix, conditions, normalization)
+        if picked != normalization:
+            matrix, normalization = normalized(raw, picked), picked
     st.caption(
         f"Area measure: {MEASURES.get(measure, measure)}. "
         f"Normalization: {NORMALIZATIONS.get(normalization, normalization)}. "
@@ -352,13 +431,6 @@ def _render_comparison(root, samples, prefix):
             f"{prefix}-abundance",
             "naseweis-abundance",
         )
-    conditions = sorted(
-        {
-            str(value).strip()
-            for value in design["condition"].dropna()
-            if str(value).strip()
-        }
-    )
     if len(conditions) < 2:
         st.info(
             "Assign at least two conditions to compare biological replicate abundances."
@@ -368,17 +440,21 @@ def _render_comparison(root, samples, prefix):
         )
         return
     st.markdown("**Condition comparison**")
-    numerator = st.selectbox(
-        "Numerator condition",
-        conditions,
-        index=len(conditions) - 1,
-        key=f"{prefix}-numerator",
-    )
-    denominator = st.selectbox(
-        "Denominator condition",
-        [value for value in conditions if value != numerator],
-        key=f"{prefix}-denominator",
-    )
+    if controls:
+        numerator = st.selectbox(
+            "Numerator condition",
+            conditions,
+            index=len(conditions) - 1,
+            key=f"{prefix}-numerator",
+        )
+        denominator = st.selectbox(
+            "Denominator condition",
+            [value for value in conditions if value != numerator],
+            key=f"{prefix}-denominator",
+        )
+    else:
+        st.caption(f"**{numerator}** over **{denominator}**. Change the conditions and the "
+                   "normalization with **Edit comparison** above.")
     st.caption(
         "Technical repeats are averaged within each biological replicate first. "
         "Means, standard deviations and counts describe biological replicates. "
@@ -466,7 +542,7 @@ def experiment_context(workflow):
 def experiment_summary_section(context):
     samples = context["samples"]
     finished = sum(sample["status"] == "finished" for sample in samples)
-    st.metric("Completed acquisitions", f"{finished} / {len(samples)}")
+    summary_tiles(context)
     columns = [
         "id",
         "file",
@@ -484,6 +560,48 @@ def experiment_summary_section(context):
         st.warning(
             "This experiment has incomplete acquisitions. Review their statuses and available sample results below."
         )
+
+
+def experiment_figures(context):
+    """What the experiment found: completed acquisitions, conditions, and the
+    spectrum matches, oligonucleotides and RNAs pooled over its acquisitions."""
+    from src.naseweis_result_plots_ui import coverage_accessions, experiment_coverage_tables
+
+    samples = context["samples"]
+    groups = experiment_coverage_tables(context["root"], samples)
+    matches, oligos = 0, set()
+    for _sample, tables in groups:
+        osm = tables.get("OSM")
+        if osm is not None and not osm.empty:
+            matches += len(osm)
+            if "sequence" in osm:
+                oligos.update(osm["sequence"].dropna().astype(str))
+    conditions = {str(s.get("condition") or "") for s in samples} - {""}
+    return {
+        "finished": sum(sample["status"] == "finished" for sample in samples),
+        "acquisitions": len(samples),
+        "conditions": len(conditions),
+        "matches": matches,
+        "oligonucleotides": len(oligos),
+        "rnas": len(coverage_accessions(groups)),
+    }
+
+
+def summary_tiles(context):
+    """The experiment's figures as tiles, each with what it counts."""
+    figures = experiment_figures(context)
+    tiles = [
+        ("Completed acquisitions", f"{figures['finished']} / {figures['acquisitions']}",
+         "Acquisitions whose search finished, of all acquisitions of the experiment."),
+        ("Conditions", f"{figures['conditions']:,}", "Conditions named in the experimental design."),
+        ("Spectrum matches", f"{figures['matches']:,}",
+         "Spectra assigned to an oligonucleotide at the FDR cutoff, over all acquisitions."),
+        ("Oligonucleotides", f"{figures['oligonucleotides']:,}",
+         "Distinct oligonucleotide sequences, modifications included."),
+        ("RNAs", f"{figures['rnas']:,}", "RNAs of the database the oligonucleotides map to."),
+    ]
+    for col, (label, value, help_text) in zip(st.columns(len(tiles)), tiles):
+        col.metric(label, value, help=help_text)
 
 
 def _labelled(frame):
@@ -510,7 +628,7 @@ def comparison_ready(context):
     )
 
 
-def experiment_quantification_section(context):
+def experiment_quantification_section(context, controls=True):
     manifest = context["manifest"]
     if not manifest.get("lfq_enabled", False):
         st.info(
@@ -521,7 +639,7 @@ def experiment_quantification_section(context):
             "Comparison is unavailable for this incomplete experiment. A complete cohort is required; available acquisition results remain accessible under Sample details."
         )
     else:
-        _render_comparison(context["root"], context["samples"], context["prefix"])
+        _render_comparison(context["root"], context["samples"], context["prefix"], controls=controls)
 
 
 def sample_details_section(context, render_sample):

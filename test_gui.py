@@ -145,9 +145,38 @@ def _finished_run(
     return results
 
 
-def _results_page(app):
+def _results_page(app, *, every_section=True):
+    """Open Explore results; ``every_section`` shows each result section in one view.
+
+    The ready-made views split the result sections apart; the tests that check a
+    section (and so that no section of NASE-weis got lost) open a view of the
+    user's own holding all of them, as a user would make with **+**.
+    """
+    if every_section:
+        _view_of_every_section(app)
     app.switch_page("content/topp_workflow_results.py").run(timeout=30)
     assert not app.exception
+
+
+def _view_of_every_section(app):
+    from src.viewer import panels, sources
+
+    if "workspace" not in app.session_state:
+        app.run(timeout=30)
+    layouts = Path(app.session_state.workspace) / "layouts"
+    layouts.mkdir(parents=True, exist_ok=True)
+    for kind, names in ((sources.ACQUISITION, panels.SECTIONS_SINGLE),
+                        (sources.EXPERIMENT, panels.SECTIONS_EXPERIMENT)):
+        # A run without quantification cannot open a view holding its section,
+        # so the bar falls back to the next view: the same without it
+        views = [
+            {"name": f"custom-every-section{suffix}", "label": f"Every section{suffix}",
+             "rows": [[name] for name in names if keep(name)], "preset": False, "in_bar": True}
+            for suffix, keep in (("", lambda name: True),
+                                 ("-unquantified", lambda name: "quantification" not in name))
+        ]
+        (layouts / f"naseweis-{kind}.json").write_text(json.dumps(
+            {"views": views, "current": views[0]["name"], "layout": [views[0]["rows"]]}))
 
 
 def _downloads(app):
@@ -467,11 +496,11 @@ def test_rnome_controls_require_advanced_and_keep_saved_values(app, topp_schemas
     assert not app.exception
 
 
-def _demo(app):
+def _demo(app, *, every_section=True):
     settings = app.session_state.settings
     settings["demo_workspaces"] = json.loads(Path("settings.json").read_text())["demo_workspaces"]
     app.run(timeout=60)
-    _results_page(app)
+    _results_page(app, every_section=every_section)
     return _run_box(app)
 
 

@@ -76,10 +76,28 @@ def _lfq(app):
 
 
 def _quantification_note(app):
-    """The dashboard keeps the section of a run searched without quantification
-    and offers to add it."""
-    return (any("Needs quantification" in item.value for item in app.markdown)
-            and any(button.label.startswith("Add quantification") for button in app.button))
+    """A run searched without quantification keeps its Quantification view, locked:
+    the view bar marks it with + and its dialog offers to add quantification.
+
+    Opening the view leaves the page on a view the run can fill; the view of
+    every section is current again on the next run.
+    """
+    from src.layout_manager.layout import select_view
+    from src.viewer import catalog
+    from test_gui import _view_of_every_section
+
+    path = Path(app.session_state.workspace) / "layouts" / "naseweis-acquisition.json"
+    presets = catalog.ACQUISITION_PRESETS
+    assert select_view(path, "quantification", catalog.ACQUISITION_COMPONENTS, presets,
+                       presets[0]["layout"])
+    app.run(timeout=30)
+    assert not app.exception
+    locked = json.loads(path.read_text())["current"] != "quantification"
+    from types import SimpleNamespace
+    options = catalog.unavailable_options(None)({catalog.QUANT}, None,
+                                                SimpleNamespace(dataset="run"))
+    _view_of_every_section(app)  # read on the next run
+    return locked and options[0]["label"] == "Search again with quantification"
 
 
 def _matches(app):

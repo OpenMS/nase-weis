@@ -1,5 +1,6 @@
 """Saved-result coverage and comparative LFQ plots; viewing never reruns tools."""
 
+import pandas as pd
 import streamlit as st
 
 from src.naseweis_insight import show_plot
@@ -19,18 +20,51 @@ def _saved_tables(path, mtime_ns, ctime_ns, size):
     return read_mztab(path)
 
 
-def render_coverage_groups(groups, prefix):
-    """Render one accession across supplied acquisition/condition tracks."""
+def coverage_accessions(groups):
+    """The RNA accessions of ``[(group, tables), ...]``, in the order they first appear."""
     accessions = []
     for _group, tables in groups:
         references = tables.get("NUC")
         if references is not None and "accession" in references:
             accessions.extend(references["accession"].dropna().astype(str))
-    accessions = list(dict.fromkeys(accessions))
+    return list(dict.fromkeys(accessions))
+
+
+def rna_summary(groups):
+    """One row per RNA of ``groups``: its length, the oligonucleotides and
+    spectra found for it and the share of its residues they cover (pooled over
+    the groups). An RNA whose coverage cannot be built keeps empty figures."""
+    rows = []
+    for index, accession in enumerate(coverage_accessions(groups)):
+        row = {"rna_idx": index, "accession": accession, "length": None,
+               "oligonucleotides": None, "matches": None, "coverage": None}
+        try:
+            model = build_coverage([("all", tables) for _group, tables in groups], accession)
+        except (ValueError, KeyError, IndexError, TypeError):
+            rows.append(row)
+            continue
+        group = model["groups"][0] if model["groups"] else {}
+        row.update(length=model["length"], oligonucleotides=group.get("oligonucleotides", 0),
+                   matches=group.get("assignments"), coverage=round(100 * model["coverage"], 1))
+        rows.append(row)
+    return pd.DataFrame(rows, columns=["rna_idx", "accession", "length", "oligonucleotides",
+                                       "matches", "coverage"])
+
+
+def render_coverage_groups(groups, prefix, accession=None):
+    """Render one accession across supplied acquisition/condition tracks.
+
+    ``accession`` (picked elsewhere, in the RNA table) is shown without the
+    accession selector; an accession these results do not hold falls back to it.
+    """
+    accessions = coverage_accessions(groups)
     if not accessions:
         st.info("No RNA sequence coverage to display for these results.")
         return
-    accession = st.selectbox("RNA accession", accessions, key=f"{prefix}-accession")
+    if accession in accessions:
+        st.markdown(f"**{accession}**")
+    else:
+        accession = st.selectbox("RNA accession", accessions, key=f"{prefix}-accession")
     block_size = st.select_slider(
         "Bases per line", [25, 50, 75, 100], value=50, key=f"{prefix}-block-size"
     )
@@ -70,8 +104,9 @@ def _coverage_tracks(available, grouping):
     return groups
 
 
-def render_experiment_coverage(root, samples, prefix):
-    """Use available saved mzTab evidence, including identification-only runs."""
+def experiment_coverage_tables(root, samples):
+    """``[(sample, tables), ...]`` of the acquisitions with saved mzTab
+    evidence, including identification-only runs; warns for unreadable ones."""
     from src.naseweis_experiment import sample_results
 
     available = []
@@ -91,6 +126,12 @@ def render_experiment_coverage(root, samples, prefix):
             st.warning(f"Could not read coverage for {sample['file']}: {error}")
         else:
             available.append((sample, tables))
+    return available
+
+
+def render_experiment_coverage(root, samples, prefix, accession=None):
+    """Coverage of the experiment's acquisitions, as condition or acquisition tracks."""
+    available = experiment_coverage_tables(root, samples)
     if not available:
         st.info("No RNA sequence coverage to display for these results.")
         return
@@ -108,7 +149,7 @@ def render_experiment_coverage(root, samples, prefix):
         )
     else:
         grouping = "Acquisition"
-    render_coverage_groups(_coverage_tracks(available, grouping), f"{prefix}-coverage")
+    render_coverage_groups(_coverage_tracks(available, grouping), f"{prefix}-coverage", accession)
 
 
 def render_lfq_scatter(contrasts, numerator, denominator, prefix, *, measure, normalization):

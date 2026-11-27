@@ -66,7 +66,7 @@ def partial_warning(ctx) -> None:
         )
 
 
-def kind(name: str, components, presets, table) -> DatasetKind:
+def kind(name: str, components, presets, table, buttons=None) -> DatasetKind:
     return DatasetKind(
         name=name,
         components=components,
@@ -78,8 +78,8 @@ def kind(name: str, components, presets, table) -> DatasetKind:
         analyses=catalog.ANALYSES,
         unavailable_options=catalog.unavailable_options(wf),
         states=catalog.states(name),
-        rows=catalog.rows(wf, name),
         before=partial_warning,
+        buttons=buttons,
         dataset_label="run",
         experiment_label="Run",
     )
@@ -105,7 +105,7 @@ show_viewer(ViewerSpec(
         kind(sources.ACQUISITION, catalog.ACQUISITION_COMPONENTS, catalog.ACQUISITION_PRESETS,
              catalog.ACQUISITION_RENDERERS),
         kind(sources.EXPERIMENT, catalog.EXPERIMENT_COMPONENTS, catalog.EXPERIMENT_PRESETS,
-             catalog.EXPERIMENT_RENDERERS),
+             catalog.EXPERIMENT_RENDERERS, buttons=catalog.comparison_button(wf)),
     ],
     key="naseweis-viewer",
     kind_of=lambda dataset: sources.kind_of(wf, dataset),

@@ -782,12 +782,15 @@ class Workflow(WorkflowManager):
     def summary_section(self, loaded: dict) -> None:
         matches, tables = loaded["matches"], loaded["tables"]
         cols = st.columns(3)
-        cols[0].metric("Spectrum matches", len(matches))
+        cols[0].metric("Spectrum matches", len(matches),
+                       help="Spectra assigned to an oligonucleotide at the FDR cutoff.")
         cols[1].metric(
             "Distinct oligonucleotides",
             matches["Sequence"].nunique() if not matches.empty else 0,
+            help="Distinct oligonucleotide sequences, modifications included.",
         )
-        cols[2].metric("RNA accessions", len(tables.get("NUC", [])))
+        cols[2].metric("RNA accessions", len(tables.get("NUC", [])),
+                       help="RNAs of the database the oligonucleotides map to.")
 
     def matches_section(self, loaded: dict) -> None:
         matches = loaded["matches"]
