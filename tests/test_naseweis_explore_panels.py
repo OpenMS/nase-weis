@@ -274,3 +274,121 @@ def test_the_chain_reaches_annotated_fragments(tmp_path, monkeypatch, run):
     assert found["peaks"] > 0
     assert found["assigned"] > 0, found["note"]
     assert found["placed"] > 0
+
+
+def test_the_fragment_components_say_when_the_spectra_are_missing(page):
+    test = page(_sample(ID_RUN), ["match_spectrum", "fragment_table"], picks={"psm": 0}, no_spectra=True)
+    assert _texts(test).count("The spectra of this acquisition are not available") == 2
+    assert _insight(test) == 0
+
+
+class _State:
+    def __init__(self, picks):
+        self.picks = picks
+
+    def get_selection(self, identifier):
+        return self.picks.get(identifier)
+
+
+def _fragments(monkeypatch, tmp_path, *, scan_id=3, tables=True, idxml=None, annotations=None):
+    from types import SimpleNamespace
+
+    import pandas as pd
+    import polars as pl
+
+    from src.viewer import panels
+    import src.naseweis_annotations as annotations_module
+    import src.naseweis_viewers as viewers
+
+    data = pl.DataFrame({"id_idx": [7], "scan_id": [scan_id], "native_id": ["scan=4"],
+                         "sequence": ["AUGp"], "charge": [-2]})
+    peaks = {"peaks": pl.DataFrame({"index": [3, 3], "mz": [100.0, 200.0], "intensity": [5.0, 9.0]})}
+    monkeypatch.setattr(panels, "_psms", lambda src: (data, peaks if tables else None, "stamp"))
+    monkeypatch.setattr(panels, "_idxml", lambda src: idxml)
+    monkeypatch.setattr(viewers, "cached_annotations", lambda key: "loaded")
+    if isinstance(annotations, Exception):
+        def broken(*_args):
+            raise annotations
+        monkeypatch.setattr(annotations_module, "match_annotations", broken)
+    else:
+        monkeypatch.setattr(annotations_module, "match_annotations",
+                            lambda *_args: annotations if annotations is not None else pd.DataFrame())
+    src = SimpleNamespace(notes=["moved"], wf=SimpleNamespace(results_dir=tmp_path))
+    return panels.picked_fragments(SimpleNamespace(state=_State({"psm": 7}), index=0), src)
+
+
+def test_picked_fragments_explains_each_missing_part(monkeypatch, tmp_path):
+    idxml = tmp_path / "search.idXML"
+    idxml.write_text("<idXML/>")
+    _match, peaks, _assigned, note = _fragments(monkeypatch, tmp_path, tables=False)
+    assert peaks.empty and "not available: moved" in note
+    *_rest, note = _fragments(monkeypatch, tmp_path, scan_id=-1)
+    assert "not in this acquisition's mzML" in note
+    _match, peaks, _assigned, note = _fragments(monkeypatch, tmp_path)
+    assert len(peaks) == 2 and "No fragment assignments were saved" in note
+    *_rest, note = _fragments(monkeypatch, tmp_path, idxml=idxml, annotations=ValueError("bad file"))
+    assert note == "Fragment assignments are unavailable: bad file"
+    *_rest, note = _fragments(monkeypatch, tmp_path, idxml=idxml)
+    assert "No saved fragment assignments match" in note
+
+
+def test_picked_fragments_without_a_known_pick(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import polars as pl
+
+    from src.viewer import panels
+
+    data = pl.DataFrame({"id_idx": [7], "scan_id": [3]})
+    monkeypatch.setattr(panels, "_psms", lambda src: (data, None, "stamp"))
+    src = SimpleNamespace(notes=[], wf=SimpleNamespace(results_dir=tmp_path))
+    assert panels.picked_fragments(SimpleNamespace(state=_State({"psm": 99})), src) is None
+    assert panels.picked_fragments(SimpleNamespace(state=_State({})), src) is None
+
+
+def _fake_fragments(monkeypatch, peaks, assignments, note):
+    from src.viewer import panels
+
+    match = {"id_idx": 0, "sequence": "AUGp", "charge": -2}
+    monkeypatch.setattr(panels, "_fragment_note", lambda ctx, src, title, name: (match, peaks, assignments, note))
+
+
+def test_the_fragment_components_without_peaks_or_assignments(page, monkeypatch):
+    import pandas as pd
+
+    _fake_fragments(monkeypatch, pd.DataFrame(columns=["mz", "intensity"]), pd.DataFrame(), None)
+    texts = _texts(page(_sample(ID_RUN), ["match_spectrum", "fragment_table"]))
+    assert "The matched spectrum holds no peaks." in texts
+    assert "NASE assigned no fragment ions in this spectrum." in texts
+
+
+def test_the_fragment_components_list_unplaced_fragments(page, monkeypatch):
+    import pandas as pd
+
+    peaks = pd.DataFrame({"mz": [100.0, 200.0], "intensity": [5.0, 9.0]})
+    assignments = pd.DataFrame({"peak_index": [1, float("nan")], "ion": ["w1", "y2"],
+                                "observed_mz": [200.0, float("nan")], "mz": [200.001, 300.0],
+                                "relative_intensity": [100.0, float("nan")]})
+    _fake_fragments(monkeypatch, peaks, assignments, "Some fragments were left out.")
+    test = page(_sample(ID_RUN), ["match_spectrum", "fragment_table"])
+    texts = _texts(test)
+    assert "Some fragments were left out." in texts
+    assert "1 assigned fragments match no single peak" in texts
+    assert _insight(test) == 2
+
+
+@pytest.mark.parametrize("osm, notes", [
+    ({}, ["No matches passed this search's filters."] * 2),
+    ({"search_engine_score[1]": [float("nan")], "exp_mass_to_charge": [float("nan")],
+      "calc_mass_to_charge": [100.0]},
+     ["No matches passed this search's filters.", "No precursor errors in this acquisition."]),
+])
+def test_the_quality_plots_without_values(page, monkeypatch, osm, notes):
+    import pandas as pd
+
+    from src.viewer import panels
+
+    monkeypatch.setattr(panels, "_loaded", lambda src: {"tables": {"OSM": pd.DataFrame(osm)}})
+    texts = _texts(page(_sample(ID_RUN), ["score_distribution", "precursor_error"]))
+    for note in notes:
+        assert note in texts
