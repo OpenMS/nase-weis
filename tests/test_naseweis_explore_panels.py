@@ -187,3 +187,90 @@ def test_spectra_components_say_when_the_acquisition_is_missing(page):
     assert _texts(test).count("the acquisition was moved") == 4
     assert "moved; the acquisition was moved" not in _texts(test)
     assert _insight(test) == 1  # the matches, without their spectra
+
+
+# The identification chain: RNA -> its oligonucleotides -> their matches ->
+# the fragment spectrum and fragment table of the picked match.
+CHAIN = ["oligo_table", "oligo_matches", "match_spectrum", "fragment_table"]
+
+
+@pytest.mark.parametrize("name, note", [
+    ("oligo_table", "Pick an RNA"),
+    ("oligo_matches", "Pick an oligonucleotide"),
+    ("match_spectrum", "Pick a spectrum match"),
+    ("fragment_table", "Pick a spectrum match"),
+])
+def test_the_chain_asks_for_its_pick(page, name, note):
+    test = page(_sample(ID_RUN), [name])
+    assert note in _texts(test)
+    assert _insight(test) == 0
+
+
+@pytest.mark.parametrize("run", [LFQ_RUN, ID_RUN])
+def test_the_chain_follows_its_picks(page, run):
+    test = page(_sample(run), CHAIN, picks={"rna": 0, "oligo_id": 0, "psm": 0})
+    texts = _texts(test)
+    assert "Pick an RNA" not in texts
+    assert "Pick an oligonucleotide" not in texts
+    assert "Pick a spectrum match" not in texts
+    assert _insight(test) == 4, texts
+
+
+def test_the_oligonucleotide_table_of_the_experiment(page):
+    test = page(LFQ_RUN, ["oligo_table"], picks={"rna": 0})
+    assert _insight(test) == 1, _texts(test)
+
+
+def _chain_page():
+    from types import SimpleNamespace
+
+    import streamlit as st
+
+    from src.common.common import page_setup
+    from src.viewer import panels, sources
+    from src.Workflow import Workflow
+
+    page_setup()
+    wf = Workflow()
+    panels.reset()
+    run_id = st.session_state["_chain_run"]
+    sample = sources.manifest(wf, run_id)["samples"][0]["id"]
+    src = sources.resolve(wf, sources.member_id(run_id, sample))
+    rnas = panels._rnas(src)
+    oligos = panels.oligo_rows(panels._rna_groups(src), rnas, panels._oligo_ids(src))
+    data = panels._psms(src)[0]
+    found = {}
+    for row in oligos.itertuples():
+        psms = data.filter(data["oligo_id"] == row.oligo_id)
+        if psms.height:
+            found = dict(rna=int(row.rna_idx), oligo=int(row.oligo_id), sequence=row.sequence,
+                         psm=int(psms["id_idx"][0]), psm_sequence=psms["sequence"][0])
+            break
+    picks = {"psm": found.get("psm")}
+    state = SimpleNamespace(get_selection=lambda identifier: picks.get(identifier))
+    picked = panels.picked_fragments(SimpleNamespace(state=state, index=0), src)
+    if picked is not None:
+        _match, peaks, assignments, note = picked
+        found.update(peaks=len(peaks), assigned=len(assignments), note=note or "",
+                     placed=int((assignments["match_status"] == "matched").sum()) if len(assignments) else 0)
+    st.session_state["_chain_found"] = found
+
+
+@pytest.mark.parametrize("run", [LFQ_RUN, ID_RUN])
+def test_the_chain_reaches_annotated_fragments(tmp_path, monkeypatch, run):
+    """A real RNA leads to its oligonucleotides, one of them to its matches,
+    and the match to NASE's fragment assignments placed on its peaks."""
+    monkeypatch.setenv("LOCAL_WORKSPACES_DIR", str(tmp_path))
+    settings = json.loads(Path("settings.json").read_text())
+    settings.update(workspaces_dir=str(tmp_path), test=False)
+    test = AppTest.from_function(_chain_page, default_timeout=180)
+    test.session_state.settings = settings
+    test.session_state["_chain_run"] = run
+    test.run()
+    assert not test.exception, [str(e.value)[:800] for e in test.exception]
+    found = test.session_state["_chain_found"]
+    assert found, "no RNA with a matched oligonucleotide"
+    assert found["psm_sequence"] == found["sequence"]
+    assert found["peaks"] > 0
+    assert found["assigned"] > 0, found["note"]
+    assert found["placed"] > 0

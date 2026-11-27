@@ -9,12 +9,13 @@ from __future__ import annotations
 VIEWS = {
     "summary": "How many spectra, oligonucleotides and RNAs this search found, and how the "
                "scores and precursor mass errors of its matches are distributed.",
-    "matches": "Every spectrum match of the search. A click on a match shows its spectrum and "
-               "the annotated fragments below.",
+    "matches": "Every spectrum match of the search. A click on a match shows its spectrum with "
+               "the fragment ions NASE assigned, and those fragments as a table.",
     "spectra": "The acquisition itself: its scans, the picked spectrum, the MS1 chromatogram and "
                "peak map, with the identified spectra linked to them.",
-    "coverage": "The RNAs of the database the search identified. Pick an RNA in the table to see "
-                "which of its residues the identified oligonucleotides cover.",
+    "coverage": "The RNAs of the database the search identified. Pick an RNA to see its "
+                "oligonucleotides and which residues they cover, an oligonucleotide to see its "
+                "spectrum matches, and a match to see its fragment ions.",
     "quantification": "MS1 feature areas of the identified oligonucleotides and their extracted "
                       "ion chromatograms.",
     "export": "The result files of the run: mzTab, idXML, the search database, the parameters "
@@ -24,7 +25,7 @@ VIEWS = {
     "experiment_summary": "The acquisitions of the experiment, their conditions and status, and "
                           "what the search found across all of them.",
     "experiment_coverage": "The RNAs identified in the experiment. Pick an RNA in the table to see "
-                           "its coverage per condition or per acquisition.",
+                           "its oligonucleotides and its coverage per condition or per acquisition.",
     "experiment_quantification": "The comparison of the conditions: the abundance of each "
                                  "oligonucleotide in both, their ratio and how it is spread. "
                                  "Change the conditions and the normalization with Edit comparison "
@@ -46,7 +47,16 @@ COMPONENTS = {
                 "modified residues are marked.",
     "rna_table": "The RNAs of the database the search identified, with their length, the "
                  "oligonucleotides and spectra found for them and the share of residues covered. "
-                 "A click shows that RNA's coverage.",
+                 "A click shows that RNA's oligonucleotides and coverage.",
+    "oligo_table": "The oligonucleotides of the picked RNA, with where they lie in it, how many "
+                   "spectra match them and the best score. A click lists their spectrum matches.",
+    "oligo_matches": "The spectrum matches of the picked oligonucleotide, sorted by score. A click "
+                     "shows the match's fragment ions.",
+    "match_spectrum": "The spectrum of the picked match. Peaks NASE assigned to a fragment ion are "
+                      "labelled and coloured by ion series; a click on a peak picks it in the "
+                      "fragment table.",
+    "fragment_table": "The fragment ions NASE assigned in the picked match, with their observed and "
+                      "expected m/z and error. A click marks the peak in the fragment spectrum.",
     "quantification": "MS1 feature areas of the identified oligonucleotides, with the extracted "
                       "ion chromatogram of the picked one.",
     "downloads": "The result files of this run. mzTab holds every result table; idXML opens in "
@@ -58,8 +68,8 @@ COMPONENTS = {
                          "nearest spectrum.",
     "file_peak_map": "Retention time against m/z of the MS1 peaks, coloured by intensity. Drag to "
                      "zoom.",
-    "match_table": "The identified spectra, sorted by score. A click picks the spectrum in the "
-                   "other components.",
+    "match_table": "The identified spectra, sorted by score. A click picks the match and its "
+                   "spectrum in the other components.",
     "score_distribution": "How the search scores of the matches are spread. A long tail of low "
                           "scores points to random matches.",
     "precursor_error": "The difference between measured and calculated precursor m/z in ppm. A "

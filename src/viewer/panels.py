@@ -24,6 +24,8 @@ from src.viewer import run_files, teaching
 from src.viewer.sources import Source
 
 SPECTRUM, PSM, OLIGO, RNA = "scan", "psm", "oligo", "rna"
+# The picked oligonucleotide (by sequence) and the picked peak of a fragment spectrum
+OLIGO_ID, FRAGMENT = "oligo_id", "fragment_peak"
 _drawn: set[str] = set()
 
 # The result sections of a run and of an experiment
@@ -373,10 +375,12 @@ def file_peak_map(ctx, src: Source) -> None:
     plot(state_manager=ctx.state, height=420, key=key(ctx, src, "peak_map"), help=teaching.component("file_peak_map"))
 
 
-def psm_frame(tables: dict, matches: pd.DataFrame, scans: pl.DataFrame | None) -> pl.DataFrame:
+def psm_frame(tables: dict, matches: pd.DataFrame, scans: pl.DataFrame | None,
+              oligo_ids: dict | None = None) -> pl.DataFrame:
     """The spectrum matches of an acquisition in the library's PSM columns;
     ``scan_id`` is the position of the matched spectrum in the mzML (-1 when
-    it is not found there)."""
+    it is not found there), ``oligo_id`` the oligonucleotide's number in
+    ``oligo_ids`` (-1 without one) and ``native_id`` the spectrum's native ID."""
     from src.naseweis_annotations import native_spectrum_id
 
     osm = tables.get("OSM", pd.DataFrame())
@@ -386,18 +390,20 @@ def psm_frame(tables: dict, matches: pd.DataFrame, scans: pl.DataFrame | None) -
     if scans is not None:
         positions = dict(zip(scans["native_id"].to_list(), scans["index"].to_list()))
 
-    def position(ref):
+    def native(ref):
         try:
-            return positions.get(native_spectrum_id(ref), -1)
+            return native_spectrum_id(ref)
         except ValueError:
-            return -1
+            return ""
 
+    natives = [native(r) for r in osm.get("spectra_ref", [""] * len(osm))]
+    sequences = osm["sequence"].astype(str)
     accession = matches["Accession"] if "Accession" in matches else pd.Series([""] * len(osm))
     frame = pd.DataFrame({
         "id_idx": np.arange(len(osm), dtype=np.int64),
         "file_index": 0,
-        "scan_id": [position(r) for r in osm.get("spectra_ref", [""] * len(osm))],
-        "sequence": osm["sequence"].astype(str).to_numpy(),
+        "scan_id": [positions.get(n, -1) if n else -1 for n in natives],
+        "sequence": sequences.to_numpy(),
         "charge": pd.to_numeric(osm.get("charge"), errors="coerce").fillna(0).astype(int).to_numpy(),
         "mz": pd.to_numeric(osm.get("exp_mass_to_charge"), errors="coerce").to_numpy(),
         "rt": pd.to_numeric(osm.get("retention_time"), errors="coerce").to_numpy(),
@@ -405,38 +411,305 @@ def psm_frame(tables: dict, matches: pd.DataFrame, scans: pl.DataFrame | None) -
         "decoy": False,
         "protein_accession": accession.fillna("").astype(str).to_numpy(),
         "contaminant": False,
-        "proforma": osm["sequence"].astype(str).to_numpy(),
+        "proforma": sequences.to_numpy(),
         "filename": "",
+        "oligo_id": np.array([(oligo_ids or {}).get(q, -1) for q in sequences], dtype=np.int64),
+        "native_id": natives,
     })
     return pl.from_pandas(frame)
 
 
-def match_table(ctx, src: Source) -> None:
-    """The spectrum matches as an Insight table; a click picks the spectrum."""
+def _psms(src: Source):
+    """``(matches, mzML tables or None, mzTab stamp)`` of the shown acquisition, None without results."""
+    cached = getattr(src, "_psms", None)
+    if cached is not None:
+        return cached
+    loaded = _loaded(src)
+    if loaded is None:
+        return None
+    path = src.mzml()
+    tables = _readable(path) if path is not None else None
+    scans = tables["scans"] if tables is not None else None
+    data = psm_frame(loaded["tables"], loaded["matches"], scans, _oligo_ids(src))
+    src._psms = (data, tables, f"{Path(loaded['file']).stat().st_mtime_ns}_{tables is not None}")
+    return src._psms
+
+
+def _match_columns() -> list[dict]:
+    from src.viz.identification import psm_table
+
+    return [dict(c, title="Oligonucleotide") if c.get("field") == "sequence" else
+            dict(c, title="RNA accessions") if c.get("field") == "protein_accession" else c
+            for c in psm_table.columns() if c.get("field") not in ("decoy", "contaminant")]
+
+
+def _match_table(ctx, src: Source, name: str, title: str, **extra) -> None:
     from openms_insight import Table
 
     from src.viz.identification import psm_table
     from src.viz.plumbing import component
 
-    loaded = _loaded(src)
-    if loaded is None:
+    psms = _psms(src)
+    if psms is None:
         return
-    path = src.mzml()
-    tables = _readable(path) if path is not None else None
-    scans = tables["scans"] if tables is not None else None
-    data = psm_frame(loaded["tables"], loaded["matches"], scans)
+    data, _tables, stamp = psms
     if data.is_empty():
-        _heading("Spectrum matches", "match_table")
+        _heading(title, name)
         st.info("No matches passed this search's filters.")
         return
-    columns = [dict(c, title="Oligonucleotide") if c.get("field") == "sequence" else
-               dict(c, title="RNA accessions") if c.get("field") == "protein_accession" else c
-               for c in psm_table.columns() if c.get("field") not in ("decoy", "contaminant")]
-    stamp = str(Path(loaded["file"]).stat().st_mtime_ns)
-    table = component(Table, src.cache_dir, f"psms_{stamp}_{path is not None}", lambda: {"data": data.lazy()},
+    table = component(Table, src.cache_dir, f"{name}_v2_{stamp}", lambda: {"data": data.lazy()},
                       **psm_table.settings(ascending=False, file="file", spectrum=SPECTRUM, psm=PSM,
-                                           column_definitions=columns, title="Spectrum matches"))
-    table(state_manager=ctx.state, height=376, key=key(ctx, src, "psms"), help=teaching.component("match_table"))
+                                           column_definitions=_match_columns(), title=title,
+                                           on_select={FRAGMENT: None}, **extra))
+    table(state_manager=ctx.state, height=376, key=key(ctx, src, name), help=teaching.component(name))
+
+
+def match_table(ctx, src: Source) -> None:
+    """Every spectrum match as an Insight table; a click picks the match and its spectrum."""
+    _match_table(ctx, src, "match_table", "Spectrum matches")
+
+
+def oligo_matches(ctx, src: Source) -> None:
+    """The spectrum matches of the oligonucleotide picked in the oligonucleotide table."""
+    if ctx.state.get_selection(OLIGO_ID) is None:
+        _heading("Matches of the oligonucleotide", "oligo_matches")
+        st.info("Pick an oligonucleotide in the oligonucleotide table to list its spectrum matches.")
+        return
+    _match_table(ctx, src, "oligo_matches", "Matches of the oligonucleotide",
+                 filters={OLIGO_ID: "oligo_id"})
+
+
+# --- the oligonucleotides of the picked RNA ----------------------------------
+
+def _oligo_ids(src: Source) -> dict:
+    """Every oligonucleotide sequence of the shown results, numbered in sorted order."""
+    cached = getattr(src, "_oligo_ids", None)
+    if cached is None:
+        sequences = set()
+        for _group, tables in _rna_groups(src):
+            for name in ("OLI", "OSM"):
+                table = tables.get(name, pd.DataFrame())
+                if not table.empty and "sequence" in table:
+                    sequences.update(table["sequence"].dropna().astype(str))
+        cached = {sequence: index for index, sequence in enumerate(sorted(sequences))}
+        src._oligo_ids = cached
+    return cached
+
+
+def oligo_rows(groups, rnas: pd.DataFrame, oligo_ids: dict) -> pd.DataFrame:
+    """One row per oligonucleotide of each RNA of ``rnas`` (``rna_idx`` from it):
+    its place in the RNA, the spectrum matches over ``groups`` and the best score."""
+    counts, best = {}, {}
+    for _group, tables in groups:
+        osm = tables.get("OSM", pd.DataFrame())
+        if osm.empty or "sequence" not in osm:
+            continue
+        scores = pd.to_numeric(osm.get("search_engine_score[1]", pd.Series(np.nan, index=osm.index)),
+                               errors="coerce")
+        for sequence, score in zip(osm["sequence"].astype(str), scores):
+            counts[sequence] = counts.get(sequence, 0) + 1
+            if np.isfinite(score) and (sequence not in best or score > best[sequence]):
+                best[sequence] = float(score)
+    rna_ids = dict(zip(rnas["accession"].astype(str), rnas["rna_idx"])) if not rnas.empty else {}
+    rows, seen = [], set()
+    for _group, tables in groups:
+        oli = tables.get("OLI", pd.DataFrame())
+        if oli.empty or "sequence" not in oli or "accession" not in oli:
+            continue
+        starts = pd.to_numeric(oli.get("start", pd.Series(np.nan, index=oli.index)), errors="coerce")
+        ends = pd.to_numeric(oli.get("end", pd.Series(np.nan, index=oli.index)), errors="coerce")
+        for accession, sequence, start, end in zip(oli["accession"].astype(str), oli["sequence"].astype(str),
+                                                   starts, ends):
+            if accession not in rna_ids or (accession, sequence, start, end) in seen:
+                continue
+            seen.add((accession, sequence, start, end))
+            rows.append({"rna_idx": int(rna_ids[accession]), "accession": accession,
+                         "oligo_id": int(oligo_ids.get(sequence, -1)), "sequence": sequence,
+                         "start": None if pd.isna(start) else int(start),
+                         "end": None if pd.isna(end) else int(end),
+                         "matches": counts.get(sequence, 0), "score": best.get(sequence)})
+    frame = pd.DataFrame(rows, columns=["rna_idx", "accession", "oligo_id", "sequence", "start", "end",
+                                        "matches", "score"])
+    frame.insert(0, "row_idx", np.arange(len(frame), dtype=np.int64))
+    return frame
+
+
+def oligo_table(ctx, src: Source) -> None:
+    """The oligonucleotides of the picked RNA; a click lists their spectrum matches."""
+    from openms_insight import Table
+
+    from src.viz.columns import fixed
+    from src.viz.plumbing import fingerprint
+
+    rows = oligo_rows(_rna_groups(src), _rnas(src), _oligo_ids(src))
+    if rows.empty:
+        _heading("Oligonucleotides", "oligo_table")
+        st.info("No identified oligonucleotide maps to an RNA of the database.")
+        return
+    if ctx.state.get_selection(RNA) is None:
+        _heading("Oligonucleotides", "oligo_table")
+        st.info("Pick an RNA in the RNA table to list its oligonucleotides.")
+        return
+    frame = pl.from_pandas(rows)
+    columns = [
+        {"field": "sequence", "title": "Oligonucleotide"},
+        {"field": "start", "title": "Start", "sorter": "number"},
+        {"field": "end", "title": "End", "sorter": "number"},
+        {"field": "matches", "title": "Spectrum matches", "sorter": "number"},
+        {"field": "score", "title": "Best score", "sorter": "number", **fixed(3)},
+    ]
+    Table(cache_id=f"oligos-{fingerprint(frame)}", cache_path=str(src.cache_dir), data=frame.lazy(),
+          column_definitions=columns, index_field="row_idx", filters={RNA: "rna_idx"},
+          interactivity={OLIGO_ID: "oligo_id"}, initial_sort=[{"column": "start", "dir": "asc"}],
+          title="Oligonucleotides")(state_manager=ctx.state, height=300, key=key(ctx, src, "oligos"),
+                                     help=teaching.component("oligo_table"))
+
+
+# --- the fragment ions of the picked match -----------------------------------
+
+def _idxml(src: Source) -> Path | None:
+    folder = Path(src.wf.results_dir, "idxml_results")
+    for name in ("search.idXML", "id_out"):
+        if Path(folder, name).is_file():
+            return Path(folder, name)
+    return None
+
+
+def picked_fragments(ctx, src: Source):
+    """``(match, peaks, assignments, note)`` of the match picked in a match table:
+    the match's row, its spectrum's peaks (pandas, mzML order), NASE's fragment
+    assignments placed on them (empty when there are none) and why something
+    is missing; None while no match is picked."""
+    from src.naseweis_annotations import fragment_assignment_table, match_annotations
+    from src.naseweis_viewers import VIEW_ERRORS, cached_annotations
+
+    picked = ctx.state.get_selection(PSM)
+    psms = _psms(src)
+    if picked is None or psms is None or psms[0].is_empty():
+        return None
+    data, tables, _stamp = psms
+    found = data.filter(pl.col("id_idx") == int(picked))
+    if found.is_empty():
+        return None
+    match = found.row(0, named=True)
+    empty = pd.DataFrame(columns=["mz", "intensity"])
+    if tables is None:
+        return match, empty, pd.DataFrame(), "The spectra of this acquisition are not available: " + "; ".join(src.notes)
+    if int(match["scan_id"]) < 0:
+        return match, empty, pd.DataFrame(), (
+            "The matched spectrum is not in this acquisition's mzML; no approximate scan was substituted.")
+    peaks = (tables["peaks"].filter(pl.col("index") == int(match["scan_id"]))
+             .select("mz", "intensity").to_pandas())
+    idxml = _idxml(src)
+    if idxml is None:
+        return match, peaks, pd.DataFrame(), "No fragment assignments were saved for this run."
+    try:
+        stat = idxml.stat()
+        annotations = match_annotations(
+            cached_annotations((str(idxml.resolve()), stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns,
+                                stat.st_ino, stat.st_dev)),
+            match["native_id"], str(match["sequence"]), int(match["charge"]))
+    except VIEW_ERRORS as error:
+        return match, peaks, pd.DataFrame(), f"Fragment assignments are unavailable: {error}"
+    if annotations.empty:
+        return match, peaks, pd.DataFrame(), (
+            "No saved fragment assignments match this spectrum, oligonucleotide and charge.")
+    return match, peaks, fragment_assignment_table(peaks, annotations), None
+
+
+def _fragment_note(ctx, src: Source, title: str, name: str):
+    if _spectra(ctx, src, title, name) is None:
+        return None
+    picked = picked_fragments(ctx, src)
+    if picked is None:
+        _heading(title, name)
+        st.info("Pick a spectrum match in a match table to see its fragment ions.")
+    return picked
+
+
+def match_spectrum(ctx, src: Source) -> None:
+    """The picked match's spectrum, the peaks NASE assigned labelled by their fragment ion."""
+    from openms_insight import LinePlot
+
+    from src.viz.identification import fragment_spectrum
+    from src.viz.plumbing import component, only_accepted
+
+    picked = _fragment_note(ctx, src, "Fragment spectrum", "match_spectrum")
+    if picked is None:
+        return
+    match, peaks, assignments, note = picked
+    if peaks.empty:
+        _heading("Fragment spectrum", "match_spectrum")
+        st.info(note or "The matched spectrum holds no peaks.")
+        return
+    ions: dict[int, list[str]] = {}
+    if not assignments.empty:
+        for position, ion in zip(assignments["peak_index"], assignments["ion"]):
+            if not pd.isna(position):
+                ions.setdefault(int(position), []).append(str(ion))
+    labels = {position: "; ".join(dict.fromkeys(names)) for position, names in ions.items()}
+    psm = int(match["id_idx"])
+    data = fragment_spectrum.rows(zip(peaks["mz"], peaks["intensity"]), psm, labels)
+    title = f"Fragment spectrum: {match['sequence']} ({int(match['charge']):+d})"
+    settings = fragment_spectrum.settings(spectrum=PSM, peak=FRAGMENT, title=title)
+    plot = component(LinePlot, src.cache_dir, f"fragments_{_psms(src)[2]}_{_idxml_stamp(src)}_{psm}",
+                     lambda: {"data": data.lazy()}, **only_accepted(LinePlot, **settings))
+    plot(state_manager=ctx.state, height=360, key=key(ctx, src, "fragments"),
+         help=teaching.component("match_spectrum"))
+    if note:
+        st.caption(note)
+
+
+def _idxml_stamp(src: Source) -> str:
+    idxml = _idxml(src)
+    return str(idxml.stat().st_mtime_ns) if idxml is not None else "none"
+
+
+def fragment_rows(assignments: pd.DataFrame, psm: int) -> pl.DataFrame:
+    """The library fragment table's columns from NASE's assignments of match ``psm``."""
+    from src.viz.identification.fragment_spectrum import ion_series
+
+    observed = pd.to_numeric(assignments["observed_mz"], errors="coerce")
+    expected = pd.to_numeric(assignments["mz"], errors="coerce")
+    frame = pd.DataFrame({
+        "fragment": np.arange(len(assignments), dtype=np.int64),
+        "spectrum": psm,
+        "peak": assignments["peak_index"].fillna(-1).astype("int64").to_numpy(),
+        "ion": assignments["ion"].astype(str).to_numpy(),
+        "series": [ion_series(ion) or "" for ion in assignments["ion"]],
+        "mz": observed.to_numpy(),
+        "expected_mz": expected.to_numpy(),
+        "error_ppm": ((observed - expected) / expected * 1e6).to_numpy(),
+        "intensity": pd.to_numeric(assignments["relative_intensity"], errors="coerce").to_numpy(),
+    })
+    return pl.from_pandas(frame)
+
+
+def fragment_table(ctx, src: Source) -> None:
+    """NASE's fragment assignments of the picked match; a click picks the peak in the fragment spectrum."""
+    from openms_insight import Table
+
+    from src.viz.identification import fragment_table as library
+    from src.viz.plumbing import component
+
+    picked = _fragment_note(ctx, src, "Fragment ions", "fragment_table")
+    if picked is None:
+        return
+    match, _peaks, assignments, note = picked
+    if assignments.empty:
+        _heading("Fragment ions", "fragment_table")
+        st.info(note or "NASE assigned no fragment ions in this spectrum.")
+        return
+    psm = int(match["id_idx"])
+    data = fragment_rows(assignments, psm)
+    table = component(Table, src.cache_dir, f"fragment_ions_v2_{_psms(src)[2]}_{_idxml_stamp(src)}_{psm}",
+                      lambda: {"data": data.lazy()}, **library.settings(spectrum=PSM, peak=FRAGMENT, default_row_selects=False))
+    table(state_manager=ctx.state, height=300, key=key(ctx, src, "fragment_ions"),
+          help=teaching.component("fragment_table"))
+    unplaced = int((data["peak"] < 0).sum())
+    if unplaced:
+        st.caption(f"{unplaced} assigned fragments match no single peak of the acquired spectrum "
+                   "(for example after deisotoping or decharging); they are listed without one.")
 
 
 def _histogram(values, bins: int = 30) -> pd.DataFrame:
