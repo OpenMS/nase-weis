@@ -79,6 +79,8 @@ deploy:
     same_openms_as_images: false
     # TEMPORARY: openms-insight 0.7.10 from its branch until it is on PyPI.
     stage_script: scripts/desktop_insight_dev.sh
+    # The NASEWEIS logo on a dark tile: window, dock or taskbar and installer.
+    icon: assets/naseweis-icon.png
   online_deployment: false
 sync:
   app_owned:
