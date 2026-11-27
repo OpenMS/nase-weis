@@ -77,6 +77,8 @@ deploy:
     # The app runs this OpenMS nightly (openms-runtime.json, docker/Dockerfile.app);
     # the template's full Dockerfile builds a release, which cannot clone a commit.
     same_openms_as_images: false
+    # TEMPORARY: openms-insight 0.7.10 from its branch until it is on PyPI.
+    stage_script: scripts/desktop_insight_dev.sh
   online_deployment: false
 sync:
   app_owned:
