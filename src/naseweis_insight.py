@@ -32,7 +32,10 @@ def show_plot(plot: Plot, key: str, filename: str, cache_dir=None, state_manager
     """Render ``plot`` with its Insight component and a TSV download of its rows."""
     import openms_insight
 
-    cls = getattr(openms_insight, plot.component)
+    cls = getattr(openms_insight, plot.component, None)
+    if cls is None:
+        st.info(f"This plot needs a newer openms-insight (it has no {plot.component} component).")
+        return
     settings = only_accepted(cls, **plot.settings)
     cache_id = cache_name(filename, plot.data, sorted(settings.items(), key=lambda kv: kv[0]))
     path = insight_cache(cache_dir)
