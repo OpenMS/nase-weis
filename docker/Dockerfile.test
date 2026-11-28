@@ -2,10 +2,10 @@
 # are independent of the running local app and its workspace volume.
 ARG APP_IMAGE=naseweis-regression-app:local
 # TEMPORARY: until openms-insight 0.7.10 is on PyPI (requirements.txt pins it then),
-# the gate runs it from its development branch (t0mdavid-m/OpenMS-Insight#151),
+# the gate runs it from its development branch (t0mdavid-m/OpenMS-Insight#151 and #155),
 # the same commit as scripts/desktop_insight_dev.sh. Remove this stage with it.
 FROM node:20-bookworm AS insight
-ARG INSIGHT_COMMIT=7e403fe75343e3b09d37bad4d56e7bc9b222c059
+ARG INSIGHT_COMMIT=e98352380f7b28083bd406662b96e7b8fa221a86
 RUN git clone --quiet https://github.com/t0mdavid-m/OpenMS-Insight /insight \
     && git -C /insight checkout --quiet "$INSIGHT_COMMIT" \
     && cd /insight/js-component && npm ci --no-audit --no-fund && npm run build \

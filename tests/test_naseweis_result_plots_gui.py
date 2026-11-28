@@ -51,6 +51,47 @@ def _log(settings):
     return settings["x_label"].startswith("log10") and settings["y_label"].startswith("log10")
 
 
+@pytest.fixture
+def below(monkeypatch):
+    """An openms-insight whose coverage map has no settings menu of its own:
+    the settings and downloads are in a row below the map."""
+    import src.naseweis_result_plots_ui as ui
+
+    monkeypatch.setattr(ui, "_settings_menu", lambda: False)
+
+
+@pytest.fixture
+def menu(monkeypatch):
+    """An openms-insight whose coverage map has its own settings and download
+    menus; a stand-in for its class where the installed one has none."""
+    import openms_insight
+
+    import src.naseweis_insight as insight
+    import src.naseweis_result_plots_ui as ui
+
+    if not ui._settings_menu():
+        class SequenceCoverage:  # pylint: disable=too-few-public-methods
+            _supports_settings = True
+
+        monkeypatch.setattr(openms_insight, "SequenceCoverage", SequenceCoverage, raising=False)
+        monkeypatch.setattr(insight, "only_accepted", lambda _cls, **settings: settings)
+
+
+def _coverage(app):
+    """The coverage map (an Insight SequenceCoverage) the last run drew."""
+    return next(item for item in naseweis_drawn.plots(app.drawn) if item.component == "SequenceCoverage")
+
+
+def _set_tracks(app, value):
+    """Pick ``value`` under Coverage tracks in the map's settings menu, as its
+    browser side does: in the map's state, then a rerun."""
+    key = _coverage(app).key.removesuffix("-plot") + "-state"
+    state = app.session_state[key]
+    state["selections"]["coverage_tracks"] = value
+    app.session_state[key] = state
+    return app.run(timeout=30)
+
+
 def _recorded(app, monkeypatch):
     naseweis_drawn.attach(app, monkeypatch)
     return app
@@ -67,7 +108,7 @@ def test_unassigned_acquisition_does_not_pool_with_a_matching_condition_name():
     assert [track[1] for track in tracks] == [tables for _, tables in available]
 
 
-def test_identification_only_experiment_has_condition_and_acquisition_coverage(saved_experiment, monkeypatch):  # noqa: F811
+def test_identification_only_experiment_has_condition_and_acquisition_coverage(saved_experiment, monkeypatch, below):  # noqa: F811
     folder, root, manifest = saved_experiment
     for sample in manifest["samples"]:
         _coverage_file(root, sample["id"], legacy=sample["id"] == "sample_004")
@@ -118,8 +159,9 @@ def test_partial_coverage_uses_only_available_saved_results_and_reports_bad_file
     assert not app.exception
     assert any("Could not read coverage for run2.mzML" in text.value for text in app.warning)
     assert any("1 of 4 acquisitions" in note for note in _coverage_notes(app))
-    _download(app, "Download coverage (SVG)")
+    assert naseweis_drawn.coverage_shown(app)
     assert not any(radio.label == "Coverage tracks" for radio in app.radio)
+    assert not any(item.toolbar for item in app.drawn)
     assert not any(item.key.endswith("-scatter") for item in app.drawn)
 
 
@@ -135,7 +177,7 @@ def test_conflicting_references_do_not_share_an_axis_but_each_acquisition_remain
     assert _log(_scatter(app))
 
 
-def test_blank_conditions_default_to_acquisition_coverage(saved_experiment, monkeypatch):  # noqa: F811
+def test_blank_conditions_default_to_acquisition_coverage(saved_experiment, monkeypatch, below):  # noqa: F811
     folder, root, manifest = saved_experiment
     for sample in manifest["samples"][:2]:
         _coverage_file(root, sample["id"])
@@ -149,6 +191,61 @@ def test_blank_conditions_default_to_acquisition_coverage(saved_experiment, monk
     grouping.set_value("Condition").run(timeout=30)
     assert not app.exception
     _download(app, "Download coverage (SVG)")
+
+
+def test_coverage_settings_and_downloads_are_in_the_maps_own_menus(saved_experiment, monkeypatch, menu):  # noqa: F811
+    folder, root, manifest = saved_experiment
+    for sample in manifest["samples"]:
+        _coverage_file(root, sample["id"], legacy=sample["id"] == "sample_004")
+    manifest.update(lfq_enabled=False, comparison_status="not_requested")
+    (root / "experiment.json").write_text(json.dumps(manifest))
+    app = _recorded(app_for(folder, mode="results"), monkeypatch).run(timeout=30)
+    assert not app.exception
+    assert app.selectbox[0].label == "RNA accession"
+    assert not any(box.label == "Bases per line" for box in app.selectbox)
+    assert not any(radio.label == "Coverage tracks" for radio in app.radio)
+    assert not any(item.proto.label.startswith("Download coverage") for item in app.get("download_button"))
+    coverage = _coverage(app)
+    assert "block_size" not in coverage.settings  # the lines fit the width
+    assert [setting["label"] for setting in coverage.toolbar] == ["Coverage tracks"]
+    assert coverage.toolbar[0]["options"] == ["Condition", "Acquisition"]
+    assert coverage.toolbar[0]["default"] == "Condition"
+    conditions = coverage.settings["track_order"]
+    assert any("4 of 4 acquisitions" in note for note in _coverage_notes(app))
+    _set_tracks(app, "Acquisition")
+    assert not app.exception
+    files = _coverage(app).settings["track_order"]
+    assert files != conditions and all(name.endswith(".mzML") for name in files)
+    assert len(files) == 4
+    _set_tracks(app, "Condition")
+    assert _coverage(app).settings["track_order"] == conditions
+    assert app.session_state.opened_sample == "sample_001"
+
+
+def test_blank_conditions_default_to_acquisition_tracks_in_the_menu(saved_experiment, monkeypatch, menu):  # noqa: F811
+    folder, root, manifest = saved_experiment
+    for sample in manifest["samples"][:2]:
+        _coverage_file(root, sample["id"])
+        sample["condition"] = ""
+    manifest.update(lfq_enabled=False, comparison_status="not_requested")
+    (root / "experiment.json").write_text(json.dumps(manifest))
+    app = _recorded(app_for(folder, mode="results"), monkeypatch).run(timeout=30)
+    assert not app.exception
+    assert _coverage(app).toolbar[0]["default"] == "Acquisition"
+    assert _coverage(app).settings["track_order"] == ["run1.mzML", "run2.mzML"]
+    _set_tracks(app, "Condition")
+    assert not app.exception
+    assert all(name.startswith("Unassigned") for name in _coverage(app).settings["track_order"])
+
+
+def test_one_acquisition_has_no_track_setting_in_the_menu(saved_experiment, monkeypatch, menu):  # noqa: F811
+    folder, root, manifest = saved_experiment
+    _coverage_file(root, "sample_001")
+    manifest.update(lfq_enabled=False, comparison_status="not_requested")
+    (root / "experiment.json").write_text(json.dumps(manifest))
+    app = _recorded(app_for(folder, mode="results"), monkeypatch).run(timeout=30)
+    assert not app.exception
+    assert _coverage(app).toolbar is None
 
 
 def test_lfq_scatter_uses_saved_means_direction_labels_and_view_only_controls(saved_experiment, monkeypatch):  # noqa: F811

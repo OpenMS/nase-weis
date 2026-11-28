@@ -25,7 +25,12 @@ def insight_cache(cache_dir=None) -> Path:
 
 def _draw(cls, path: Path, cache_id: str, build, call: dict) -> None:
     """Load or build the component and draw it; tests replace this to see what is drawn."""
-    component(cls, path, cache_id, build)(**call)
+    call = dict(call)
+    toolbar = call.pop("toolbar_settings", None)
+    drawn = component(cls, path, cache_id, build)
+    if toolbar:
+        drawn.set_toolbar_settings(toolbar)
+    drawn(**call)
 
 
 def show_plot(plot: Plot, key: str, filename: str, cache_dir=None, state_manager=None, *,
@@ -46,6 +51,8 @@ def show_plot(plot: Plot, key: str, filename: str, cache_dir=None, state_manager
         call["state_manager"] = state_manager
     if help:
         call["help"] = help
+    if plot.toolbar and getattr(cls, "_supports_settings", False):
+        call["toolbar_settings"] = plot.toolbar
     _draw(cls, path, cache_id, lambda: {"data": plot.data.lazy(), **settings}, call)
     if tsv and not plot.table.empty:
         st.download_button(

@@ -17,6 +17,7 @@ class Drawn:
     key: str
     data: object
     settings: dict
+    toolbar: list | None = None
 
     @property
     def title(self):
@@ -43,7 +44,7 @@ def record(monkeypatch) -> list[Drawn]:
         index = built.get("index_field")
         if index in data:
             data = data.drop(columns=index)
-        drawn.append(Drawn(cls.__name__, call["key"], data, built))
+        drawn.append(Drawn(cls.__name__, call["key"], data, built, call.get("toolbar_settings")))
 
     monkeypatch.setattr(insight, "_draw", draw)
     return drawn
@@ -79,3 +80,11 @@ def table_frames(app):
 
 def by_key(drawn: list[Drawn], part: str) -> list[Drawn]:
     return [item for item in drawn if part in item.key]
+
+
+def coverage_shown(app) -> bool:
+    """Whether the last run of ``app`` showed a coverage map: drawn by Insight
+    (whose own menu downloads it), or the static map with its SVG download."""
+    if any(item.component == "SequenceCoverage" for item in app.drawn):
+        return True
+    return any(item.proto.label == "Download coverage (SVG)" for item in app.get("download_button"))

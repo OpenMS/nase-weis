@@ -21,6 +21,7 @@ from test_naseweis_viewers_gui import (
 )
 
 from src.naseweis_experiment import sample_results
+from tests.naseweis_drawn import coverage_shown
 from src.workflow.RunManager import RunManager
 from test_gui import _downloads, _matches, _results_page, app, topp_schemas  # noqa: F401
 
@@ -117,7 +118,7 @@ def test_saved_result_recovers_after_required_file_is_restored(app, tmp_path, mi
     else:
         assert any("Spectrum viewing is unavailable" in item.value for item in app.info)
         assert _matches(app).loc[0, "Sequence"] == "ACGU"
-        assert "Download coverage (SVG)" in _downloads(app)
+        assert coverage_shown(app)
         assert "Download mzTab" in _downloads(app)
     path.write_bytes(content)
     _results_page(app)
@@ -135,7 +136,7 @@ def test_deleted_acquisition_preserves_lfq_map_tables_and_coverage(app, tmp_path
     original.unlink()
     _results_page(app)
     assert _matches(app).loc[0, "Sequence"] == "ACGU"
-    assert "Download coverage (SVG)" in _downloads(app)
+    assert coverage_shown(app)
     assert "Download LFQ feature table (TSV)" in _downloads(app)
     click(app, "Open LFQ feature viewer")
     assert len(plots(app)) == 1
@@ -159,7 +160,7 @@ def test_partial_experiment_keeps_sample_evidence_but_hides_complete_cohort_comp
     assert "Download abundance matrix (TSV)" not in _downloads(app)
     assert "Download matches (CSV)" in _downloads(app)
     assert "Download mzTab" in _downloads(app)
-    assert "Download coverage (SVG)" in _downloads(app)
+    assert coverage_shown(app)
     picker = next(box for box in app.selectbox if box.label == "Acquisition details")
     picker.set_value("sample_002").run(timeout=30)
     assert not app.exception

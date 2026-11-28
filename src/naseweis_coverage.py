@@ -341,10 +341,12 @@ def coverage_plot(model, *, block_size=50):
         list(model["reference"]), reference_name=str(model["accession"]),
         count_label="Spectrum matches", filters={}, interactivity={},
         track_order=[group["name"] for group in model["groups"]],
-        track_note_column="note", block_size=int(block_size), count_bins=list(COUNT_BINS),
+        track_note_column="note", count_bins=list(COUNT_BINS),
         title=f"Sequence coverage · {model['coverage']:.1%} of {model['length']} nt",
         notes=summaries + list(model.get("warnings") or []),
     )
+    if block_size is not None:  # None: the component fits the line to its width
+        settings["block_size"] = int(block_size)
     table = pd.DataFrame([
         {"track": hit["track"], "sequence": hit["sequence"], "start": hit["start"], "end": hit["end"],
          "spectrum_matches": hit["count"],

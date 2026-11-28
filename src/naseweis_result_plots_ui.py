@@ -1,5 +1,6 @@
 """Saved-result coverage and comparative LFQ plots; viewing never reruns tools."""
 
+import dataclasses
 import re
 
 import pandas as pd
@@ -57,35 +58,52 @@ def rna_summary(groups):
 BLOCK_SIZES = [25, 50, 75, 100]
 
 
-def render_coverage_groups(groups, prefix, accession=None, *, help=None, controls=None, notes=()):  # pylint: disable=redefined-builtin
+def render_coverage_groups(groups, prefix, accession=None, *, help=None, controls=None, notes=(),  # pylint: disable=redefined-builtin
+                           toolbar=None, state_manager=None):
     """Render one accession across supplied acquisition/condition tracks as one
-    component: the coverage map, with its settings and downloads in one row below.
+    component: the coverage map with its settings and downloads.
+
+    An openms-insight whose coverage map has a settings menu draws positions
+    per line, ``toolbar`` (settings of the app, kept in ``state_manager``) and
+    the downloads in the map's own toolbar, and fits the lines to the width;
+    an older one gets the settings and downloads in a row below the map,
+    ``controls`` drawing further settings into it (it gets the column).
 
     ``accession`` (picked elsewhere, in the RNA table) is shown without the
     accession selector; an accession these results do not hold falls back to it.
-    ``controls`` draws further settings into that row (it gets the column);
     ``notes`` are shown under the map's legend.
     """
     accessions = coverage_accessions(groups)
     if not accessions:
         st.info("No RNA sequence coverage to display for these results.")
         return
-    block_key = f"{prefix}-block-size"
-    block_size = st.session_state.get(block_key) or 50
     if accession not in accessions:
         accession = st.session_state.get(f"{prefix}-accession")
         accession = accession if accession in accessions else accessions[0]
         picker = True
     else:
         picker = False
+    menu = _settings_menu()
+    block_key = f"{prefix}-block-size"
+    block_size = None if menu else st.session_state.get(block_key) or 50
     try:
         model = build_coverage(groups, accession)
         model["warnings"] = list(notes) + list(model.get("warnings") or [])
         figure = coverage_plot(model, block_size=block_size)
-        plot = render_coverage_html(model, block_size=block_size)
-        svg = render_coverage_svg(model, block_size=block_size)
+        # Without the map's own download menu, the downloads are built here.
+        plot = None if menu else render_coverage_html(model, block_size=block_size)
+        svg = None if menu else render_coverage_svg(model, block_size=block_size)
     except (ValueError, KeyError, IndexError, TypeError) as error:
         st.warning(f"Coverage is unavailable: {error}")
+        return
+    if menu:
+        if picker:
+            columns = st.columns([2, 5])
+            columns[0].selectbox("RNA accession", accessions, key=f"{prefix}-accession")
+        # As tall as the map, with the app's settings in its cog menu.
+        figure = dataclasses.replace(figure, height=None, toolbar=list(toolbar or []) or None)
+        show_plot(figure, f"{prefix}-plot", "naseweis-coverage", state_manager=state_manager,
+                  help=help, tsv=False)
         return
     if _has_coverage_component():
         show_plot(figure, f"{prefix}-plot", "naseweis-coverage", help=help, tsv=False)
@@ -114,6 +132,16 @@ def render_coverage_groups(groups, prefix, accession=None, *, help=None, control
                 "Download plotted values (TSV)", figure.table.to_csv(sep="\t", index=False),
                 "naseweis-coverage.tsv", "text/tab-separated-values", key=f"{prefix}-plot-tsv",
             )
+
+
+def _settings_menu():
+    """Whether the installed openms-insight's coverage map has its own settings
+    and download menus (positions per line, app settings, SVG/PNG, HTML, TSV)."""
+    try:
+        import openms_insight
+    except ImportError:
+        return False
+    return bool(getattr(getattr(openms_insight, "SequenceCoverage", None), "_supports_settings", False))
 
 
 def _has_coverage_component():
@@ -193,16 +221,28 @@ def render_experiment_coverage(root, samples, prefix, accession=None, *, help=No
     ]
     choices = ["Condition", "Acquisition"]
     grouping_key = f"{prefix}-grouping"
-    grouping, controls = "Acquisition", None
+    grouping, controls, toolbar, state = "Acquisition", None, None, None
     if len(available) > 1:
         default = 0 if all(sample.get("condition", "").strip() for sample, _ in available) else 1
-        grouping = st.session_state.get(grouping_key, choices[default])
+        if _settings_menu():
+            # In the map's own settings menu; its value comes back through the state.
+            from openms_insight import StateManager
+            from openms_insight.core.settings import setting_value
 
-        def tracks_radio(column):
-            column.radio("Coverage tracks", choices, index=default, horizontal=True, key=grouping_key)
-        controls = tracks_radio
+            setting = {"identifier": "coverage_tracks", "label": "Coverage tracks", "kind": "choice",
+                       "options": choices, "default": choices[default]}
+            state = StateManager(session_key=f"{prefix}-coverage-state")
+            grouping = setting_value(state, setting)
+            grouping = grouping if grouping in choices else choices[default]
+            toolbar = [setting]
+        else:
+            grouping = st.session_state.get(grouping_key, choices[default])
+
+            def tracks_radio(column):
+                column.radio("Coverage tracks", choices, index=default, horizontal=True, key=grouping_key)
+            controls = tracks_radio
     render_coverage_groups(_coverage_tracks(available, grouping), f"{prefix}-coverage", accession,
-                           help=help, controls=controls, notes=notes)
+                           help=help, controls=controls, notes=notes, toolbar=toolbar, state_manager=state)
 
 
 def render_lfq_scatter(contrasts, numerator, denominator, prefix, *, measure, normalization):

@@ -39,6 +39,8 @@ class Plot:
     settings: dict
     table: pd.DataFrame = field(default_factory=pd.DataFrame)
     height: int = 380
+    #: Settings in the component's own cog menu (openms-insight ``toolbar_settings``).
+    toolbar: list | None = None
 
 
 def _text(value) -> str:

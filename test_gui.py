@@ -219,9 +219,12 @@ def test_saved_results_use_their_own_fdr_and_offer_all_exports(app):
         "Download matches (CSV)",
         "Download mzTab",
         "Download idXML",
-        "Download coverage (HTML)",
         "Download search parameters",
     }
+    # The coverage map offers its HTML in its own download menu where the
+    # installed openms-insight draws it, else as a button below it.
+    assert ("Download coverage (HTML)" in _downloads(app)
+            or any(item.component == "SequenceCoverage" for item in app.drawn))
 
 
 def test_selecting_an_older_run_does_not_reuse_newer_results(app):
