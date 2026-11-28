@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "measure": "intensity",
+  "normalization": "total",
+  "aggregation": "sum_by_modified_rna_label_across_charges_and_adducts",
+  "adduct_suffix": "trailing +[adduct] only",
+  "missing_values": "not_quantified",
+  "zero_area_features": "excluded",
+  "sample_ids": [
+    "sample_001",
+    "sample_002"
+  ],
+  "sample_totals": {
+    "sample_001": 77181001310.0,
+    "sample_002": 30200374072.0
+  },
+  "factors": {
+    "sample_001": 77181001310.0,
+    "sample_002": 30200374072.0
+  },
+  "warnings": []
+}

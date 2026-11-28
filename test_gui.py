@@ -6,19 +6,34 @@ from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
+from streamlit.testing.v1 import element_tree
+
+from tests.naseweis_drawn import attach, tables
 
 # Import UI dependencies before tests that temporarily mock Streamlit at collection.
 from src.common.common import page_setup  # noqa: F401
 
 
+def _indices(self):
+    # A single-select segmented control holds one value, not a list; AppTest
+    # iterates it when the page reruns after another widget changed.
+    value = self.value
+    values = [] if value is None else value if isinstance(value, list) else [value]
+    return [self.options.index(self.format_func(v)) for v in values]
+
+
 @pytest.fixture
 def app(tmp_path, monkeypatch):
+    monkeypatch.setattr(element_tree.ButtonGroup, "indices", property(_indices))
     # The runtime image sets this variable; always isolate each test even there.
     monkeypatch.setenv("LOCAL_WORKSPACES_DIR", str(tmp_path))
     test = AppTest.from_file("app.py")
     settings = json.loads(Path("settings.json").read_text())
     settings.update(workspaces_dir=str(tmp_path), test=False)
+    # Most tests start from an empty workspace; test_demo_* seed the examples.
+    settings["demo_workspaces"] = {k: v for k, v in settings["demo_workspaces"].items() if k != "new_workspace"}
     test.session_state.settings = settings
+    attach(test, monkeypatch)
     return test
 
 
@@ -53,10 +68,10 @@ def topp_schemas(monkeypatch, request):
     [
         "content/quickstart.py",
         "content/decoy_database.py",
-        "content/topp_workflow_file_upload.py",
         "content/naseweis.py",
         "content/topp_workflow_execution.py",
         "content/topp_workflow_results.py",
+        "content/topp_workflow_download.py",
     ],
 )
 def test_launch(app, page):
@@ -66,13 +81,13 @@ def test_launch(app, page):
     assert not app.exception
 
 
-def test_load_example_and_configure(app):
+def test_example_is_preloaded_on_describe_experiment(app):
     app.run(timeout=30)
-    next(
-        button for button in app.button if button.label == "Load example dataset"
-    ).click().run(timeout=30)
+    assert not any(button.label == "Load example dataset" for button in app.button)
+    app.switch_page("content/naseweis.py").run(timeout=30)
     assert not app.exception
-    assert app.title[0].value == "Configure your search"
+    assert app.title[0].value == "Describe experiment"
+    assert not any(button.label == "Load example dataset" for button in app.button)
     workspace = Path(app.session_state.workspace)
     params = json.loads((workspace / "naseweis/params.json").read_text())
     assert [Path(path).name for path in params["mzML-files"]] == ["NME1.mzML"]
@@ -130,9 +145,38 @@ def _finished_run(
     return results
 
 
-def _results_page(app):
+def _results_page(app, *, every_section=True):
+    """Open Explore results; ``every_section`` shows each result section in one view.
+
+    The ready-made views split the result sections apart; the tests that check a
+    section (and so that no section of NASE-weis got lost) open a view of the
+    user's own holding all of them, as a user would make with **+**.
+    """
+    if every_section:
+        _view_of_every_section(app)
     app.switch_page("content/topp_workflow_results.py").run(timeout=30)
     assert not app.exception
+
+
+def _view_of_every_section(app):
+    from src.viewer import panels, sources
+
+    if "workspace" not in app.session_state:
+        app.run(timeout=30)
+    layouts = Path(app.session_state.workspace) / "layouts"
+    layouts.mkdir(parents=True, exist_ok=True)
+    for kind, names in ((sources.ACQUISITION, panels.SECTIONS_SINGLE),
+                        (sources.EXPERIMENT, panels.SECTIONS_EXPERIMENT)):
+        # A run without quantification cannot open a view holding its section,
+        # so the bar falls back to the next view: the same without it
+        views = [
+            {"name": f"custom-every-section{suffix}", "label": f"Every section{suffix}",
+             "rows": [[name] for name in names if keep(name)], "preset": False, "in_bar": True}
+            for suffix, keep in (("", lambda name: True),
+                                 ("-unquantified", lambda name: "quantification" not in name))
+        ]
+        (layouts / f"naseweis-{kind}.json").write_text(json.dumps(
+            {"views": views, "current": views[0]["name"], "layout": [views[0]["rows"]]}))
 
 
 def _downloads(app):
@@ -141,17 +185,13 @@ def _downloads(app):
 
 def test_configuration_survives_page_changes(app):
     app.run(timeout=30)
-    next(
-        button for button in app.button if button.label == "Load example dataset"
-    ).click().run(timeout=30)
-    # Follow the programmatic page switch explicitly in AppTest before interacting.
     app.switch_page("content/naseweis.py").run()
     app.number_input(key="naseweis-param-FDR_cutoff").set_value(0.01).run()
     # AppTest returns a fragment-only tree after a fragment widget changes.
-    app.switch_page("content/topp_workflow_file_upload.py").run()
+    app.switch_page("content/quickstart.py").run()
     app.switch_page("content/naseweis.py").run()
     app.checkbox(key="naseweis-param-add-decoys").uncheck().run()
-    app.switch_page("content/topp_workflow_file_upload.py").run()
+    app.switch_page("content/quickstart.py").run()
     app.switch_page("content/naseweis.py").run()
     assert not app.exception
     assert app.number_input(key="naseweis-param-FDR_cutoff").value == 0.01
@@ -162,10 +202,16 @@ def test_configuration_survives_page_changes(app):
     assert saved["FDR_cutoff"] == 0.01 and saved["add-decoys"] is False
 
 
+def _matches(app):
+    """The rows of the spectrum match table the last run drew."""
+    return next(item.data for item in app.drawn
+                if item.component == "Table" and item.key.startswith("matches-"))
+
+
 def test_saved_results_use_their_own_fdr_and_offer_all_exports(app):
     _finished_run(app)
     _results_page(app)
-    table = app.dataframe[0].value
+    table = _matches(app)
     assert table.loc[0, "q-value (%)"] == 1.0  # current config has FDR disabled
     assert table.loc[0, "Sequence"] == "ACGU"
     assert [str(metric.value) for metric in app.metric] == ["1", "1", "1"]
@@ -173,9 +219,12 @@ def test_saved_results_use_their_own_fdr_and_offer_all_exports(app):
         "Download matches (CSV)",
         "Download mzTab",
         "Download idXML",
-        "Download coverage (HTML)",
         "Download search parameters",
     }
+    # The coverage map offers its HTML in its own download menu where the
+    # installed openms-insight draws it, else as a button below it.
+    assert ("Download coverage (HTML)" in _downloads(app)
+            or any(item.component == "SequenceCoverage" for item in app.drawn))
 
 
 def test_selecting_an_older_run_does_not_reuse_newer_results(app):
@@ -191,7 +240,7 @@ def test_selecting_an_older_run_does_not_reuse_newer_results(app):
         # The widget values are run IDs; labels include a display name/date.
         picker.select(run_id).run()
         assert not app.exception
-        table = app.dataframe[0].value
+        table = _matches(app)
         assert table.loc[0, "Sequence"] == sequence
         assert ("q-value (%)" in table) is has_q
         picker = next(box for box in app.selectbox if box.label == "Run")
@@ -200,7 +249,7 @@ def test_selecting_an_older_run_does_not_reuse_newer_results(app):
 def test_legacy_results_are_still_readable_and_downloadable(app):
     _finished_run(app, legacy=True)
     _results_page(app)
-    assert app.dataframe[0].value.loc[0, "Sequence"] == "ACGU"
+    assert _matches(app).loc[0, "Sequence"] == "ACGU"
     assert "Download legacy idXML" in _downloads(app)
     assert "Download mzTab" in _downloads(app)
 
@@ -224,7 +273,7 @@ def test_corrupt_results_show_an_actionable_error(app):
     assert any(
         "Could not read this run's results" in error.value for error in app.error
     )
-    assert not app.dataframe
+    assert not tables(app.drawn)
 
 
 def test_missing_result_file_explains_what_to_do_next(app):
@@ -238,7 +287,7 @@ def test_missing_optional_export_does_not_hide_the_table(app):
     results = _finished_run(app)
     (results / "idxml_results/search.idXML").unlink()
     _results_page(app)
-    assert len(app.dataframe[0].value) == 1
+    assert len(_matches(app)) == 1
     assert "Download idXML" not in _downloads(app)
     assert "Download mzTab" in _downloads(app)
 
@@ -263,26 +312,29 @@ def test_first_visit_loads_settings_without_touching_personal_workspaces(
     assert Path(fresh.session_state.workspace) == tmp_path / "default"
 
 
-def test_upload_page_can_load_the_paired_example(app):
+def test_preloaded_example_makes_way_for_the_users_own_files(app):
     app.run(timeout=30)
-    app.switch_page("content/topp_workflow_file_upload.py").run()
-    next(
-        button for button in app.button if button.label == "Load example dataset"
-    ).click().run()
+    app.switch_page("content/naseweis.py").run()
+    folder = Path(app.session_state.workspace) / "naseweis/input-files/mzML-files"
+    assert (folder / "NME1.mzML").is_file()
+    own = folder / "own.mzML"
+    own.write_text("the user's acquisition")
+    app.switch_page("content/quickstart.py").run()
+    app.switch_page("content/naseweis.py").run()
     assert not app.exception
+    assert not (folder / "NME1.mzML").exists()
+    assert not any("no longer available" in item.value for item in app.warning)
     saved = json.loads(
         (Path(app.session_state.workspace) / "naseweis/params.json").read_text()
     )
-    assert Path(saved["mzML-files"]).name == "NME1.mzML"
-    assert Path(saved["fasta-files"]).name == "NME1_Target.fasta"
-    assert any("Continue to Configure" in message.value for message in app.success)
+    assert saved["mzML-files"] == []
 
 
 def test_missing_run_parameters_do_not_break_other_exports(app):
     results = _finished_run(app)
     (results.parent / "params.json").unlink()
     _results_page(app)
-    assert len(app.dataframe[0].value) == 1
+    assert len(_matches(app)) == 1
     assert "Download search parameters" not in _downloads(app)
     assert "Download mzTab" in _downloads(app)
 
@@ -295,9 +347,8 @@ def test_nightly_configuration_preserves_exports_and_cached_digest_mode(app):
         widget for widget in app.multiselect if widget.label == "Result files"
     )
     exports.set_value(["id_out", "db_out", "lfq_out"]).run()
-    app.switch_page("content/topp_workflow_file_upload.py").run()
+    app.switch_page("content/quickstart.py").run()
     app.switch_page("content/naseweis.py").run()
-    app.toggle(key="advanced").set_value(True).run(timeout=30)
     app.selectbox(key="naseweis-param-database-source").select("Cached digest").run()
     assert not app.exception
     assert any("cached database controls digestion" in info.value for info in app.info)
@@ -446,3 +497,35 @@ def test_rnome_controls_require_advanced_and_keep_saved_values(app, topp_schemas
     app.toggle(key="advanced").set_value(True).run(timeout=30)
     assert app.selectbox(key=prefix + "scoring:method").value == "mvh"
     assert not app.exception
+
+
+def _demo(app, *, every_section=True):
+    settings = app.session_state.settings
+    settings["demo_workspaces"] = json.loads(Path("settings.json").read_text())["demo_workspaces"]
+    app.run(timeout=60)
+    _results_page(app, every_section=every_section)
+    return _run_box(app)
+
+
+def _run_box(app):
+    return next(box for box in app.selectbox if box.label == "Run")
+
+
+def test_demo_workspace_explores_the_quantified_example_run(app):
+    runs = _demo(app)
+    assert len(runs.options) == 2
+    assert runs.options[0].startswith("Label-free quantification")
+    assert any(m.value == "**Condition comparison**" for m in app.markdown)
+    samples = next(box for box in app.selectbox if box.label == "Acquisition details")
+    assert len(samples.options) == 2 and all("finished" in o for o in samples.options)
+
+
+def test_demo_workspace_explores_the_identification_only_example_run(app):
+    runs = _demo(app)
+    assert runs.options[1].startswith("Identification only")
+    runs.set_value("20261126-072320").run(timeout=60)
+    assert _run_box(app).value == "20261126-072320"
+    assert not app.exception
+    assert not app.error
+    assert not any(m.value == "**Condition comparison**" for m in app.markdown)
+    assert any("NME1" in str(box.options) for box in app.selectbox if "accession" in box.label)

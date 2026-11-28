@@ -22,8 +22,14 @@ def contrasts():
     }, index=pd.Index(["ACGUp", "A[m5C]GUp", "pACGUc", "GGA", "CCG", "AGG"], name="label"))
 
 
-def markers(figure):
-    return [trace for trace in figure.data if trace.mode != "lines"]
+def markers(plot, series=None):
+    """The plotted points (not the y = x line), optionally of one series."""
+    rows = [r for r in plot.data.to_dicts() if r["series"] != "Equal"]
+    return [r for r in rows if series is None or r["series"] == series]
+
+
+def line(plot):
+    return [r for r in plot.data.to_dicts() if r["series"] == "Equal"]
 
 
 def test_paired_rows_exclude_missing_and_zero_without_modifying_input(contrasts):
@@ -37,101 +43,100 @@ def test_paired_rows_exclude_missing_and_zero_without_modifying_input(contrasts)
 
 def test_scatter_preserves_means_direction_replicates_and_fold_changes(contrasts):
     before = contrasts.copy(deep=True)
-    figure = condition_scatter(contrasts, "NCL1", "control")
-    traces = {trace.name: trace for trace in markers(figure)}
-    assert set(traces) == {"Unmodified", "Modified / ambiguous"}
-    assert list(traces["Unmodified"].x) == [100, 50]
-    assert list(traces["Unmodified"].y) == [200, 400]
-    assert list(traces["Modified / ambiguous"].x) == [100]
-    assert list(traces["Modified / ambiguous"].y) == [50]
-    assert traces["Modified / ambiguous"].customdata == (["A[m5C]GUp", 2, 3, 0.5, -1],)
-    assert traces["Unmodified"].marker.symbol == "circle-open"
-    assert traces["Modified / ambiguous"].marker.symbol == "circle"
-    assert figure.layout.xaxis.title.text.startswith("control ·")
-    assert figure.layout.yaxis.title.text.startswith("NCL1 ·")
-    assert "total-area normalized" in figure.layout.xaxis.title.text
-    assert "control mean: %{x" in traces["Unmodified"].hovertemplate
-    assert "NCL1 mean: %{y" in traces["Unmodified"].hovertemplate
+    plot = condition_scatter(contrasts, "NCL1", "control")
+    assert plot.component == "SeriesPlot"
+    unmodified, modified = markers(plot, "Unmodified"), markers(plot, "Modified")
+    # Log scale: the axes are log10 of the saved means, nothing else.
+    assert [10 ** r["x"] for r in unmodified] == pytest.approx([100, 50])
+    assert [10 ** r["y"] for r in unmodified] == pytest.approx([200, 400])
+    assert [10 ** r["x"] for r in modified] == pytest.approx([100])
+    assert [10 ** r["y"] for r in modified] == pytest.approx([50])
+    hover = modified[0]["label"]
+    for part in ("A[m5C]GUp", "control mean 100", "(n=3)", "NCL1 mean 50", "(n=2)",
+                 "ratio 0.5", "log2 FC -1"):
+        assert part in hover
+    names = plot.settings["series_names"]
+    assert names["Unmodified"] == "Unmodified" and names["Modified"] == "Modified / ambiguous"
+    assert plot.settings["x_label"].startswith("log10 mean control ·")
+    assert plot.settings["y_label"].startswith("log10 mean NCL1 ·")
+    assert "total-area normalized" in plot.settings["x_label"]
+    table = plot.table.set_index("rna")
+    assert table.loc["A[m5C]GUp", "numerator_mean"] == 50
+    assert table.loc["A[m5C]GUp", "denominator_mean"] == 100
+    assert bool(table.loc["A[m5C]GUp", "modified"]) is True
     assert_frame_equal(contrasts, before)
 
 
-def test_equal_abundance_line_and_shared_log_axes(contrasts):
-    figure = condition_scatter(contrasts, "NCL1", "control")
-    line = figure.data[0]
-    assert list(line.x) == list(line.y) == [50.0, 400.0]
-    assert line.name == "Equal abundance (y = x)"
-    assert figure.layout.xaxis.type == figure.layout.yaxis.type == "log"
-    assert figure.layout.xaxis.range == figure.layout.yaxis.range
-    assert figure.layout.yaxis.scaleanchor == "x"
-    assert figure.layout.yaxis.scaleratio == 1
+def test_equal_abundance_line_spans_both_axes(contrasts):
+    plot = condition_scatter(contrasts, "NCL1", "control")
+    points = line(plot)
+    assert [r["x"] for r in points] == [r["y"] for r in points]
+    assert [10 ** r["x"] for r in points] == pytest.approx([50.0, 400.0])
+    assert plot.settings["series_names"]["Equal"] == "Equal abundance (y = x)"
+    assert plot.settings["series_modes"] == {"Equal": "lines"}
 
 
 @pytest.mark.parametrize("measure,label", [("intensity", "Native feature area"), ("model_area", "Fitted model area")])
 def test_raw_linear_plot_uses_native_area_units(contrasts, measure, label):
-    figure = condition_scatter(contrasts, "NCL1", "control", measure=measure, normalization="none", scale="linear")
-    assert figure.layout.xaxis.title.text == "control · " + label
-    assert figure.layout.yaxis.title.text == "NCL1 · " + label
-    assert figure.layout.xaxis.type == figure.layout.yaxis.type == "linear"
-    assert list(figure.data[0].x) == list(figure.data[0].y) == [0, 400]
-    assert figure.layout.xaxis.range[0] == 0
+    plot = condition_scatter(contrasts, "NCL1", "control", measure=measure, normalization="none", scale="linear")
+    assert plot.settings["x_label"] == "Mean control · " + label.lower()
+    assert plot.settings["y_label"] == "Mean NCL1 · " + label.lower()
+    assert [r["x"] for r in markers(plot)] == [100, 100, 50]
+    assert [r["x"] for r in line(plot)] == [50, 400]
 
 
 def test_highlighting_selects_exact_identity_and_retains_other_rnas(contrasts):
-    figure = condition_scatter(contrasts, "NCL1", "control", labels=["A[m5C]GUp", "CCG"])
-    unmodified, modified = markers(figure)
-    assert unmodified.mode == "markers"
-    assert modified.mode == "markers+text"
-    assert list(modified.text) == ["A[m5C]GUp"]
-    assert list(modified.marker.size) == [11]
-    assert len(unmodified.x) + len(modified.x) == 3
-    assert not figure.layout.annotations
+    plot = condition_scatter(contrasts, "NCL1", "control", labels=["A[m5C]GUp", "CCG"])
+    selected = markers(plot, "Selected")
+    assert len(selected) == 1 and "A[m5C]GUp" in selected[0]["label"]
+    assert len(markers(plot)) == 3
+    assert list(plot.table["labelled"]) == [False, True, False]
+    assert list(plot.table["modified"]) == [False, True, False]
 
 
 @pytest.mark.parametrize("sequence,expected", [
     ("pACGUc", "Unmodified"), ("ACGUp", "Unmodified"),
     ("[5'-p]ACGU[3'-p]", "Unmodified"),
-    ("ACGU[3'-c]", "Unmodified"), ("A[C|m5C]GU", "Modified / ambiguous"),
-    ("A[m5C?]GU", "Modified / ambiguous"),
-    ("AYGp", "Modified / ambiguous"), ("AIGp", "Modified / ambiguous"),
-    ("ADGp", "Modified / ambiguous"), ("*ACGp", "Unmodified"),
+    ("ACGU[3'-c]", "Unmodified"), ("A[C|m5C]GU", "Modified"),
+    ("A[m5C?]GU", "Modified"),
+    ("AYGp", "Modified"), ("AIGp", "Modified"),
+    ("ADGp", "Modified"), ("*ACGp", "Unmodified"),
     ("[5'-p*]ACGp", "Unmodified"),
 ])
 def test_terminal_groups_are_distinct_from_nucleotide_annotations(sequence, expected):
     frame = pd.DataFrame({"numerator_mean": [2], "denominator_mean": [1]}, index=[sequence])
-    assert markers(condition_scatter(frame, "treatment", "control"))[0].name == expected
+    assert markers(condition_scatter(frame, "treatment", "control"))[0]["series"] == expected
 
 
 def test_imported_text_is_escaped_in_hover_axes_and_selected_labels():
     label = "A[<script>$x</script>]G"
     frame = pd.DataFrame({"numerator_mean": [2], "denominator_mean": [1]}, index=[label])
-    figure = condition_scatter(frame, "NCL1<script>", "control$x", labels=[label])
-    trace = markers(figure)[0]
-    assert "<script>" not in trace.text[0]
-    assert "&lt;script&gt;" in trace.text[0]
-    assert "&#36;" in trace.text[0]
-    assert "control&#36;x" in figure.layout.xaxis.title.text
-    assert "NCL1&lt;script&gt;" in trace.hovertemplate
+    plot = condition_scatter(frame, "NCL1<script>", "control$x", labels=[label])
+    hover = markers(plot)[0]["label"]
+    assert "<script>" not in hover
+    assert "&lt;script&gt;" in hover
+    assert "&#36;" in hover
+    assert "control&#36;x" in plot.settings["x_label"]
+    assert "NCL1&lt;script&gt;" in hover
+    assert "<script>" not in repr(plot.settings)
 
 
 @pytest.mark.parametrize("scale", ["log", "linear"])
 @pytest.mark.parametrize("value", [np.nextafter(0.0, 1.0), 1.0, np.finfo(float).max])
-def test_single_equal_point_has_a_finite_nonzero_diagonal_and_safe_export(value, scale):
+def test_single_equal_point_is_finite_and_safe_to_export(value, scale):
     frame = pd.DataFrame({"numerator_mean": [value], "denominator_mean": [value]}, index=["ACGU"])
-    figure = condition_scatter(frame, "NCL1", "control", scale=scale)
-    diagonal = figure.data[0]
-    assert diagonal.x[0] < diagonal.x[1]
-    assert np.isfinite(diagonal.x).all()
-    assert figure.layout.xaxis.range[0] < figure.layout.xaxis.range[1]
-    assert all(np.isfinite(figure.layout.xaxis.range))
-    # Plotly serializes optional missing hover fields as null, never NaN/Infinity.
-    json.loads(figure.to_json(), parse_constant=lambda value: pytest.fail(value))
+    plot = condition_scatter(frame, "NCL1", "control", scale=scale)
+    values = [r[axis] for r in plot.data.to_dicts() for axis in ("x", "y")]
+    assert all(np.isfinite(values))
+    json.loads(json.dumps(plot.data.to_dicts()), parse_constant=lambda v: pytest.fail(v))
 
 
 def test_nonfinite_metadata_remains_missing_in_hover(contrasts):
     contrasts.loc["ACGUp", "ratio"] = np.inf
     contrasts.loc["ACGUp", "log2_fold_change"] = np.nan
-    trace = markers(condition_scatter(contrasts, "NCL1", "control"))[0]
-    assert trace.customdata[0][3:] == [None, None]
+    hover = markers(condition_scatter(contrasts, "NCL1", "control"))[0]["label"]
+    assert "ratio – · log2 FC –" in hover
+    assert "nan" not in hover.lower() and "inf" not in hover.lower()
 
 
 @pytest.mark.parametrize("changes", [
@@ -144,9 +149,11 @@ def test_unpaired_values_are_excluded_on_both_scales(changes):
         frame.loc["ACGU", field] = value
     assert paired_condition_rows(frame).index.tolist() == ["GACU"]
     for scale in ("log", "linear"):
-        trace = markers(condition_scatter(frame, "NCL1", "control", scale=scale))[0]
-        assert list(trace.x) == [2]
-        assert list(trace.y) == [4]
+        plot = condition_scatter(frame, "NCL1", "control", scale=scale)
+        assert list(plot.table["rna"]) == ["GACU"]
+        point = markers(plot)[0]
+        expected = (2, 4) if scale == "linear" else (np.log10(2), np.log10(4))
+        assert (point["x"], point["y"]) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("frame,reason", [

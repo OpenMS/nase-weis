@@ -4,9 +4,8 @@ import streamlit as st
 
 from src.common.common import page_setup
 from src.common.installers import render_installer_buttons
-from src.Workflow import Workflow
 
-page_setup(page="main")
+page_setup(page="main", captcha=False)
 st.caption("OPENMS WEBAPPS · OLIGONUCLEOTIDE IDENTIFICATION")
 st.title("NASEWEIS")
 st.markdown(
@@ -28,18 +27,15 @@ with st.container(border=True):
         col.markdown(f"**{title}**")
         col.write(text)
     st.page_link(
-        "content/topp_workflow_file_upload.py",
+        "content/naseweis.py",
         label="Start with your data",
         icon=":material/upload_file:",
     )
 
 st.subheader("Try the NME1 example")
 st.write(
-    "A small RNA dataset and matching FASTA are included. Load both, review the settings and start a search."
+    "A small RNA dataset and matching FASTA are included and already selected. Review the settings and start a search."
 )
-if st.button("Load example dataset", type="primary", icon=":material/science:"):
-    Workflow().load_example_data()
-    st.switch_page("content/naseweis.py")
 
 render_installer_buttons("### Download the desktop app")
 

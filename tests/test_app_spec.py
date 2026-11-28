@@ -211,3 +211,67 @@ def test_deploy_images_must_build_the_overlay_variant(tmp_path):
     assert any("deploys the full image" in e for e in app_spec.consistency_errors(s, root))
     s["deploy"] = {"images": ["full", "simple"]}
     assert not any("deploys the" in e for e in app_spec.consistency_errors(s, root))
+
+
+def test_desktop_app_values(spec, tmp_path):
+    ok = copy.deepcopy(spec)
+    ok["deploy"]["desktop_app"] = {
+        "name": "MyApp", "installer_version": True, "topp_tools": ["FLASHDeconv", "FileConverter"],
+        "openms": "t0mdavid-m/OpenMS@FDmerge", "synopsis": "One line.",
+        "e2e_scenarios": ["tests/e2e/run.js"], "stage_script": "scripts/desktop-stage.sh",
+        "icon": "assets/myapp-icon.png",
+    }
+    assert app_spec.schema_errors(ok) == []
+    for key, value in (("name", "My App"), ("topp_tools", []), ("colour", "blue"),
+                       ("installer_version", "yes"), ("icon", "assets/icon.svg")):
+        bad = copy.deepcopy(spec)
+        bad["deploy"]["desktop_app"] = {key: value}
+        assert any("desktop_app" in e for e in app_spec.schema_errors(bad)), key
+
+    root = _app_tree(tmp_path)
+    s = _spec()
+    s["deploy"] = {"desktop_app": {"e2e_scenarios": ["tests/e2e/run.js"],
+                                   "stage_script": "scripts/desktop-stage.sh",
+                                   "icon": "assets/myapp-icon.png"}}
+    errors = app_spec.consistency_errors(s, root)
+    assert any("e2e_scenarios lists tests/e2e/run.js" in e for e in errors)
+    assert any("stage_script is scripts/desktop-stage.sh" in e for e in errors)
+    assert any("icon is assets/myapp-icon.png" in e for e in errors)
+    for path in ("tests/e2e/run.js", "scripts/desktop-stage.sh", "assets/myapp-icon.png"):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("")
+    assert not any("desktop_app" in e for e in app_spec.consistency_errors(s, root))
+
+
+def test_desktop_and_full_image_build_the_same_openms(tmp_path):
+    root = _app_tree(tmp_path)
+    dockerfile = root / "Dockerfile"
+    dockerfile.write_text(
+        "ARG OPENMS_REPO=https://github.com/OpenMS/OpenMS.git\nARG OPENMS_BRANCH=v3.6.0\n"
+    )
+    s = _spec()
+    for openms in ("3.6.0", "OpenMS/OpenMS@release/3.6.0", "v3.6.0"):
+        s["deploy"] = {"desktop_app": {"openms": openms}}
+        assert app_spec.openms_mismatches(s, root) == [], openms
+    s["deploy"] = {"desktop_app": {"openms": "t0mdavid-m/OpenMS@FDmerge"}}
+    assert any("Dockerfile builds OpenMS/OpenMS@v3.6.0" in e
+               for e in app_spec.consistency_errors(s, root))
+    # An app without full images or without a desktop build is not asked.
+    s["deploy"]["images"] = ["simple"]
+    assert app_spec.openms_mismatches(s, root) == []
+    s["deploy"] = {"desktop": [], "desktop_app": {"openms": "t0mdavid-m/OpenMS@FDmerge"}}
+    assert app_spec.openms_mismatches(s, root) == []
+    dockerfile.write_text(
+        "ARG OPENMS_REPO=https://github.com/t0mdavid-m/OpenMS.git\nARG OPENMS_BRANCH=FDmerge\n"
+    )
+    s["deploy"] = {"desktop_app": {"openms": "t0mdavid-m/OpenMS@FDmerge"}}
+    assert app_spec.openms_mismatches(s, root) == []
+
+
+def test_desktop_openms_may_differ_from_images_when_declared(tmp_path):
+    (tmp_path / "Dockerfile").write_text("ARG OPENMS_BRANCH=v3.6.0\n", encoding="utf-8")
+    s = {"deploy": {"desktop_app": {"openms": "OpenMS/OpenMS@01540e6"}}}
+    assert app_spec.openms_mismatches(s, tmp_path)
+    s["deploy"]["desktop_app"]["same_openms_as_images"] = False
+    assert app_spec.openms_mismatches(s, tmp_path) == []
+    assert not any("desktop_app" in e for e in app_spec.schema_errors(s))

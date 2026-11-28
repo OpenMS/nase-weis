@@ -149,7 +149,7 @@ def _selected_paths(params: dict) -> list[Path]:
             path = Path(value).resolve(strict=True)
         except OSError as error:
             raise ValueError(
-                f"Selected acquisition is unavailable: {Path(value).name}. Select an existing acquisition on Configure."
+                f"Selected acquisition is unavailable: {Path(value).name}. Select an existing acquisition on Describe experiment."
             ) from error
         suffix = path.suffix.lower()
         if suffix not in {".mzml", ".raw", ".d"} or not (

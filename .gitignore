@@ -62,3 +62,4 @@ electron/dist/
 .ruff_cache/
 .local/
 workspaces-nase-weis/
+insight_cache/

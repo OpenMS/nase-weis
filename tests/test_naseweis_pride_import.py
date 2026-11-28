@@ -68,7 +68,11 @@ def import_app(tmp_path, monkeypatch, listing):
     monkeypatch.setattr(ui, "resolve", resolver)
     monkeypatch.setattr(job, "start_import", starter)
 
-    def create(source=ui.PRIDE, *, cached=False):
+    def create(source=ui.PRIDE, *, cached=False, insight=False):
+        # The table of ticks is openms-insight's when installed; the editable
+        # table is the fallback. Both pickers must apply the same routing.
+        if not insight:
+            monkeypatch.setattr(ui, "_insight_table", lambda: None)
         workspace = tmp_path / "workflow"
         workspace.mkdir(exist_ok=True)
         targets = targets_for(workspace)
@@ -104,6 +108,20 @@ def look_up(app, source):
     assert not app.exception
 
 
+def insight_ticked(app, listing):
+    """The file names ticked in the openms-insight picker."""
+    states = [
+        app.session_state[key]
+        for key in app.session_state.filtered_state
+        if "-state-" in key and isinstance(app.session_state[key], dict)
+        and "import_rows" in app.session_state[key].get("selections", {})
+    ]
+    assert len(states) == 1
+    rows = states[0]["selections"]["import_rows"] or []
+    names = [file.name for file in listing.files]
+    return {names[int(row)] for row in rows}
+
+
 def selection_table(app):
     return next(
         element.value
@@ -126,6 +144,23 @@ def test_pride_csv_starts_skipped_while_spectra_and_fasta_remain_selected(
     assert table.loc["sample-metadata.csv", "Goes to"] == ui.SKIP
     assert bool(table.loc["run.mzML", "Import"])
     assert bool(table.loc["database.fasta", "Import"])
+    app.button(key=f"{ui.LISTING_KEY}-{ui.PRIDE}-start").click().run(timeout=30)
+    assert not app.exception
+    chosen = starter.call_args.args[1]
+    assert {item["name"] for item in chosen} == {"run.mzML", "database.fasta"}
+    assert starter.call_args.args[2][MAPPING]["auto_route"] is False
+
+
+@pytest.mark.parametrize(
+    "cached", [False, True], ids=["fresh-lookup", "cached-listing"]
+)
+def test_insight_picker_leaves_pride_csv_unticked(import_app, listing, cached):
+    if ui._insight_table() is None:
+        pytest.fail("openms-insight lacks Table(multi_select=...)")
+    app, starter = import_app(cached=cached, insight=True)
+    if not cached:
+        look_up(app, ui.PRIDE)
+    assert insight_ticked(app, listing) == {"run.mzML", "database.fasta"}
     app.button(key=f"{ui.LISTING_KEY}-{ui.PRIDE}-start").click().run(timeout=30)
     assert not app.exception
     chosen = starter.call_args.args[1]
@@ -275,29 +310,6 @@ def test_explicit_mapping_download_is_allowed_when_automatic_routing_is_disabled
     ]
 
 
-def test_real_naseweis_upload_registers_pride_only_manual_mapping_policy(
-    naseweis_app,  # noqa: F811
-    monkeypatch,
-    listing,
-):
-    monkeypatch.setattr(ui, "resolve", Mock(return_value=listing))
-    naseweis_app.session_state.settings["data_import"] = {"enabled": True}
-    naseweis_app.run(timeout=30)
-    naseweis_app.switch_page("content/topp_workflow_file_upload.py").run(timeout=30)
-    assert not naseweis_app.exception
-    next(
-        item for item in naseweis_app.text_input if item.label == "PRIDE accession"
-    ).set_value("PXD000001")
-    naseweis_app.button(
-        key=f"FormSubmitter:{ui.LISTING_KEY}-{ui.PRIDE}-form-Look up"
-    ).click().run(timeout=30)
-    assert not naseweis_app.exception
-    table = selection_table(naseweis_app).set_index("File")
-    assert not bool(table.loc["sample-metadata.csv", "Import"])
-    assert table.loc["sample-metadata.csv", "Goes to"] == ui.SKIP
-    assert bool(table.loc["run.mzML", "Import"])
-
-
 def test_configure_mapping_browse_preserves_pride_manual_choice(
     naseweis_app,  # noqa: F811
     topp_schemas,  # noqa: F811
@@ -305,6 +317,7 @@ def test_configure_mapping_browse_preserves_pride_manual_choice(
     listing,
 ):
     monkeypatch.setattr(ui, "resolve", Mock(return_value=listing))
+    monkeypatch.setattr(ui, "_insight_table", lambda: None)
     naseweis_app.session_state.settings["data_import"] = {"enabled": True}
     naseweis_app.run(timeout=30)
     naseweis_app.switch_page("content/naseweis.py").run(timeout=30)

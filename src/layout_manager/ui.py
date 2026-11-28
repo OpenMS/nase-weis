@@ -465,6 +465,7 @@ def view_bar(
     states: Optional[Callable[[int], Any]] = None,
     datasets: Optional[Callable[[int], Optional[str]]] = None,
     link: bool = False,
+    not_kept: Sequence[str] = (),
     **editor_args: Any,
 ) -> str:
     """The view bar: as many views as fit, the rest in More, and ✏️ Customize.
@@ -501,8 +502,12 @@ def view_bar(
     zoom and selection shown as its defaults (📌), opening it applies them,
     and ↺ brings them back after the user changed them. Components keep their
     zoom in the state only when given ``zoom_identifier=zoom_identifier(name)``.
+    ``not_kept`` names selections neither 📌 nor a link stores: those a
+    component publishes itself whenever it is drawn (the fragments a sequence
+    view matched, say), which would only make a link long.
     Returns the name of the current view.
     """
+    states = _without(states, not_kept)
     open_key = f"{key}_dialog_open"
     new_key = f"{key}_dialog_new"
     handled_key = f"{key}_bar_handled"
@@ -527,12 +532,9 @@ def view_bar(
 
     opened = _pending_link(key) if link else None
     if opened is not None:
-        st.session_state[f"{key}_link_seen"] = _link_token()
         if opened["view"]:
             select_view(path, opened["view"], components, presets, default_layout)
-        # The link is applied: what the page shows from here on is the user's
-        for name in (LINK_VIEW, LINK_SHOW):
-            st.query_params.pop(name, None)
+        consume_link(key)
 
     state = _views(path, components, presets, default_layout, default_view)
     missing_of = {v["name"]: missing_analyses(v["rows"], components, available) for v in state["views"]}
@@ -564,7 +566,7 @@ def view_bar(
         if clicked == _RESTORE_DEFAULTS and has_defaults(current_view):
             _apply_view_defaults(current_view, states, datasets, experiments)
         builtin = _defaults_actions(current_view, states, datasets, experiments)
-    if link:
+    if link and _hosted():
         builtin.append({"id": _COPY_LINK, "icon": "🔗",
                         "help": "Link to this view with what it shows now"})
 
@@ -614,7 +616,7 @@ def view_bar(
     elif states is not None and st.session_state.get(f"{key}_defaults_dialog") and current_view:
         _defaults_dialog(key, path, current_view, components, presets, default_layout,
                          states, datasets, experiments, dataset_label)
-    elif link and st.session_state.get(f"{key}_link_dialog") and current_view:
+    elif link and _hosted() and st.session_state.get(f"{key}_link_dialog") and current_view:
         _link_dialog(key, current_view, states, datasets, experiments)
     request = st.session_state.get(f"{key}_missing")
     if request and not st.session_state.get(open_key):
@@ -658,6 +660,17 @@ def _pending_link(key: str) -> Optional[Dict[str, Any]]:
     return read_link(st.query_params)
 
 
+def consume_link(key: str) -> None:
+    """Mark the link the page was opened with as applied for the bar ``key``.
+
+    What the page shows from here on is the user's: the link's parameters
+    leave the URL, so a rerun does not apply it again.
+    """
+    st.session_state[f"{key}_link_seen"] = _link_token()
+    for name in (LINK_VIEW, LINK_SHOW):
+        st.query_params.pop(name, None)
+
+
 def linked_datasets(key: str) -> List[Optional[str]]:
     """The datasets a link asks the bar ``key`` to show, one per experiment.
 
@@ -667,6 +680,17 @@ def linked_datasets(key: str) -> List[Optional[str]]:
     """
     opened = _pending_link(key)
     return [e.get("dataset") for e in opened["experiments"]] if opened else []
+
+
+def _hosted() -> bool:
+    """Whether the app is served to others, so a link to a view can be opened elsewhere.
+
+    The local app (``online_deployment: false``, the desktop app among them)
+    runs on the user's own computer: a link to it opens nowhere else, so
+    ``view_bar`` leaves out 🔗 there. A page drawn without ``page_setup()``
+    (no ``location``) keeps it.
+    """
+    return st.session_state.get("location") != "local"
 
 
 def _link_dialog(key: str, view: Dict[str, Any], states: Optional[Callable[[int], Any]],
@@ -1003,6 +1027,27 @@ def _stored(state: Any) -> Dict[str, Any]:
     """All of an experiment's selections, those a component keeps apart (``row@table``) too."""
     stored = getattr(state, "stored_selections", None)
     return stored() if callable(stored) else state.get_all_selections()
+
+
+class _NotKept:
+    """An experiment's state whose selections named in ``not_kept`` are not stored."""
+
+    def __init__(self, state: Any, not_kept: Sequence[str]):
+        self._state = state
+        self._not_kept = set(not_kept)
+
+    def stored_selections(self) -> Dict[str, Any]:
+        return {k: v for k, v in (_stored(self._state) or {}).items() if k not in self._not_kept}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._state, name)
+
+
+def _without(states: Optional[Callable[[int], Any]], not_kept: Sequence[str]) -> Optional[Callable[[int], Any]]:
+    """``states`` whose states leave out the selections in ``not_kept`` when stored."""
+    if states is None or not not_kept:
+        return states
+    return lambda index: (lambda state: None if state is None else _NotKept(state, not_kept))(states(index))
 
 
 def _private_state(base: type) -> type:

@@ -1,11 +1,11 @@
 # Optional RNA label-free quantification
 
-On **Configure → Identification**, select the acquisitions to analyze and assign
-their conditions and biological replicates. Imported files are available inputs;
+On **Describe experiment**, select the acquisitions to analyze and assign
+their conditions and biological replicates (tab **Samples and groups**). Imported files are available inputs;
 the selection determines which are used. **Browse → Your files** also provides
 per-file Use checkboxes, Select all and Clear selection.
 
-LFQ is **off by default**. Enable it on **Configure → Quantification** for an
+LFQ is **off by default**. Switch it on in **Your analysis** on **Describe experiment** for an
 experiment with at least two selected acquisitions containing MS1 scans. The
 analysis uses one saved parameter set and a frozen sample design. Native NASE
 identification and feature extraction run independently for every selected file,

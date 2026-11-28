@@ -320,6 +320,21 @@ def load_comparison(results_dir: Path) -> dict:
     }
 
 
+def normalized(raw, normalization):
+    """``raw`` areas normalized as ``normalization`` ("total": each sample's
+    areas divided by their sum, NaN for a sample without a positive total;
+    "none": the areas as they are)."""
+    if normalization == "none":
+        return raw.astype("float64").copy()
+    if normalization != "total":
+        raise ValueError(f"Unsupported normalization: {normalization!r}")
+    out = raw.astype("float64").copy()
+    for identity in out:
+        total = float(out[identity].sum())
+        out[identity] = out[identity] / total if np.isfinite(total) and total > 0 else np.nan
+    return out
+
+
 def compare_conditions(matrix, design, numerator, denominator):
     """Compare biological-replicate means after averaging technical injections.
 

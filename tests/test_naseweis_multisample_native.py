@@ -200,12 +200,8 @@ def test_native_nme1_cohort_shares_database_and_recovers_twofold_ms1_signal(
         == 1
     )
     scatter = condition_scatter(summary, "treatment", "control")
-    plotted = {
-        row[0]: (x, y)
-        for trace in scatter.data[1:]
-        for x, y, row in zip(trace.x, trace.y, trace.customdata)
-    }
-    assert plotted[abundant] == (
+    plotted = scatter.table.set_index("rna")
+    assert (plotted.loc[abundant, "denominator_mean"], plotted.loc[abundant, "numerator_mean"]) == (
         summary.loc[abundant, "denominator_mean"],
         summary.loc[abundant, "numerator_mean"],
     )

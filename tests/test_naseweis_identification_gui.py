@@ -5,6 +5,8 @@
 
 import pytest
 import streamlit as st
+
+from src.naseweis_plots import SELECTED_ION_COLOR
 from test_naseweis_annotations import store_annotations
 from test_naseweis_viewers_gui import (
     NATIVE_ID,
@@ -48,11 +50,14 @@ def _assignment_table(app):
 
 
 def _labels(app):
-    return {label["text"] for label in plots(app)[0]["layout"].get("annotations", [])}
+    return set(plots(app)[0]["ion"])
 
 
 def _selected_trace(app):
-    return next((trace for trace in plots(app)[0]["data"] if trace.get("name") == "Selected ion"), None)
+    """The peaks drawn in the selected-ion colour, as x (m/z) and y (relative intensity)."""
+    frame = plots(app)[0]["frame"]
+    picked = frame[frame["color"] == SELECTED_ION_COLOR]
+    return {"x": list(picked["mz"]), "y": list(picked["intensity"])} if len(picked) else None
 
 
 def test_visible_ion_table_reports_original_signal_and_unplaced_native_assignments(app, tmp_path):

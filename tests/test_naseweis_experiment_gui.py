@@ -10,6 +10,8 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from tests import naseweis_drawn
+
 HARNESS = """
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,6 +55,22 @@ def setup_inputs(tmp_path):
     return folder, [str(path) for path in files]
 
 
+_PATCH = []
+
+
+def _drawn(app, suffix):
+    """The last Insight component of ``app`` whose key ends with ``suffix``."""
+    return [item for item in app.drawn if item.key.endswith(suffix)][-1]
+
+
+@pytest.fixture(autouse=True)
+def _record_insight(monkeypatch):
+    """Every app of this file records the Insight components it draws."""
+    _PATCH[:] = [monkeypatch]
+    yield
+    _PATCH.clear()
+
+
 def app_for(folder, *, mode="configure", params=None, comparison=False):
     folder.mkdir(parents=True, exist_ok=True)
     if params is not None:
@@ -65,6 +83,8 @@ def app_for(folder, *, mode="configure", params=None, comparison=False):
     app.session_state.previous_dir = str(folder)
     app.session_state.settings = {"data_import": {"enabled": False}}
     app.session_state.comparison_controls = comparison
+    if _PATCH:  # files importing app_for attach the recorder themselves
+        naseweis_drawn.attach(app, _PATCH[0])
     return app
 
 
@@ -229,35 +249,20 @@ def test_saved_experiment_shows_full_matrices_missing_cells_and_condition_compar
     app = app_for(folder, mode="results")
     app.run(timeout=30)
     assert not app.exception
-    assert [tab.label for tab in app.tabs][:4] == [
-        "Experiment summary",
-        "Sequence coverage",
-        "Quantification",
-        "Sample details",
-    ]
-    matrix = next(
-        element.value
-        for element in app.dataframe
-        if element.value.index.name == "label"
-        and any("run1.mzML" in str(column) for column in element.value.columns)
-    )
+    titles = [header.value for header in app.subheader]
+    sections = ["Experiment summary", "Sequence coverage", "Quantification", "Sample details"]
+    assert [title for title in titles if title in sections] == sections
+    matrix = _drawn(app, "-abundance-table").data.set_index("label")
     assert matrix.shape == (2, 4)
+    assert any("run1.mzML" in str(column) for column in matrix.columns)
     assert matrix.loc["ACGU"].tolist() == [0.25, 0.5, 1.0, 0.5]
     assert pd.isna(matrix.loc["UUUU"].iloc[2])
-    contrast = next(
-        element.value
-        for element in app.dataframe
-        if "log2_fold_change" in element.value.columns
-    )
+    displayed = _drawn(app, "-contrast-table")
+    contrast = displayed.data.set_index("label")
     assert list(contrast.columns[:2]) == ["log2_fold_change", "ratio"]
-    displayed = next(
-        element
-        for element in app.dataframe
-        if "log2_fold_change" in element.value.columns
-    )
-    labels = json.loads(displayed.proto.columns)
-    assert labels["log2_fold_change"]["label"] == "Log2 fold change"
-    assert labels["ratio"]["label"] == "Ratio"
+    labels = {column["field"]: column["title"] for column in displayed.settings["column_definitions"]}
+    assert labels["log2_fold_change"] == "Log2 fold change"
+    assert labels["ratio"] == "Ratio"
     assert contrast.loc["ACGU", "ratio"] == 2
     assert contrast.loc["ACGU", "log2_fold_change"] == 1
     assert contrast.loc["ACGU", "numerator_n"] == 2
@@ -270,7 +275,7 @@ def test_saved_experiment_shows_full_matrices_missing_cells_and_condition_compar
         "Download sample design (TSV)",
         "Download comparison settings (JSON)",
     }
-    assert app.get("plotly_chart")
+    assert naseweis_drawn.plots(app.drawn)
     assert app.session_state.opened_sample == "sample_001"
     next(box for box in app.selectbox if box.label == "Numerator condition").set_value(
         "control"
@@ -280,11 +285,7 @@ def test_saved_experiment_shows_full_matrices_missing_cells_and_condition_compar
         next(box for box in app.selectbox if box.label == "Denominator condition").value
         == "treated"
     )
-    reversed_contrast = next(
-        element.value
-        for element in app.dataframe
-        if "log2_fold_change" in element.value.columns
-    )
+    reversed_contrast = _drawn(app, "-contrast-table").data.set_index("label")
     assert reversed_contrast.loc["ACGU", "ratio"] == 0.5
     next(box for box in app.selectbox if box.label == "Acquisition details").set_value(
         "sample_004"
@@ -304,7 +305,7 @@ def test_identification_only_experiment_has_no_quantification_controls(
     assert not app.exception
     assert any("identification-only" in info.value for info in app.info)
     assert not any(box.label == "Numerator condition" for box in app.selectbox)
-    assert not app.get("plotly_chart")
+    assert not any(item.key.endswith("-scatter") for item in app.drawn)
 
 
 def test_failed_sample_without_results_is_a_graceful_drilldown(saved_experiment):
@@ -333,7 +334,7 @@ def test_failed_sample_without_results_is_a_graceful_drilldown(saved_experiment)
         for item in app.get("download_button")
     )
     assert not any(box.label == "Numerator condition" for box in app.selectbox)
-    assert not app.get("plotly_chart")
+    assert not any(item.key.endswith("-scatter") for item in app.drawn)
     next(box for box in app.selectbox if box.label == "Acquisition details").set_value(
         "sample_005"
     ).run(timeout=30)
@@ -391,7 +392,7 @@ def test_saved_comparison_cannot_use_a_design_different_from_manifest(
         "Download abundance matrix" in item.proto.label
         for item in app.get("download_button")
     )
-    assert not app.get("plotly_chart")
+    assert not any(item.key.endswith("-scatter") for item in app.drawn)
     assert app.session_state.opened_sample == "sample_001"
 
 

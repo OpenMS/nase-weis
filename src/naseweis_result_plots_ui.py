@@ -1,11 +1,17 @@
 """Saved-result coverage and comparative LFQ plots; viewing never reruns tools."""
 
-import streamlit as st
-from streamlit.components.v1 import html
+import dataclasses
+import re
 
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+
+from src.naseweis_insight import show_plot
 from src.naseweis_comparison_plots import condition_scatter, paired_condition_rows
 from src.naseweis_coverage import (
     build_coverage,
+    coverage_plot,
     render_coverage_html,
     render_coverage_svg,
 )
@@ -18,37 +24,144 @@ def _saved_tables(path, mtime_ns, ctime_ns, size):
     return read_mztab(path)
 
 
-def render_coverage_groups(groups, prefix):
-    """Render one accession across supplied acquisition/condition tracks."""
+def coverage_accessions(groups):
+    """The RNA accessions of ``[(group, tables), ...]``, in the order they first appear."""
     accessions = []
     for _group, tables in groups:
         references = tables.get("NUC")
         if references is not None and "accession" in references:
             accessions.extend(references["accession"].dropna().astype(str))
-    accessions = list(dict.fromkeys(accessions))
+    return list(dict.fromkeys(accessions))
+
+
+def rna_summary(groups):
+    """One row per RNA of ``groups``: its length, the oligonucleotides and
+    spectra found for it and the share of its residues they cover (pooled over
+    the groups). An RNA whose coverage cannot be built keeps empty figures."""
+    rows = []
+    for index, accession in enumerate(coverage_accessions(groups)):
+        row = {"rna_idx": index, "accession": accession, "length": None,
+               "oligonucleotides": None, "matches": None, "coverage": None}
+        try:
+            model = build_coverage([("all", tables) for _group, tables in groups], accession)
+        except (ValueError, KeyError, IndexError, TypeError):
+            rows.append(row)
+            continue
+        group = model["groups"][0] if model["groups"] else {}
+        row.update(length=model["length"], oligonucleotides=group.get("oligonucleotides", 0),
+                   matches=group.get("assignments"), coverage=round(100 * model["coverage"], 1))
+        rows.append(row)
+    return pd.DataFrame(rows, columns=["rna_idx", "accession", "length", "oligonucleotides",
+                                       "matches", "coverage"])
+
+
+BLOCK_SIZES = [25, 50, 75, 100]
+
+
+def render_coverage_groups(groups, prefix, accession=None, *, help=None, controls=None, notes=(),  # pylint: disable=redefined-builtin
+                           toolbar=None, state_manager=None):
+    """Render one accession across supplied acquisition/condition tracks as one
+    component: the coverage map with its settings and downloads.
+
+    An openms-insight whose coverage map has a settings menu draws positions
+    per line, ``toolbar`` (settings of the app, kept in ``state_manager``) and
+    the downloads in the map's own toolbar, and fits the lines to the width;
+    an older one gets the settings and downloads in a row below the map,
+    ``controls`` drawing further settings into it (it gets the column).
+
+    ``accession`` (picked elsewhere, in the RNA table) is shown without the
+    accession selector; an accession these results do not hold falls back to it.
+    ``notes`` are shown under the map's legend.
+    """
+    accessions = coverage_accessions(groups)
     if not accessions:
         st.info("No RNA sequence coverage to display for these results.")
         return
-    accession = st.selectbox("RNA accession", accessions, key=f"{prefix}-accession")
-    block_size = st.select_slider(
-        "Bases per line", [25, 50, 75, 100], value=50, key=f"{prefix}-block-size"
-    )
+    if accession not in accessions:
+        accession = st.session_state.get(f"{prefix}-accession")
+        accession = accession if accession in accessions else accessions[0]
+        picker = True
+    else:
+        picker = False
+    menu = _settings_menu()
+    block_key = f"{prefix}-block-size"
+    block_size = None if menu else st.session_state.get(block_key) or 50
     try:
         model = build_coverage(groups, accession)
-        plot = render_coverage_html(model, block_size=block_size)
-        svg = render_coverage_svg(model, block_size=block_size)
+        model["warnings"] = list(notes) + list(model.get("warnings") or [])
+        figure = coverage_plot(model, block_size=block_size)
+        # Without the map's own download menu, the downloads are built here.
+        plot = None if menu else render_coverage_html(model, block_size=block_size)
+        svg = None if menu else render_coverage_svg(model, block_size=block_size)
     except (ValueError, KeyError, IndexError, TypeError) as error:
         st.warning(f"Coverage is unavailable: {error}")
         return
-    html(plot, height=680, scrolling=True)
-    st.download_button(
-        "Download coverage (HTML)", plot, "naseweis-coverage.html", "text/html",
-        key=f"{prefix}-html",
-    )
-    st.download_button(
-        "Download coverage (SVG)", svg, "naseweis-coverage.svg", "image/svg+xml",
-        key=f"{prefix}-svg",
-    )
+    if menu:
+        if picker:
+            columns = st.columns([2, 5])
+            columns[0].selectbox("RNA accession", accessions, key=f"{prefix}-accession")
+        # As tall as the map, with the app's settings in its cog menu.
+        figure = dataclasses.replace(figure, height=None, toolbar=list(toolbar or []) or None)
+        show_plot(figure, f"{prefix}-plot", "naseweis-coverage", state_manager=state_manager,
+                  help=help, tsv=False)
+        return
+    if _has_coverage_component():
+        show_plot(figure, f"{prefix}-plot", "naseweis-coverage", help=help, tsv=False)
+    else:
+        _static_coverage(figure, svg, help=help)
+    # Compact row under the map: narrow settings, a spacer, the download menu at the right.
+    widths = {"accession": 2, "block": 1, "controls": 2, "spacer": 2, "download": 1}
+    parts = (["accession"] if picker else []) + ["block"] + (["controls"] if controls else []) + ["spacer", "download"]
+    columns = dict(zip(parts, st.columns([widths[part] for part in parts], vertical_alignment="bottom")))
+    if picker:
+        columns["accession"].selectbox("RNA accession", accessions, key=f"{prefix}-accession")
+    columns["block"].selectbox("Bases per line", BLOCK_SIZES, index=BLOCK_SIZES.index(block_size) if block_size in BLOCK_SIZES else 1, key=block_key)
+    if controls is not None:
+        controls(columns["controls"])
+    with columns["download"].popover("Download", icon=":material/download:", use_container_width=True):
+        st.download_button(
+            "Download coverage (HTML)", plot, "naseweis-coverage.html", "text/html",
+            key=f"{prefix}-html",
+        )
+        st.download_button(
+            "Download coverage (SVG)", svg, "naseweis-coverage.svg", "image/svg+xml",
+            key=f"{prefix}-svg",
+        )
+        if not figure.table.empty:
+            st.download_button(
+                "Download plotted values (TSV)", figure.table.to_csv(sep="\t", index=False),
+                "naseweis-coverage.tsv", "text/tab-separated-values", key=f"{prefix}-plot-tsv",
+            )
+
+
+def _settings_menu():
+    """Whether the installed openms-insight's coverage map has its own settings
+    and download menus (positions per line, app settings, SVG/PNG, HTML, TSV)."""
+    try:
+        import openms_insight
+    except ImportError:
+        return False
+    return bool(getattr(getattr(openms_insight, "SequenceCoverage", None), "_supports_settings", False))
+
+
+def _has_coverage_component():
+    """Whether the installed openms-insight draws the coverage map itself."""
+    try:
+        import openms_insight
+    except ImportError:
+        return False
+    return hasattr(openms_insight, "SequenceCoverage")
+
+
+def _static_coverage(figure, svg, *, help=None):  # pylint: disable=redefined-builtin
+    """The same map as a static picture, for an openms-insight without SequenceCoverage."""
+    settings = figure.settings
+    st.markdown(f"**{settings.get('title', 'Sequence coverage')}** · {settings.get('reference_name', '')}",
+                help=help)
+    match = re.search(r'height="(\d+)"', svg)
+    components.html(svg, height=(int(match.group(1)) if match else 400) + 16, scrolling=True)
+    for note in settings.get("notes") or []:
+        st.caption(note)
 
 
 def _coverage_tracks(available, grouping):
@@ -68,8 +181,9 @@ def _coverage_tracks(available, grouping):
     return groups
 
 
-def render_experiment_coverage(root, samples, prefix):
-    """Use available saved mzTab evidence, including identification-only runs."""
+def experiment_coverage_tables(root, samples):
+    """``[(sample, tables), ...]`` of the acquisitions with saved mzTab
+    evidence, including identification-only runs; warns for unreadable ones."""
     from src.naseweis_experiment import sample_results
 
     available = []
@@ -89,24 +203,46 @@ def render_experiment_coverage(root, samples, prefix):
             st.warning(f"Could not read coverage for {sample['file']}: {error}")
         else:
             available.append((sample, tables))
+    return available
+
+
+def render_experiment_coverage(root, samples, prefix, accession=None, *, help=None):  # pylint: disable=redefined-builtin
+    """Coverage of the experiment's acquisitions, as condition or acquisition tracks."""
+    available = experiment_coverage_tables(root, samples)
     if not available:
         st.info("No RNA sequence coverage to display for these results.")
         return
-    st.caption(
-        f"Saved identification evidence from {len(available)} of {len(samples)} acquisitions. "
-        "Colors show summed spectrum matches, not LFQ abundance. "
-        "Condition tracks pool identification evidence across their acquisitions; "
-        "use acquisition tracks to inspect unequal group sizes."
-    )
+    # One short line each: the component draws its notes as single lines.
+    notes = [
+        f"Saved identification evidence from {len(available)} of {len(samples)} acquisitions.",
+        "Colors show summed spectrum matches, not LFQ abundance.",
+        "Condition tracks pool identification evidence across their acquisitions;",
+        "use acquisition tracks to inspect unequal group sizes.",
+    ]
+    choices = ["Condition", "Acquisition"]
+    grouping_key = f"{prefix}-grouping"
+    grouping, controls, toolbar, state = "Acquisition", None, None, None
     if len(available) > 1:
-        assigned = all(sample.get("condition", "").strip() for sample, _ in available)
-        grouping = st.radio(
-            "Coverage tracks", ["Condition", "Acquisition"],
-            index=0 if assigned else 1, horizontal=True, key=f"{prefix}-grouping",
-        )
-    else:
-        grouping = "Acquisition"
-    render_coverage_groups(_coverage_tracks(available, grouping), f"{prefix}-coverage")
+        default = 0 if all(sample.get("condition", "").strip() for sample, _ in available) else 1
+        if _settings_menu():
+            # In the map's own settings menu; its value comes back through the state.
+            from openms_insight import StateManager
+            from openms_insight.core.settings import setting_value
+
+            setting = {"identifier": "coverage_tracks", "label": "Coverage tracks", "kind": "choice",
+                       "options": choices, "default": choices[default]}
+            state = StateManager(session_key=f"{prefix}-coverage-state")
+            grouping = setting_value(state, setting)
+            grouping = grouping if grouping in choices else choices[default]
+            toolbar = [setting]
+        else:
+            grouping = st.session_state.get(grouping_key, choices[default])
+
+            def tracks_radio(column):
+                column.radio("Coverage tracks", choices, index=default, horizontal=True, key=grouping_key)
+            controls = tracks_radio
+    render_coverage_groups(_coverage_tracks(available, grouping), f"{prefix}-coverage", accession,
+                           help=help, controls=controls, notes=notes, toolbar=toolbar, state_manager=state)
 
 
 def render_lfq_scatter(contrasts, numerator, denominator, prefix, *, measure, normalization):
@@ -143,17 +279,8 @@ def render_lfq_scatter(contrasts, numerator, denominator, prefix, *, measure, no
     except ValueError as error:
         st.warning(f"The abundance comparison plot is unavailable: {error}")
         return
-    config = {"toImageButtonOptions": {"format": "svg", "filename": "naseweis-lfq-comparison"}}
-    st.plotly_chart(
-        figure, use_container_width=True, key=f"{prefix}-scatter",
-        config=config,
-    )
-    st.caption("Zoom and hover for RNA identities, means and replicate counts. Use the camera button for SVG export.")
-    st.download_button(
-        "Download abundance comparison (HTML)",
-        figure.to_html(full_html=True, include_plotlyjs=True, config=config),
-        "naseweis-lfq-comparison.html", "text/html", key=f"{prefix}-scatter-html",
-    )
+    show_plot(figure, f"{prefix}-scatter", "naseweis-lfq-comparison")
+    st.caption("Hover for RNA identities, means and replicate counts; zoom with the mouse. The plot's menu exports SVG.")
 
 
 def render_acquisition_scatter(matrix, design, labels, prefix, *, measure, normalization):

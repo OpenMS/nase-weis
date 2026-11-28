@@ -1064,6 +1064,37 @@ def test_annotations_kept_and_applied_only_for_their_dataset():
     assert elsewhere == {}
 
 
+def test_not_kept_selections_are_left_out_of_what_a_view_stores():
+    """``not_kept`` leaves selections a component publishes itself out of 📌 and links,
+    while the components still read and set them through the same state."""
+    from src.layout_manager.ui import _stored, _without
+
+    class State:
+        def __init__(self):
+            self.values = {"protein": "P1", "fragment_matches": [1, 2, 3], "zoom@plot": {"x": [1, 2]}}
+
+        def get_all_selections(self):
+            return dict(self.values)
+
+        def get_selection(self, name):
+            return self.values.get(name)
+
+    state = State()
+    assert _without(lambda i: state, ())(0) is state
+    wrapped = _without(lambda i: state, ["fragment_matches"])(0)
+    assert _stored(wrapped) == {"protein": "P1", "zoom@plot": {"x": [1, 2]}}
+    assert wrapped.get_selection("fragment_matches") == [1, 2, 3]
+    assert _without(lambda i: None, ["fragment_matches"])(0) is None
+    assert _without(None, ["fragment_matches"]) is None
+
+
+def test_a_kind_has_links_unless_it_says_otherwise():
+    from src.layout_manager.viewer import DatasetKind
+    kind = DatasetKind(name="run", components=[], presets=[], default_layout=[], views_path="v.json")
+    assert kind.link is True
+    assert tuple(kind.not_kept) == ()
+
+
 def test_link_params_round_trip():
     from src.layout_manager.layout import link_params, link_url, read_link
 
@@ -1122,7 +1153,8 @@ def test_view_bar_opens_and_gives_links(tmp_path):
     assert not at.exception
     assert at.markdown[-1].value.startswith("plots run2 [('protein', 'P4'), ('zoom@plot', {'x': [3.0, 4.0]")
     # Applied once: the link's parameters are gone, the workspace stays, the user's picks hold
-    assert "view" not in at.query_params and at.query_params["workspace"] == ["abc"]
+    # AppTest returns a list before Streamlit 1.55 and the value itself from then on
+    assert "view" not in at.query_params and at.query_params["workspace"] in ("abc", ["abc"])
     at.session_state["exp_state_0"] = {"selections": {"protein": "P9"}}
     at.session_state["dataset"] = "run3"
     at.run()
@@ -1138,6 +1170,26 @@ def test_view_bar_opens_and_gives_links(tmp_path):
     assert query["workspace"] == "abc"
     assert read_link(query) == {"view": "plots", "experiments": [
         {"dataset": "run3", "selection": {"protein": "P9"}}]}
+
+
+def test_view_bar_has_no_link_in_the_local_app(tmp_path):
+    """The local (desktop) app is not hosted, so a link to its view opens nowhere else: no 🔗."""
+    at = AppTest.from_string(_LINK_APP.format(
+        tests=str(Path(__file__).parent), components=COMPONENTS, presets=VIEWS, default=DEFAULT))
+    at.session_state["path"] = str(tmp_path / "viewer.json")
+    at.session_state["location"] = "local"
+    at.run()
+    assert not at.exception
+    bar = json.dumps([e.proto.json_args for e in at.get("component_instance")], ensure_ascii=False)
+    assert "_copy_view_link" not in bar
+    at.session_state["vb_bar"] = {"action": "button", "id": "_copy_view_link", "nonce": 1}
+    at.run()
+    assert not at.exception and not at.code
+
+    at.session_state["location"] = "online"
+    at.run()
+    bar = json.dumps([e.proto.json_args for e in at.get("component_instance")], ensure_ascii=False)
+    assert "_copy_view_link" in bar
 
 
 def test_link_params_leaves_out_what_does_not_fit():

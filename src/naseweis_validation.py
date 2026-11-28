@@ -15,4 +15,4 @@ def validate_startup(workflow, params, execute) -> None:
     candidate.params = deepcopy(params)
     candidate.logger = _StartupLog()
     if not execute(candidate, validate_only=True):
-        raise ValueError("Review the input files and settings on Configure before starting.")
+        raise ValueError("Review the input files and settings on Describe experiment before starting.")

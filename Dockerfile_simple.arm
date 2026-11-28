@@ -121,8 +121,6 @@ COPY .streamlit/ /app/.streamlit/
 
 COPY clean-up-workspaces.py /app/clean-up-workspaces.py
 
-# add cron job to the crontab
-RUN echo "0 3 * * * /root/miniforge3/envs/streamlit-env/bin/python /app/clean-up-workspaces.py >> /app/clean-up-workspaces.log 2>&1" | crontab -
 
 # Number of Streamlit server instances for load balancing (default: 1 = no load balancer)
 # Set to >1 to enable nginx load balancer with multiple Streamlit instances
@@ -146,23 +144,39 @@ RUN mamba run -n streamlit-env python hooks/hook-analytics.py
 # Set Online Deployment
 RUN jq '.online_deployment = true' settings.json > tmp.json && mv tmp.json settings.json
 
-# Download the Windows installer of the latest release, if it has one.
+# Download the Windows installer of the latest release, if it has one, or of
+# the release RELEASE_TAG names (CI passes the tag of a release build, which
+# build-desktop-app.yaml starts once that release's installers are uploaded).
 # The token arrives as a BuildKit secret (`--secret id=github_token,env=GITHUB_TOKEN`),
 # so it is never written to the image or its build cache. INSTALLER_REFRESH
 # (CI passes the run id) re-runs this step on every build, as the token used to.
 ARG INSTALLER_REFRESH
+ARG RELEASE_TAG
 RUN --mount=type=secret,id=github_token \
     repo="${GITHUB_USER:-$(jq -r '."github-user"' settings.json)}/${GITHUB_REPO:-$(jq -r '."repository-name"' settings.json)}"; \
     if [ -s /run/secrets/github_token ]; then \
         echo "GitHub token secret is set, proceeding to download the release asset..."; \
-        GH_TOKEN="$(cat /run/secrets/github_token)" gh release download -R "$repo" -p "*-Setup.exe" -O /app/OpenMS-App-Setup.exe \
-            || echo "The latest release has no Windows installer, skipping."; \
+        GH_TOKEN="$(cat /run/secrets/github_token)" gh release download $RELEASE_TAG -R "$repo" -p "*-Setup.exe" -O /app/OpenMS-App-Setup.exe \
+            || echo "The release ${RELEASE_TAG:-(latest)} has no Windows installer, skipping."; \
     else \
         echo "No github_token secret, skipping the release asset download."; \
     fi
 
 # make sure that mamba environment is used
 SHELL ["mamba", "run", "-n", "streamlit-env", "/bin/bash", "-c"]
+
+# Run as an unprivileged user, uid 1000, the user the Kubernetes manifests
+# name too. What the entrypoint writes (Redis data, the nginx configuration,
+# pid files) goes to /var/lib/openms, and a new volume on
+# /workspaces-streamlit-template starts out owned by this user. A volume
+# made for an image that ran as root is handed over once
+# (docs/deployment.md, "Running as a non-root user").
+RUN userdel -r ubuntu 2>/dev/null || true \
+    && groupadd -g 1000 openms \
+    && useradd -u 1000 -g 1000 -m -s /bin/bash openms \
+    && mkdir -p /var/lib/openms \
+    && chown 1000:1000 /var/lib/openms /workspaces-streamlit-template
+USER 1000:1000
 
 EXPOSE $PORT
 ENTRYPOINT ["/app/entrypoint.sh"]

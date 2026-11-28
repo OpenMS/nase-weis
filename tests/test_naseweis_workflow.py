@@ -176,54 +176,60 @@ def test_failed_tool_stops_the_pipeline(workflow, outcomes, expected_calls):
     assert workflow.executor.run_topp.call_count == expected_calls
 
 
-def test_example_loading_is_repeatable_and_preserves_user_files(workflow):
-    # Existing files with the example names belong to the user too.
-    for key, filename in [
-        ("mzML-files", "NME1.mzML"),
-        ("fasta-files", "NME1_Target.fasta"),
-    ]:
-        target = workflow.workflow_dir / "input-files" / key / filename
-        target.parent.mkdir(parents=True)
-        target.write_bytes(b"existing user data")
-    stored = workflow.params | {"FDR_cutoff": 0.01, "custom-note": "keep me"}
-    workflow.parameter_manager.write_parameters(stored)
-    workflow.load_example_data()
-    workflow.load_example_data()
-    saved = workflow.parameter_manager.read_parameters_strict()
-    assert saved["FDR_cutoff"] == 0.01 and saved["custom-note"] == "keep me"
-    for key in ["mzML-files", "fasta-files"]:
-        assert Path(saved[key]).read_bytes() == b"existing user data"
+def _preloading(workflow, saved=None):
+    """The workflow with an input UI and the settings ``saved`` (no inputs chosen)."""
+    from src.workflow.StreamlitUI import StreamlitUI
+
+    class UI(StreamlitUI):
+        def __init__(self, directory):  # pylint: disable=super-init-not-called
+            self.workflow_dir = directory
+            self.params = {}
+
+    workflow.ui = UI(workflow.workflow_dir)
+    workflow.params = dict(saved or {})
+    workflow.parameter_manager.write_parameters(workflow.params)
+    return workflow
 
 
-def test_example_loading_copies_both_inputs(workflow):
-    workflow.load_example_data()
+def test_example_is_preloaded_and_selected_until_the_user_chooses(workflow):
+    _preloading(workflow, {"FDR_cutoff": 0.01})
+    workflow.preload_examples()
+    workflow.preload_examples()
     saved = workflow.parameter_manager.read_parameters_strict()
-    assert (
-        Path(saved["mzML-files"]).read_bytes()
-        == Path("example-data/mzML/NME1.mzML").read_bytes()
-    )
+    assert saved["FDR_cutoff"] == 0.01
+    assert [Path(path).read_bytes() for path in saved["mzML-files"]] == [
+        Path("example-data/mzML/NME1.mzML").read_bytes()
+    ]
     assert (
         Path(saved["fasta-files"]).read_bytes()
         == Path("example-data/fasta/NME1_Target.fasta").read_bytes()
     )
 
 
+def test_preloading_keeps_a_saved_selection_and_the_users_files(workflow):
+    own = workflow.workflow_dir / "input-files" / "mzML-files" / "NME1.mzML"
+    own.parent.mkdir(parents=True)
+    own.write_bytes(b"existing user data")
+    _preloading(workflow, {"mzML-files": [], "custom-note": "keep me"})
+    workflow.preload_examples()
+    saved = workflow.parameter_manager.read_parameters_strict()
+    assert saved["mzML-files"] == [] and saved["custom-note"] == "keep me"
+    assert own.read_bytes() == b"existing user data"
+
+
 def test_example_selection_matches_the_listed_files_in_a_relative_workspace(workflow):
     # A source checkout keeps workspaces at "../workspaces-<app>", a relative
-    # path; Configure lists the input folders the same way, so a resolved path
-    # would never match and the selection would be dropped.
+    # path; Describe experiment lists the input folders the same way, so a
+    # resolved path would never match and the selection would be dropped.
     import os
 
     workflow.workflow_dir = Path(os.path.relpath(workflow.workflow_dir))
-    workflow.load_example_data()
+    _preloading(workflow)
+    workflow.preload_examples()
     saved = workflow.parameter_manager.read_parameters_strict()
-    for key, filename in [
-        ("mzML-files", "NME1.mzML"),
-        ("fasta-files", "NME1_Target.fasta"),
-    ]:
-        folder = workflow.workflow_dir / "input-files" / key
-        assert saved[key] in [str(f) for f in folder.iterdir()]
-        assert Path(saved[key]).name == filename
+    folder = workflow.workflow_dir / "input-files"
+    assert saved["mzML-files"] == [str(f) for f in (folder / "mzML-files").iterdir()]
+    assert saved["fasta-files"] in [str(f) for f in (folder / "fasta-files").iterdir()]
 
 
 @pytest.mark.parametrize(

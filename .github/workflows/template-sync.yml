@@ -58,13 +58,13 @@ jobs:
       GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN || github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           token: ${{ secrets.TEMPLATE_SYNC_TOKEN || github.token }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -211,6 +211,16 @@ jobs:
               echo "Merged without conflicts."
             fi
             echo
+            # Tests the sync adds or changes that test the template's example
+            # app: an app that replaced the example deletes or rewrites them.
+            git diff --name-only --diff-filter=AM HEAD^1 HEAD -- tests/ test_gui.py \
+              | while read -r f; do grep -lE 'src\.Workflow|content/' -- "$f" 2>/dev/null || true; done > /tmp/example-tests.txt
+            if [ -s /tmp/example-tests.txt ]; then
+              echo "Tests added or changed by this sync that use the template's example app. If this app replaced the example (\`src/Workflow.py\`, its pages), delete each one and add it to \`sync.app_owned\` in app.yaml, or rewrite it for this app's workflow (sync-from-template skill):"
+              echo
+              sed 's/^/- `/; s/$/`/' /tmp/example-tests.txt
+              echo
+            fi
             echo "Before merging: run one workflow on the example data. New template features the app should configure are listed in the template PRs of the range above. Merge with a merge commit, not squash, or the next sync conflicts again on the same lines."
             echo
             echo "_Opened by .github/workflows/template-sync.yml. See the sync-from-template skill._"

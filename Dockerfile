@@ -287,12 +287,6 @@ RUN touch /tmp/app-env/conda-requirements.txt \
         mamba install -y -n streamlit-env -c conda-forge --file /tmp/app-env/conda-specs.txt "python=${py}=*_cpython"; \
     fi && rm -rf /tmp/app-env
 
-# Create Redis data directory. Default 0755 root-owned is enough: the docker
-# entrypoint runs as root (can write regardless of mode), and the apptainer
-# entrypoint relocates Redis state to /tmp/openms-runtime-* so this dir is
-# never written under apptainer.
-RUN mkdir -p /var/lib/redis
-
 # Pre-create bind-mount targets so apptainer/singularity has a real attach
 # point. Docker auto-creates missing `-v` targets, but singularity uses a
 # read-only underlay and silently ignores `:rw` when the target isn't a
@@ -326,8 +320,6 @@ COPY contributors.json /app/contributors.json
 COPY .streamlit/ /app/.streamlit/
 COPY clean-up-workspaces.py /app/clean-up-workspaces.py
 
-# add cron job to the crontab
-RUN echo "0 3 * * * /root/miniforge3/envs/streamlit-env/bin/python /app/clean-up-workspaces.py >> /app/clean-up-workspaces.log 2>&1" | crontab -
 
 # Set default worker count (can be overridden via environment variable)
 ENV RQ_WORKER_COUNT=1
@@ -360,11 +352,14 @@ RUN jq '.online_deployment = true' settings.json > tmp.json && mv tmp.json setti
 # the user starts the container with `-v /host/path:/mounted-data`.
 RUN jq '.local_data_dir = "/mounted-data"' settings.json > tmp.json && mv tmp.json settings.json
 
-# Download the Windows installer of the latest release, if it has one.
+# Download the Windows installer of the latest release, if it has one, or of
+# the release RELEASE_TAG names (CI passes the tag of a release build, which
+# build-desktop-app.yaml starts once that release's installers are uploaded).
 # The token arrives as a BuildKit secret (`--secret id=github_token,env=GITHUB_TOKEN`),
 # so it is never written to the image or its build cache. INSTALLER_REFRESH
 # (CI passes the run id) re-runs this step on every build, as the token used to.
 ARG INSTALLER_REFRESH
+ARG RELEASE_TAG
 # Declared again: a build argument does not reach a later stage on its own.
 ARG GITHUB_USER
 ARG GITHUB_REPO
@@ -372,12 +367,24 @@ RUN --mount=type=secret,id=github_token \
     repo="${GITHUB_USER:-$(jq -r '."github-user"' settings.json)}/${GITHUB_REPO:-$(jq -r '."repository-name"' settings.json)}"; \
     if [ -s /run/secrets/github_token ]; then \
         echo "GitHub token secret is set, proceeding to download the release asset..."; \
-        GH_TOKEN="$(cat /run/secrets/github_token)" gh release download -R "$repo" -p "*-Setup.exe" -O /app/OpenMS-App-Setup.exe \
-            || echo "The latest release has no Windows installer, skipping."; \
+        GH_TOKEN="$(cat /run/secrets/github_token)" gh release download $RELEASE_TAG -R "$repo" -p "*-Setup.exe" -O /app/OpenMS-App-Setup.exe \
+            || echo "The release ${RELEASE_TAG:-(latest)} has no Windows installer, skipping."; \
     else \
         echo "No github_token secret, skipping the release asset download."; \
     fi
 
+# Run as an unprivileged user, uid 1000, the user the Kubernetes manifests
+# name too. What the entrypoint writes (Redis data, the nginx configuration,
+# pid files) goes to /var/lib/openms, and a new volume on
+# /workspaces-streamlit-template starts out owned by this user. A volume
+# made for an image that ran as root is handed over once
+# (docs/deployment.md, "Running as a non-root user").
+RUN userdel -r ubuntu 2>/dev/null || true \
+    && groupadd -g 1000 openms \
+    && useradd -u 1000 -g 1000 -m -s /bin/bash openms \
+    && mkdir -p /var/lib/openms \
+    && chown 1000:1000 /var/lib/openms /workspaces-streamlit-template
+USER 1000:1000
 
 # Run app as container entrypoint.
 EXPOSE $PORT

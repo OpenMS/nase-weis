@@ -1,5 +1,10 @@
 name: NASEWEIS regressions
 on:
+  # Its own triggers, so the template-owned ci.yml stays unchanged.
+  pull_request:
+    branches: [ "main", "develop" ]
+  push:
+    branches: [ "main" ]
   workflow_call:
   workflow_dispatch:
 permissions:

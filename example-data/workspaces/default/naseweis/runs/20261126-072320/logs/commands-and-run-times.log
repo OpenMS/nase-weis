@@ -1,0 +1,26 @@
+STARTING WORKFLOW
+
+[sample_001: NME1.mzML] Starting sample workflow.
+
+[sample_001: NME1.mzML] Generating RNA decoys...
+
+[sample_001: NME1.mzML] Running command:
+DecoyDatabase -in example-data/fasta/NME1_Target.fasta -out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta -type RNA -method shuffle -decoy_string DECOY_ -decoy_string_position prefix -threads 3
+Waiting for command to finish...
+
+[sample_001: NME1.mzML] Process finished:
+DecoyDatabase -in example-data/fasta/NME1_Target.fasta -out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta -type RNA -method shuffle -decoy_string DECOY_ -decoy_string_position prefix -threads 3
+Total time to run command: 0.07 seconds
+
+[sample_001: NME1.mzML] Searching RNA oligonucleotides...
+
+[sample_001: NME1.mzML] Running command:
+NucleicAcidSearchEngine -in example-data/mzML/NME1.mzML -database example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta -out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/mztab_results/search.mzTab -id_out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/idxml_results/search.idXML -oligo:enzyme RNase_T1 -fdr:decoy_pattern DECOY_ -fdr:remove_decoys -fdr:cutoff 0.05 -threads 3
+Waiting for command to finish...
+
+[sample_001: NME1.mzML] Process finished:
+NucleicAcidSearchEngine -in example-data/mzML/NME1.mzML -database example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/database/target-decoy.fasta -out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/mztab_results/search.mzTab -id_out example-data/workspaces/default/naseweis/runs/20261126-072320/results/samples/sample_001/results/idxml_results/search.idXML -oligo:enzyme RNase_T1 -fdr:decoy_pattern DECOY_ -fdr:remove_decoys -fdr:cutoff 0.05 -threads 3
+Total time to run command: 0.56 seconds
+
+WORKFLOW FINISHED
+

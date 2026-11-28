@@ -55,7 +55,7 @@ results:
   - {role: table, workflow: NASEWEIS, title: MS1 feature intensities, source: quantification}
 pages:
   - content/quickstart.py
-  - content/topp_workflow_file_upload.py
+  - content/topp_workflow_download.py
   - content/naseweis.py
   - content/topp_workflow_execution.py
   - content/topp_workflow_results.py
@@ -70,6 +70,17 @@ deploy:
   images: [full]
   docker_compose: true
   desktop: [windows, linux, macos]
+  desktop_app:
+    name: NASEWEIS
+    topp_tools: [DecoyDatabase, NucleicAcidSearchEngine, FileConverter, FeatureFinderMetaboIdent, TextExporter]
+    openms: "OpenMS/OpenMS@01540e638431426a39b4d7acce41a5e2c738b235"
+    # The app runs this OpenMS nightly (openms-runtime.json, docker/Dockerfile.app);
+    # the template's full Dockerfile builds a release, which cannot clone a commit.
+    same_openms_as_images: false
+    # TEMPORARY: openms-insight 0.7.10 from its branch until it is on PyPI.
+    stage_script: scripts/desktop_insight_dev.sh
+    # The NASEWEIS logo on a dark tile: window, dock or taskbar and installer.
+    icon: assets/naseweis-icon.png
   online_deployment: false
 sync:
   app_owned:
@@ -96,9 +107,12 @@ sync:
     - src/naseweis_coverage.py
     - src/naseweis_result_plots_ui.py
     - src/naseweis_viewers.py
+    - src/viewer/*
+    - src/naseweis_data_folder.py
     - src/naseweis_msdata.py
     - src/naseweis_annotations.py
     - src/naseweis_plots.py
+    - src/naseweis_insight.py
     - src/naseweis_provenance.py
     - src/DecoyWorkflow.py
     - openms-runtime.json
@@ -116,6 +130,7 @@ sync:
     - scripts/generate_naseweis_reference.py
     - tests/conftest.py
     - tests/naseweis_reference.py
+    - tests/browser/*
     - tests/data/naseweis/*
     - src/python-tools/*
     - example-data/*

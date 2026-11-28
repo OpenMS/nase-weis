@@ -1,0 +1,1 @@
+{"fasta-files": "example-data/fasta/NME1_Target.fasta", "max_threads": 2, "mzML-files": ["example-data/mzML/NME1.mzML"], "enable-lfq": false, "_sample_design": [{"file": "example-data/mzML/NME1.mzML", "condition": "NME1", "replicate": 1, "fraction": 1}]}

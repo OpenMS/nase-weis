@@ -21,8 +21,11 @@ from test_naseweis_viewers_gui import (
 )
 
 from src.naseweis_experiment import sample_results
+from tests.naseweis_drawn import coverage_shown
 from src.workflow.RunManager import RunManager
-from test_gui import _downloads, _results_page, app, topp_schemas  # noqa: F401
+from test_gui import _downloads, _matches, _results_page, app, topp_schemas  # noqa: F401
+
+from tests import naseweis_drawn
 
 
 def test_unstarted_user_can_visit_results_raw_run_and_database_results_in_any_order(app):
@@ -35,11 +38,11 @@ def test_unstarted_user_can_visit_results_raw_run_and_database_results_in_any_or
     ):
         app.switch_page(page).run(timeout=30)
         assert not app.exception
-        assert not app.get("plotly_chart")
+        assert not plots(app)
         if page.endswith("topp_workflow_results.py"):
             assert any("No finished runs yet" in item.value for item in app.info)
         if page.endswith("naseweis_raw_viewer.py"):
-            assert any("Upload an acquisition" in item.value for item in app.info)
+            assert any("Add an acquisition on Describe experiment" in item.value for item in app.info)
     app.switch_page("content/decoy_database.py").run(timeout=30)
     app.radio(key="decoy-database-step").set_value("Results").run(timeout=30)
     assert not app.exception
@@ -84,7 +87,7 @@ def test_raw_viewer_recovers_from_bad_file_then_clears_deleted_evidence(app):
     app.run(timeout=30)
     assert not app.exception
     assert not plots(app)
-    assert any("Upload an acquisition" in item.value for item in app.info)
+    assert any("Add an acquisition on Describe experiment" in item.value for item in app.info)
 
 
 def test_raw_viewer_empty_acquisition_stays_an_explanation_after_page_changes(app):
@@ -96,7 +99,7 @@ def test_raw_viewer_empty_acquisition_stays_an_explanation_after_page_changes(ap
     app.switch_page("content/topp_workflow_results.py").run(timeout=30)
     app.switch_page("content/naseweis_raw_viewer.py").run(timeout=30)
     assert not app.exception
-    assert not app.get("plotly_chart")
+    assert not plots(app)
     if any(button.label == "Load acquisition" for button in app.button):
         click(app, "Load acquisition")
     assert any("contains no spectra" in item.value for item in app.info)
@@ -114,16 +117,16 @@ def test_saved_result_recovers_after_required_file_is_restored(app, tmp_path, mi
         assert "Download matches (CSV)" not in _downloads(app)
     else:
         assert any("Spectrum viewing is unavailable" in item.value for item in app.info)
-        assert app.dataframe[0].value.loc[0, "Sequence"] == "ACGU"
-        assert "Download coverage (SVG)" in _downloads(app)
+        assert _matches(app).loc[0, "Sequence"] == "ACGU"
+        assert coverage_shown(app)
         assert "Download mzTab" in _downloads(app)
     path.write_bytes(content)
     _results_page(app)
     assert not app.error
     assert not any("Spectrum viewing is unavailable" in item.value for item in app.info)
-    assert app.dataframe[0].value.loc[0, "Sequence"] == "ACGU"
+    assert _matches(app).loc[0, "Sequence"] == "ACGU"
     click(app, "Open spectrum viewer")
-    spectrum = next(figure for figure in plots(app) if figure["layout"].get("xaxis", {}).get("title", {}).get("text") == "m/z")
+    spectrum = next(figure for figure in plots(app) if figure["settings"].get("x_column") == "mz")
     assert peak_coordinates(spectrum) == [(100.0, 50.0), (200.0, 100.0)]
 
 
@@ -132,8 +135,8 @@ def test_deleted_acquisition_preserves_lfq_map_tables_and_coverage(app, tmp_path
     feature_table(result)
     original.unlink()
     _results_page(app)
-    assert app.dataframe[0].value.loc[0, "Sequence"] == "ACGU"
-    assert "Download coverage (SVG)" in _downloads(app)
+    assert _matches(app).loc[0, "Sequence"] == "ACGU"
+    assert coverage_shown(app)
     assert "Download LFQ feature table (TSV)" in _downloads(app)
     click(app, "Open LFQ feature viewer")
     assert len(plots(app)) == 1
@@ -157,7 +160,7 @@ def test_partial_experiment_keeps_sample_evidence_but_hides_complete_cohort_comp
     assert "Download abundance matrix (TSV)" not in _downloads(app)
     assert "Download matches (CSV)" in _downloads(app)
     assert "Download mzTab" in _downloads(app)
-    assert "Download coverage (SVG)" in _downloads(app)
+    assert coverage_shown(app)
     picker = next(box for box in app.selectbox if box.label == "Acquisition details")
     picker.set_value("sample_002").run(timeout=30)
     assert not app.exception
@@ -227,12 +230,12 @@ def test_results_workspace_switch_cannot_display_another_workspaces_saved_run(ap
     app.run(timeout=30)
     assert not app.exception
     assert Path(app.session_state.workspace) == other
-    assert not app.get("plotly_chart")
-    assert not app.dataframe
+    assert not plots(app)
+    assert not naseweis_drawn.tables(app.drawn)
     assert "Download matches (CSV)" not in _downloads(app)
     assert any("No finished runs yet" in item.value for item in app.info)
     next(box for box in app.sidebar.selectbox if box.label == "choose existing workspace").set_value(original.name).run(timeout=30)
     app.run(timeout=30)
     assert not app.exception
-    assert app.dataframe[0].value.loc[0, "Sequence"] == "ACGU"
+    assert _matches(app).loc[0, "Sequence"] == "ACGU"
     assert "Download matches (CSV)" in _downloads(app)

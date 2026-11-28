@@ -6,9 +6,10 @@ import math
 from pathlib import Path
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
+from src.naseweis_insight import show_plot, show_table
+from src.naseweis_plots import abundance_bars_plot
 from src.naseweis_result_plots_ui import (
     render_acquisition_scatter,
     render_experiment_coverage,
@@ -21,6 +22,10 @@ from src.workflow.ExperimentalDesign import (
     load_design,
     save_design,
 )
+
+EXAMPLE_MZML = ["example-data/mzML/NME1.mzML"]
+EXAMPLE_FASTA = ["example-data/fasta/NME1_Target.fasta"]
+_EXAMPLE_NAMES = {Path(f).name for f in EXAMPLE_MZML}
 
 NORMALIZATIONS = {"total": "Total area", "none": "None"}
 MEASURES = {"intensity": "Native feature area", "model_area": "Fitted model area"}
@@ -91,7 +96,18 @@ def _design_ready(workflow, selected):
 
 
 def configure_experiment_inputs(workflow):
-    """Migrate legacy single-file selections before rendering the multi-select."""
+    """Pick the acquisitions, then describe their samples (both parts in one place)."""
+    selected = select_acquisitions(workflow)
+    if selected is None:
+        return
+    configure_sample_design(workflow, selected)
+
+
+def select_acquisitions(workflow):
+    """The acquisitions of the next experiment, or None while the saved selection is invalid.
+
+    Migrates legacy single-file selections before rendering the multi-select.
+    """
     key = "mzML-files"
     widget = f"{workflow.parameter_manager.param_prefix}{key}"
     value = st.session_state.get(widget, workflow.params.get(key, []))
@@ -111,20 +127,23 @@ def configure_experiment_inputs(workflow):
             st.session_state[widget] = []
             st.session_state.pop(f"_pending-{widget}", None)
             st.rerun()
-        return
+        return None
     available = set(workflow.ui._input_file_options(key))
     unavailable = [path for path in selected if path not in available]
-    if unavailable:
+    # The example leaves once files of the user's own are added: no warning for it
+    missing = [Path(path).name for path in unavailable if Path(path).name not in _EXAMPLE_NAMES]
+    if missing:
         st.warning(
             "Previously selected acquisitions are no longer available in this workspace: "
-            + ", ".join(Path(path).name for path in unavailable)
+            + ", ".join(missing)
             + ". Add them again with Browse or select other inputs."
         )
+    if unavailable:
         selected = [path for path in selected if path in available]
     if value != selected or workflow.params.get(key) != selected:
         st.session_state[widget] = selected
         if not workflow.parameter_manager.save_parameters():
-            return
+            return None
     workflow.params[key] = selected
     workflow.ui.params[key] = selected
     workflow.ui.select_input_file(
@@ -132,11 +151,27 @@ def configure_experiment_inputs(workflow):
         name="MS/MS acquisitions",
         multiple=True,
         reactive=True,
-        upload={"file_types": ["mzML", "raw", "d"]},
+        upload={"file_types": ["mzML", "raw", "d"], "fallback": EXAMPLE_MZML},
     )
     selected = st.session_state.get(widget, workflow.ui.params.get(key, []))
     workflow.params[key] = list(selected)
     workflow.ui.params[key] = list(selected)
+    return list(selected)
+
+
+def configure_sample_design(workflow, selected=None):
+    """Conditions and replicates of the selected acquisitions, with the LFQ checks."""
+    key = "mzML-files"
+    if selected is None:
+        widget = f"{workflow.parameter_manager.param_prefix}{key}"
+        value = st.session_state.get(widget, workflow.params.get(key, []))
+        value = [value] if isinstance(value, str) and value else (value or [])
+        if not isinstance(value, list) or any(
+            not isinstance(path, str) or not path.strip() for path in value
+        ):
+            st.info("Reset the acquisition selection under **Your analysis** to describe the samples.")
+            return
+        selected = list(value)
     st.caption(
         "Every selected acquisition is included in the next experiment. "
         "Conditions and biological replicate numbers are required for LFQ and "
@@ -233,17 +268,92 @@ def _sample_labels(samples):
     }
 
 
-def _download_frame(label, frame, filename, *, index_label):
+def _download_frame(label, frame, filename, *, index_label, key=None):
     st.download_button(
         label,
         frame.to_csv(sep="\t", index_label=index_label, na_rep="").encode(),
         filename,
         "text/tab-separated-values",
+        key=key,
     )
 
 
-def _render_comparison(root, samples, prefix):
-    from src.naseweis_comparison import compare_conditions, load_comparison
+def _conditions(design):
+    return sorted({str(v).strip() for v in design["condition"].dropna() if str(v).strip()})
+
+
+def _choice_keys(prefix):
+    return f"{prefix}-cmp-numerator", f"{prefix}-cmp-denominator", f"{prefix}-cmp-normalization"
+
+
+def comparison_choices(prefix, conditions, saved_normalization):
+    """(numerator, denominator, normalization) picked in Edit comparison, or
+    the defaults: the last condition over the first other one, and the
+    normalization the run was compared with."""
+    num_key, den_key, norm_key = _choice_keys(prefix)
+    numerator = st.session_state.get(num_key)
+    if numerator not in conditions:
+        numerator = conditions[-1] if conditions else None
+    others = [c for c in conditions if c != numerator]
+    denominator = st.session_state.get(den_key)
+    if denominator not in others:
+        denominator = others[0] if others else None
+    normalization = st.session_state.get(norm_key)
+    if normalization not in NORMALIZATIONS:
+        normalization = saved_normalization if saved_normalization in NORMALIZATIONS else "total"
+    return numerator, denominator, normalization
+
+
+def reset_comparison_choices(prefix):
+    for name in _choice_keys(prefix):
+        st.session_state.pop(name, None)
+
+
+def comparison_steps(context):
+    """The steps of Edit comparison for an experiment with a finished comparison."""
+    from src.naseweis_comparison import load_comparison
+
+    prefix = context["prefix"]
+    num_key, den_key, norm_key = _choice_keys(prefix)
+    try:
+        comparison = load_comparison(context["root"])
+    except (OSError, ValueError, KeyError):
+        return []
+    conditions = _conditions(comparison["design"])
+    saved = comparison["metadata"].get("normalization", "none")
+
+    def conditions_step():
+        numerator, denominator, _ = comparison_choices(prefix, conditions, saved)
+        if len(conditions) < 2:
+            st.info("Assign at least two conditions in the experimental design to compare them.")
+            return
+        st.caption("Ratios and log2 fold changes are numerator / denominator.")
+        picked = st.selectbox("Numerator condition", conditions, index=conditions.index(numerator),
+                              key=f"{num_key}-widget")
+        st.session_state[num_key] = picked
+        others = [c for c in conditions if c != picked]
+        if denominator not in others:
+            denominator = others[0]
+        st.session_state[den_key] = st.selectbox(
+            "Denominator condition", others, index=others.index(denominator), key=f"{den_key}-widget")
+
+    def normalization_step():
+        _, _, normalization = comparison_choices(prefix, conditions, saved)
+        st.caption("Total area divides each oligonucleotide's area by the sum of the quantified "
+                   "areas in its sample. None keeps the extracted areas.")
+        options = list(NORMALIZATIONS)
+        picked = st.segmented_control("Normalization", options, default=normalization,
+                                      format_func=NORMALIZATIONS.get, key=f"{norm_key}-widget")
+        st.session_state[norm_key] = picked or normalization
+
+    return [("1. Conditions", conditions_step), ("2. Normalization", normalization_step)]
+
+
+def _render_comparison(root, samples, prefix, controls=True):
+    """The condition comparison of an experiment. ``controls`` draws the
+    condition pickers here; without them the choices of Edit comparison
+    (``comparison_choices``) are used, with the normalization picked there."""
+    from src.naseweis_comparison import compare_conditions, load_comparison, normalized
 
     try:
         comparison = load_comparison(root)
@@ -264,6 +374,11 @@ def _render_comparison(root, samples, prefix):
         return
     measure = metadata.get("measure", "intensity")
     normalization = metadata.get("normalization", "none")
+    conditions = _conditions(design)
+    if not controls:
+        numerator, denominator, picked = comparison_choices(prefix, conditions, normalization)
+        if picked != normalization:
+            matrix, normalization = normalized(raw, picked), picked
     st.caption(
         f"Area measure: {MEASURES.get(measure, measure)}. "
         f"Normalization: {NORMALIZATIONS.get(normalization, normalization)}. "
@@ -274,19 +389,21 @@ def _render_comparison(root, samples, prefix):
     labels = _sample_labels(samples)
     with st.expander("Abundance tables and downloads"):
         st.markdown("**RNA abundance matrix**")
-        st.dataframe(matrix.rename(columns=labels), use_container_width=True)
+        show_table(_labelled(matrix.rename(columns=labels)), f"{prefix}-abundance-table",
+                   "naseweis-abundances")
         st.markdown("**Raw extracted areas**")
-        st.dataframe(raw.rename(columns=labels), use_container_width=True)
+        show_table(_labelled(raw.rename(columns=labels)), f"{prefix}-raw-table", "naseweis-raw-areas")
         _download_frame(
-            "Download abundance matrix (TSV)", matrix, "abundances.tsv", index_label="label"
+            "Download abundance matrix (TSV)", matrix, "abundances.tsv", key=f"{prefix}-abundances.tsv", index_label="label"
         )
         _download_frame(
-            "Download raw areas (TSV)", raw, "raw-abundances.tsv", index_label="label"
+            "Download raw areas (TSV)", raw, "raw-abundances.tsv", key=f"{prefix}-raw-abundances.tsv", index_label="label"
         )
         _download_frame(
             "Download sample design (TSV)",
             design,
             "sample-design.tsv",
+            key=f"{prefix}-sample-design.tsv",
             index_label="sample_id",
         )
         st.download_button(
@@ -294,6 +411,7 @@ def _render_comparison(root, samples, prefix):
             json.dumps(metadata, indent=2).encode(),
             "comparison.json",
             "application/json",
+            key=f"{prefix}-comparison.json",
         )
     if matrix.empty:
         st.info("No quantified RNA targets are available for comparison.")
@@ -303,31 +421,16 @@ def _render_comparison(root, samples, prefix):
             "RNA oligonucleotide", list(matrix.index), key=f"{prefix}-target"
         )
         values = matrix.loc[target]
-        figure = go.Figure(
-            go.Bar(
-                x=[labels.get(column, column) for column in matrix.columns],
-                y=[None if pd.isna(value) else float(value) for value in values],
-                name=str(target),
-            )
-        )
-        figure.update_layout(
-            title=str(target),
-            xaxis_title="Acquisition",
-            yaxis_title=(
-                "Relative RNA abundance"
-                if normalization == "total"
-                else MEASURES.get(measure, measure)
+        show_plot(
+            abundance_bars_plot(
+                [labels.get(column, column) for column in matrix.columns],
+                list(values),
+                str(target),
+                "Relative RNA abundance" if normalization == "total" else MEASURES.get(measure, measure),
             ),
-            showlegend=False,
+            f"{prefix}-abundance",
+            "naseweis-abundance",
         )
-        st.plotly_chart(figure, use_container_width=True, key=f"{prefix}-abundance")
-    conditions = sorted(
-        {
-            str(value).strip()
-            for value in design["condition"].dropna()
-            if str(value).strip()
-        }
-    )
     if len(conditions) < 2:
         st.info(
             "Assign at least two conditions to compare biological replicate abundances."
@@ -337,17 +440,21 @@ def _render_comparison(root, samples, prefix):
         )
         return
     st.markdown("**Condition comparison**")
-    numerator = st.selectbox(
-        "Numerator condition",
-        conditions,
-        index=len(conditions) - 1,
-        key=f"{prefix}-numerator",
-    )
-    denominator = st.selectbox(
-        "Denominator condition",
-        [value for value in conditions if value != numerator],
-        key=f"{prefix}-denominator",
-    )
+    if controls:
+        numerator = st.selectbox(
+            "Numerator condition",
+            conditions,
+            index=len(conditions) - 1,
+            key=f"{prefix}-numerator",
+        )
+        denominator = st.selectbox(
+            "Denominator condition",
+            [value for value in conditions if value != numerator],
+            key=f"{prefix}-denominator",
+        )
+    else:
+        st.caption(f"**{numerator}** over **{denominator}**. Change the conditions and the "
+                   "normalization with **Edit comparison** above.")
     st.caption(
         "Technical repeats are averaged within each biological replicate first. "
         "Means, standard deviations and counts describe biological replicates. "
@@ -363,15 +470,13 @@ def _render_comparison(root, samples, prefix):
         measure=measure, normalization=normalization,
     )
     leading = ["log2_fold_change", "ratio"]
-    st.dataframe(
-        contrasts[leading + [column for column in contrasts if column not in leading]],
-        use_container_width=True,
-        column_config={
-            "_index": "RNA oligonucleotide",
-            "log2_fold_change": st.column_config.NumberColumn(
-                "Log2 fold change", format="%.3g"
-            ),
-            "ratio": st.column_config.NumberColumn("Ratio", format="%.3g"),
+    show_table(
+        _labelled(contrasts[leading + [column for column in contrasts if column not in leading]]),
+        f"{prefix}-contrast-table", "naseweis-condition-comparison",
+        titles={
+            "label": "RNA oligonucleotide",
+            "log2_fold_change": "Log2 fold change",
+            "ratio": "Ratio",
             "numerator_mean": f"{numerator} mean",
             "numerator_std": f"{numerator} SD",
             "numerator_n": f"{numerator} replicates",
@@ -394,23 +499,22 @@ def _render_comparison(root, samples, prefix):
         "Download condition comparison (TSV)",
         exported,
         "condition-comparison.tsv",
+        key=f"{prefix}-condition-comparison.tsv",
         index_label="label",
     )
 
 
-def render_experiment_results(workflow, render_sample):
-    """Render saved experiment outputs; return False for a legacy single run."""
-    from src.naseweis_experiment import load_manifest, sample_results
+def experiment_context(workflow):
+    """Read a run's experiment; None for a legacy single run.
+
+    Raises OSError or ValueError when the manifest cannot be read.
+    """
+    from src.naseweis_experiment import load_manifest
 
     root = Path(workflow.results_dir)
-    try:
-        manifest = load_manifest(root)
-    except (OSError, ValueError) as error:
-        st.error(f"Could not read this experiment: {error}")
-        return True
+    manifest = load_manifest(root)
     if manifest is None:
-        return False
-    samples = manifest["samples"]
+        return None
     partial_run = getattr(workflow, "_result_run_status", None) in {
         "failed", "cancelled", "interrupted"
     }
@@ -422,73 +526,168 @@ def render_experiment_results(workflow, render_sample):
             return "not completed"
         return sample["status"]
 
-    prefix = (
-        "experiment-" + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
-    )
-    summary, coverage, quantification, details = st.tabs(
-        ["Experiment summary", "Sequence coverage", "Quantification", "Sample details"]
-    )
-    with summary:
-        finished = sum(sample["status"] == "finished" for sample in samples)
-        st.metric("Completed acquisitions", f"{finished} / {len(samples)}")
-        columns = [
-            "id",
-            "file",
-            "condition",
-            "replicate",
-            "fraction",
-            "status",
-            "error",
-        ]
-        table = pd.DataFrame(samples).reindex(columns=columns)
-        table["status"] = [displayed_status(sample) for sample in samples]
-        st.dataframe(
-            table.dropna(axis=1, how="all"), hide_index=True, use_container_width=True
+    return {
+        "root": root,
+        "manifest": manifest,
+        "samples": manifest["samples"],
+        "partial_run": partial_run,
+        "displayed_status": displayed_status,
+        "prefix": (
+            "experiment-"
+            + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
+        ),
+    }
+
+
+def experiment_summary_section(context):
+    samples = context["samples"]
+    finished = sum(sample["status"] == "finished" for sample in samples)
+    summary_tiles(context)
+    columns = [
+        "id",
+        "file",
+        "condition",
+        "replicate",
+        "fraction",
+        "status",
+        "error",
+    ]
+    table = pd.DataFrame(samples).reindex(columns=columns)
+    table["status"] = [context["displayed_status"](sample) for sample in samples]
+    show_table(table.dropna(axis=1, how="all"), f"{context['prefix']}-samples", "naseweis-samples",
+               title="Acquisitions", titles={c: c.capitalize() for c in columns})
+    if finished < len(samples):
+        st.warning(
+            "This experiment has incomplete acquisitions. Review their statuses and available sample results below."
         )
-        if finished < len(samples):
-            st.warning(
-                "This experiment has incomplete acquisitions. Review their statuses and available sample results below."
-            )
-    with coverage:
-        render_experiment_coverage(root, samples, prefix)
-    with quantification:
-        if not manifest.get("lfq_enabled", False):
-            st.info(
-                "This is an identification-only experiment. Label-free quantification was not enabled for this run."
-            )
-        elif (
-            partial_run
-            or manifest.get("status") != "finished"
-            or manifest.get("comparison_status") != "finished"
-            or not all(sample["status"] == "finished" for sample in samples)
-        ):
-            st.warning(
-                "Comparison is unavailable for this incomplete experiment. A complete cohort is required; available acquisition results remain accessible under Sample details."
-            )
+
+
+def experiment_figures(context):
+    """What the experiment found: completed acquisitions, conditions, and the
+    spectrum matches, oligonucleotides and RNAs pooled over its acquisitions."""
+    from src.naseweis_result_plots_ui import coverage_accessions, experiment_coverage_tables
+
+    samples = context["samples"]
+    groups = experiment_coverage_tables(context["root"], samples)
+    matches, oligos = 0, set()
+    for _sample, tables in groups:
+        osm = tables.get("OSM")
+        if osm is not None and not osm.empty:
+            matches += len(osm)
+            if "sequence" in osm:
+                oligos.update(osm["sequence"].dropna().astype(str))
+    conditions = {str(s.get("condition") or "") for s in samples} - {""}
+    return {
+        "finished": sum(sample["status"] == "finished" for sample in samples),
+        "acquisitions": len(samples),
+        "conditions": len(conditions),
+        "matches": matches,
+        "oligonucleotides": len(oligos),
+        "rnas": len(coverage_accessions(groups)),
+    }
+
+
+def summary_tiles(context):
+    """The experiment's figures as tiles, each with what it counts."""
+    figures = experiment_figures(context)
+    tiles = [
+        ("Completed acquisitions", f"{figures['finished']} / {figures['acquisitions']}",
+         "Acquisitions whose search finished, of all acquisitions of the experiment."),
+        ("Conditions", f"{figures['conditions']:,}", "Conditions named in the experimental design."),
+        ("Spectrum matches", f"{figures['matches']:,}",
+         "Spectra assigned to an oligonucleotide at the FDR cutoff, over all acquisitions."),
+        ("Oligonucleotides", f"{figures['oligonucleotides']:,}",
+         "Distinct oligonucleotide sequences, modifications included."),
+        ("RNAs", f"{figures['rnas']:,}", "RNAs of the database the oligonucleotides map to."),
+    ]
+    for col, (label, value, help_text) in zip(st.columns(len(tiles)), tiles):
+        col.metric(label, value, help=help_text)
+
+
+def _labelled(frame):
+    """``frame`` with its index (the oligonucleotides) as the column ``label``."""
+    shown = frame.copy()
+    shown.index = shown.index.astype(str)
+    shown.index.name = "label"
+    return shown.reset_index()
+
+
+def experiment_coverage_section(context):
+    render_experiment_coverage(context["root"], context["samples"], context["prefix"])
+
+
+def comparison_ready(context):
+    """True when the experiment holds a finished comparison of all its samples."""
+    manifest, samples = context["manifest"], context["samples"]
+    return bool(
+        manifest.get("lfq_enabled", False)
+        and not context["partial_run"]
+        and manifest.get("status") == "finished"
+        and manifest.get("comparison_status") == "finished"
+        and all(sample["status"] == "finished" for sample in samples)
+    )
+
+
+def experiment_quantification_section(context, controls=True):
+    manifest = context["manifest"]
+    if not manifest.get("lfq_enabled", False):
+        st.info(
+            "This is an identification-only experiment. Label-free quantification was not enabled for this run."
+        )
+    elif not comparison_ready(context):
+        st.warning(
+            "Comparison is unavailable for this incomplete experiment. A complete cohort is required; available acquisition results remain accessible under Sample details."
+        )
+    else:
+        _render_comparison(context["root"], context["samples"], context["prefix"], controls=controls)
+
+
+def sample_details_section(context, render_sample):
+    from src.naseweis_experiment import sample_results
+
+    samples, root = context["samples"], context["root"]
+    displayed_status = context["displayed_status"]
+    if not samples:
+        st.info("This experiment has no acquisitions.")
+        return
+    by_id = {sample["id"]: sample for sample in samples}
+    labels = _sample_labels(samples)
+    selected = st.selectbox(
+        "Acquisition details",
+        list(by_id),
+        format_func=lambda sample_id: (
+            f"{labels[sample_id]} · {displayed_status(by_id[sample_id])}"
+        ),
+        key=f"{context['prefix']}-sample",
+    )
+    sample = by_id[selected]
+    try:
+        available = sample_results(root, selected).is_dir()
+    except (OSError, ValueError) as error:
+        st.error(f"Could not open this acquisition's results: {error}")
+    else:
+        if available:
+            render_sample(sample)
         else:
-            _render_comparison(root, samples, prefix)
-    with details:
-        if not samples:
-            st.info("This experiment has no acquisitions.")
-        else:
-            by_id = {sample["id"]: sample for sample in samples}
-            labels = _sample_labels(samples)
-            selected = st.selectbox(
-                "Acquisition details",
-                list(by_id),
-                format_func=lambda sample_id: (
-                    f"{labels[sample_id]} · {displayed_status(by_id[sample_id])}"
-                ),
-                key=f"{prefix}-sample",
-            )
-            sample = by_id[selected]
-            try:
-                available = sample_results(root, selected).is_dir()
-            except (OSError, ValueError) as error:
-                st.error(f"Could not open this acquisition's results: {error}")
-            else:
-                if available:
-                    render_sample(sample)
-                else:
-                    st.info("No sample result files are available yet.")
+            st.info("No sample result files are available yet.")
+
+
+def render_experiment_results(workflow, render_sample):
+    """Render saved experiment outputs; return False for a legacy single run."""
+    try:
+        context = experiment_context(workflow)
+    except (OSError, ValueError) as error:
+        st.error(f"Could not read this experiment: {error}")
+        return True
+    if context is None:
+        return False
+    for title, draw in (
+        ("Experiment summary", lambda: experiment_summary_section(context)),
+        ("Sequence coverage", lambda: experiment_coverage_section(context)),
+        ("Quantification", lambda: experiment_quantification_section(context)),
+        ("Sample details", lambda: sample_details_section(context, render_sample)),
+    ):
+        with st.container(border=True):
+            st.subheader(title)
+            draw()
     return True

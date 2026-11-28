@@ -1,34 +1,50 @@
-"""Pure, offline figures for NASE spectra, raw acquisitions and RNA features.
+"""Pure, offline plot specifications for NASE spectra, acquisitions and RNA features.
 
-The mass-spectrometry plots use the application's pinned pyopenms-viz backend.
-Plotly annotations work around its incomplete feature and RNA label support.
+Every plot is an OpenMS-Insight component from the template's visualization
+library: a ``Plot`` names the component, the rows it draws and its settings.
+``src.naseweis_insight.show_plot`` draws it. Nothing here imports Streamlit.
 """
 
-import re
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from html import escape
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
+import polars as pl
 
-ION_COLORS = {
-    "a-B": "#0072B2",
-    "a": "#56B4E9",
-    "b": "#009E73",
-    "c": "#E69F00",
-    "d": "#CC79A7",
-    "w": "#D55E00",
-    "x": "#F0E442",
-    "y": "#CC0000",
-    "z": "#999999",
-}
-UNKNOWN_ION_COLOR = "#6B7280"
-SELECTED_ION_COLOR = "#C58B00"
+from src.viz.identification import fragment_spectrum
+from src.viz.quantification import feature_xic
+from src.viz.identification.fragment_spectrum import ION_COLORS, UNKNOWN_ION_COLOR
+
+# The picked colour of the template's plot style
+SELECTED_ION_COLOR = "#ff7501"
 TRACE_COLORS = {"TIC": "#0072B2", "BPC": "#009E73", "XIC": "#D55E00"}
+
+__all__ = [
+    "ION_COLORS", "UNKNOWN_ION_COLOR", "SELECTED_ION_COLOR", "TRACE_COLORS", "Plot",
+    "ion_series", "spectrum_plot", "chromatogram_plot", "peakmap_plots", "feature_map_plot",
+    "feature_xic_plot", "abundance_bars_plot",
+]
+
+
+@dataclass(frozen=True)
+class Plot:
+    """One Insight component: its class name in ``openms_insight``, the rows it
+    draws, its constructor arguments and the table offered as a download."""
+
+    component: str
+    data: pl.DataFrame
+    settings: dict
+    table: pd.DataFrame = field(default_factory=pd.DataFrame)
+    height: int = 380
+    #: Settings in the component's own cog menu (openms-insight ``toolbar_settings``).
+    toolbar: list | None = None
 
 
 def _text(value) -> str:
-    """Treat annotations as text, including dollar signs used by MathJax."""
+    """Treat labels as text, including dollar signs some renderers read as math."""
     return escape(str(value), quote=True).replace("$", "&#36;")
 
 
@@ -41,8 +57,6 @@ def _frame(data, columns: tuple[str, ...], context: str) -> pd.DataFrame:
         raise ValueError(f"{context} is missing columns: {', '.join(sorted(missing))}.")
     if data.empty:
         raise ValueError(f"No {context.lower()} are available to plot.")
-    # Backend hover data includes the index; use numeric row positions rather
-    # than serializing arbitrary labels supplied as a DataFrame index.
     frame = data.copy(deep=True).reset_index(drop=True)
     for column in columns:
         try:
@@ -62,90 +76,7 @@ def _frame(data, columns: tuple[str, ...], context: str) -> pd.DataFrame:
 
 def ion_series(ion: str) -> str:
     """Identify a native RNA ion series without changing the assignment text."""
-    # OpenMS labels a-B ions both as a-B1 and a1-B, depending on their source.
-    if re.match(r"^a(?:\d+)?-B", ion):
-        return "a-B"
-    match = re.match(r"^([abcdwxyz])(?:\d|$|\^|[+-])", ion)
-    return match.group(1) if match else ""
-
-
-def _spectrum(data: pd.DataFrame, context: str) -> pd.DataFrame:
-    frame = _frame(data, ("mz", "intensity"), context)
-    if frame["intensity"].max() == 0:
-        raise ValueError(f"{context} has no positive intensities to normalize.")
-    frame["ion"] = frame.get("ion", pd.Series("", index=frame.index)).fillna("").astype(str)
-    # The backend automatically serializes native_id when present. Keep only
-    # columns owned by this figure so unrelated metadata cannot enter the HTML.
-    frame = frame[["mz", "intensity", "ion"]].copy()
-    # The backend overwrites a column literally named 'color'; use our own.
-    frame["_naseweis_color"] = frame["ion"].map(
-        lambda ion: ION_COLORS.get(ion_series(ion), UNKNOWN_ION_COLOR)
-    )
-    frame["_naseweis_ion"] = frame["ion"].map(_text)
-    return frame.sort_values("mz", kind="stable").reset_index(drop=True)
-
-
-def spectrum_figure(
-    peaks: pd.DataFrame, title: str, reference: pd.DataFrame | None = None,
-    *, highlighted_mz=None,
-) -> go.Figure:
-    """Plot unbinned peaks, optionally mirrored, with explicit RNA ion colors.
-
-    Each spectrum is normalized to its own maximum; only the display changes.
-    Supplied ion annotations retain their exact peak m/z coordinates.
-    Highlights identify exact, unambiguous acquired peak masses; no peak is
-    snapped to a nearby mass or relabelled as an assigned ion.
-    """
-    spectrum = _spectrum(peaks, "Spectrum peaks")
-    selected = _highlighted_peaks(spectrum, highlighted_mz)
-    mirror = None if reference is None else _spectrum(reference, "Reference peaks")
-    figure = spectrum.plot(
-        backend="ms_plotly", kind="spectrum", x="mz", y="intensity",
-        show_plot=False, title=_text(title), grid=False, bin_peaks=False,
-        aggregate_duplicates=False, relative_intensity=True,
-        reference_spectrum=mirror, mirror_spectrum=mirror is not None,
-        ion_annotation="_naseweis_ion", peak_color="_naseweis_color",
-        annotation_color="_naseweis_color", annotate_top_n_peaks=None,
-        annotate_mz=False,
-    )
-    color_names = {color: series for series, color in ION_COLORS.items()}
-    for trace in figure.data:
-        mirrored = any(value < 0 for value in trace.y if value is not None)
-        series = color_names.get(trace.line.color, "Unannotated")
-        trace.name = f"{series} (reference)" if mirrored else series
-        trace.hovertemplate = "m/z: %{x}<br>Relative intensity: %{y:.2f}%<extra>%{fullData.name}</extra>"
-    # pyopenms-viz 1.0.0 returns black annotations even with annotation_color.
-    # Place the supplied labels ourselves, including labels on mirror peaks.
-    for data, sign in ((spectrum, 1), (mirror, -1)):
-        if data is None:
-            continue
-        maximum = data["intensity"].max()
-        for row in data.loc[data["ion"] != ""].itertuples(index=False):
-            figure.add_annotation(
-                x=row.mz, y=sign * row.intensity / maximum * 100,
-                text=_text(row.ion), showarrow=False, xanchor="center",
-                yanchor="bottom" if sign > 0 else "top",
-                font={"color": ION_COLORS.get(ion_series(row.ion), UNKNOWN_ION_COLOR), "size": 11},
-            )
-    if not selected.empty:
-        height = selected["intensity"] / spectrum["intensity"].max() * 100
-        # An open marker preserves the underlying series color and exact stick
-        # height. A narrow translucent line makes weak selected ions visible.
-        for mz, intensity in zip(selected["mz"], height):
-            figure.add_shape(
-                type="line", x0=mz, x1=mz, y0=0, y1=intensity,
-                line={"color": SELECTED_ION_COLOR, "width": 6},
-                opacity=0.35, layer="below",
-            )
-        figure.add_trace(go.Scatter(
-            x=selected["mz"], y=height, mode="markers",
-            name="Selected ion", text=selected["_naseweis_ion"],
-            marker={"symbol": "circle-open", "size": 14,
-                    "color": SELECTED_ION_COLOR, "line": {"width": 3}},
-            hovertemplate="%{text}<br>m/z: %{x}<br>Relative intensity: %{y:.2f}%<extra>Selected ion</extra>",
-        ))
-    figure.update_layout(title=_text(title), xaxis_title="m/z", yaxis_title="Relative intensity (%)")
-    return figure
+    return fragment_spectrum.ion_series(ion) or ""
 
 
 def _highlighted_peaks(spectrum: pd.DataFrame, highlighted_mz) -> pd.DataFrame:
@@ -169,105 +100,153 @@ def _highlighted_peaks(spectrum: pd.DataFrame, highlighted_mz) -> pd.DataFrame:
     return spectrum.loc[spectrum["mz"].isin(masses)]
 
 
-def chromatogram_figure(points: pd.DataFrame, title: str) -> go.Figure:
+def spectrum_plot(peaks: pd.DataFrame, title: str, *, highlighted_mz=None) -> Plot:
+    """Unbinned peaks as a fragment spectrum, assigned ions labelled and
+    coloured by their RNA ion series.
+
+    Intensities are shown relative to the spectrum's maximum; only the display
+    changes. Highlights identify exact, unambiguous acquired peak masses; no
+    peak is snapped to a nearby mass or relabelled as an assigned ion.
+    """
+    frame = _frame(peaks, ("mz", "intensity"), "Spectrum peaks")
+    if frame["intensity"].max() == 0:
+        raise ValueError("Spectrum peaks has no positive intensities to normalize.")
+    frame["ion"] = frame.get("ion", pd.Series("", index=frame.index)).fillna("").astype(str)
+    frame = frame[["mz", "intensity", "ion"]].sort_values("mz", kind="stable").reset_index(drop=True)
+    selected = _highlighted_peaks(frame, highlighted_mz)
+    ions = {index: _text(ion) for index, ion in enumerate(frame["ion"]) if ion}
+    data = fragment_spectrum.rows(zip(frame["mz"], frame["intensity"]), "spectrum", ions)
+    if not selected.empty:
+        picked = pl.Series(frame["mz"].isin(selected["mz"]).to_list())
+        data = data.with_columns(
+            matched=pl.col("matched") | picked,
+            color=pl.when(picked).then(pl.lit(SELECTED_ION_COLOR)).otherwise(pl.col("color")),
+        )
+    settings = fragment_spectrum.settings(filters={}, interactivity={}, title=_text(title))
+    table = frame.assign(relative_intensity=data["intensity"].to_list(),
+                         selected=frame["mz"].isin(selected["mz"]))
+    return Plot("LinePlot", data, settings, table, 380)
+
+
+def chromatogram_plot(points: pd.DataFrame, title: str) -> Plot:
     """Overlay TIC, BPC, XIC or isotope traces without changing intensities."""
     frame = _frame(points, ("rt", "intensity"), "Chromatogram points")
     if "trace" not in frame or frame["trace"].isna().any():
         raise ValueError("Chromatogram points must identify each trace.")
-    frame["trace"] = frame["trace"].map(_text)
-    frame = frame.sort_values(["trace", "rt"], kind="stable")
-    figure = frame.plot(
-        backend="ms_plotly", kind="chromatogram", x="rt", y="intensity",
-        by="trace", show_plot=False, title=_text(title), grid=False,
-        aggregate_duplicates=False, relative_intensity=False,
+    frame["trace"] = frame["trace"].astype(str)
+    shown = {trace: _text(trace) for trace in frame["trace"].unique()}
+    frame = frame.sort_values(["trace", "rt"], kind="stable").reset_index(drop=True)
+    traces = list(dict.fromkeys(frame["trace"]))
+    palette = ["#CC79A7", "#56B4E9", "#E69F00", "#F0E442", "#999999"]
+    colors = {shown[trace]: TRACE_COLORS.get(trace, palette[i % len(palette)])
+              for i, trace in enumerate(traces)}
+    data = pl.DataFrame({"rt": frame["rt"].astype(float).tolist(),
+                         "intensity": frame["intensity"].astype(float).tolist(),
+                         "series": [shown[trace] for trace in frame["trace"]]})
+    settings = dict(
+        x_column="rt", y_column="intensity", series_column="series",
+        series_names={shown[t]: shown[t] for t in traces}, series_colors=colors,
+        mode="lines", y_range_mode="nonnegative", title=_text(title),
+        x_label="Retention time (s)", y_label="Intensity", svg_filename="naseweis-chromatograms",
     )
-    # The backend adds an empty drawing-helper trace that has no data to view.
-    figure.data = tuple(trace for trace in figure.data if len(trace.x))
-    for trace in figure.data:
-        if trace.name in TRACE_COLORS:
-            trace.line.color = TRACE_COLORS[trace.name]
-        trace.hovertemplate = "Retention time: %{x} s<br>Intensity: %{y}<extra>%{fullData.name}</extra>"
-    figure.update_layout(xaxis_title="Retention time (s)", yaxis_title="Intensity")
-    return figure
+    return Plot("SeriesPlot", data, settings, frame[["trace", "rt", "intensity"]], 340)
 
 
-def peakmap_figure(
-    points: pd.DataFrame, title: str, bounds: pd.DataFrame | None = None,
-    marginals: bool = False,
-) -> go.Figure:
-    """Plot prepared MS1 points with optional actual feature boundaries.
+def _marginal(frame: pd.DataFrame, axis: str, label: str, title: str) -> Plot:
+    summed = frame.groupby(axis, sort=True)["intensity"].sum().reset_index()
+    data = pl.DataFrame({"x": summed[axis].astype(float).tolist(),
+                         "y": summed["intensity"].astype(float).tolist(),
+                         "series": ["Summed intensity"] * len(summed)})
+    settings = dict(
+        x_column="x", y_column="y", series_column="series",
+        series_names={"Summed intensity": "Summed intensity"},
+        series_colors={"Summed intensity": "#0072B2"}, mode="lines",
+        y_range_mode="nonnegative", title=title, x_label=label, y_label="Summed intensity",
+        svg_filename=f"naseweis-ms1-{axis}-marginal",
+    )
+    return Plot("SeriesPlot", data, settings, summed, 240)
 
-    The caller owns any overview binning. Boundaries are not inferred from
-    centroids, extraction windows or instrument tolerances.
+
+def peakmap_plots(points: pd.DataFrame, title: str, marginals: bool = False) -> list[Plot]:
+    """Prepared MS1 points as a peak map, with the summed signal over
+    retention time and m/z below it when ``marginals``.
+
+    The caller owns any overview binning.
     """
     frame = _frame(points, ("rt", "mz", "intensity"), "Peak-map points")
-    boxes = None
-    if bounds is not None and not isinstance(bounds, pd.DataFrame):
-        raise ValueError("Feature boundaries must be a table.")
-    if bounds is not None and not bounds.empty:
-        boxes = _frame(bounds, ("rt_start", "rt_end", "mz_start", "mz_end"), "Feature boundaries")
-        if (boxes["rt_start"] > boxes["rt_end"]).any() or (boxes["mz_start"] > boxes["mz_end"]).any():
-            raise ValueError("Feature boundaries must have their lower limits before their upper limits.")
-        if (boxes[["mz_start", "mz_end"]] <= 0).any().any():
-            raise ValueError("Feature m/z boundaries must be positive.")
-    figure = frame.plot(
-        backend="ms_plotly", kind="peakmap", x="rt", y="mz", z="intensity",
-        show_plot=False, title=_text(title), grid=False, bin_peaks=False,
-        aggregate_duplicates=False, z_log_scale=False, relative_intensity=False,
-        add_marginals=marginals, marker_size=4,
-        xlabel="Retention time (s)", ylabel="m/z", zlabel="Intensity",
+    data = pl.DataFrame({"rt": frame["rt"].astype(float).tolist(),
+                         "mz": frame["mz"].astype(float).tolist(),
+                         "intensity": frame["intensity"].astype(float).tolist()})
+    settings = dict(
+        x_column="rt", y_column="mz", intensity_column="intensity", title=_text(title),
+        x_label="Retention time (s)", y_label="m/z", intensity_label="Intensity",
+        colorscale="Viridis", svg_filename="naseweis-ms1-peakmap",
     )
-    # The first trace is the main peak map, including in the marginal layout.
-    figure.data[0].marker.update(
-        colorscale="Viridis", showscale=True,
-        cmin=0, cmax=float(frame["intensity"].max()),
-        colorbar={"title": "Intensity"},
-    )
-    xaxis, yaxis = figure.data[0].xaxis or "x", figure.data[0].yaxis or "y"
-    if boxes is not None:
-        for number, (_, row) in enumerate(boxes.iterrows(), 1):
-            raw_label = row.get("label", f"Feature {number}")
-            label = _text("" if pd.isna(raw_label) else raw_label)
-            figure.add_shape(
-                type="rect", x0=row["rt_start"], x1=row["rt_end"],
-                y0=row["mz_start"], y1=row["mz_end"], xref=xaxis, yref=yaxis,
-                line={"color": ION_COLORS["a-B"], "width": 2},
-                fillcolor="rgba(0,0,0,0)",
-            )
-            figure.add_trace(go.Scatter(
-                x=[(row["rt_start"] + row["rt_end"]) / 2],
-                y=[(row["mz_start"] + row["mz_end"]) / 2],
-                xaxis=xaxis, yaxis=yaxis, mode="markers",
-                marker={"size": 12, "opacity": 0}, name=label,
-                hovertemplate=f"{label}<extra></extra>", showlegend=False,
-            ))
-    figure.update_layout(title=_text(title))
-    return figure
+    plots = [Plot("Heatmap", data, settings, frame[["rt", "mz", "intensity"]], 440)]
+    if marginals:
+        plots.append(_marginal(frame, "rt", "Retention time (s)", "Signal over retention time"))
+        plots.append(_marginal(frame, "mz", "m/z", "Signal over m/z"))
+    return plots
 
 
-def feature_map_figure(features: pd.DataFrame, title: str) -> go.Figure:
-    """Show every LFQ feature independently, with exact native intensity values.
-
-    A direct scatter retains coincident features and their label/charge hover
-    data. Constant marker size keeps zero-intensity features visible.
-    """
+def feature_map_plot(features: pd.DataFrame, title: str) -> Plot:
+    """Every LFQ feature independently, with exact native intensity values and
+    its RNA label and charge on hover."""
     frame = _frame(features, ("rt", "mz", "intensity", "charge"), "LFQ features")
     if "label" not in frame:
         raise ValueError("LFQ features are missing RNA labels.")
     if (frame["charge"] % 1 != 0).any():
         raise ValueError("LFQ feature charges must be integers.")
-    labels = frame["label"].fillna("").map(_text)
-    figure = go.Figure(go.Scattergl(
-        x=frame["rt"], y=frame["mz"], mode="markers",
-        customdata=np.column_stack([labels, frame["charge"], frame["intensity"]]),
-        marker={
-            "size": 8, "color": frame["intensity"], "colorscale": "Viridis",
-            "cmin": 0, "showscale": True, "colorbar": {"title": "Feature intensity"},
-        },
-        hovertemplate="RNA: %{customdata[0]}<br>Charge: %{customdata[1]}<br>Retention time: %{x} s<br>m/z: %{y}<br>Feature intensity: %{customdata[2]}<extra></extra>",
-    ))
-    figure.update_layout(
-        title=_text(title), xaxis_title="Retention time (s)", yaxis_title="m/z",
-        height=500,
+    labels = frame["label"].fillna("").astype(str)
+    hover = [f"RNA: {_text(label)} · charge {int(charge)} · intensity {value:.6g}"
+             for label, charge, value in zip(labels, frame["charge"], frame["intensity"])]
+    data = pl.DataFrame({"feature": list(range(len(frame))),
+                         "rt": frame["rt"].astype(float).tolist(),
+                         "mz": frame["mz"].astype(float).tolist(),
+                         "intensity": frame["intensity"].astype(float).tolist(),
+                         "label": hover})
+    settings = dict(
+        x_column="rt", y_column="mz", intensity_column="intensity", hover_column="label",
+        title=_text(title), x_label="Retention time (s)", y_label="m/z",
+        intensity_label="Feature intensity", colorscale="Viridis", min_points=len(frame),
+        svg_filename="naseweis-lfq-features",
     )
-    return figure
+    table = frame[["rt", "mz", "intensity", "charge"]].assign(label=labels)
+    return Plot("Heatmap", data, settings, table, 500)
+
+
+def feature_xic_plot(trace: pd.DataFrame, label: str, boundaries=None) -> Plot:
+    """One LFQ feature's raw MS1 XIC, with the part inside its native feature
+    boundaries drawn as its own series. Retention times stay in seconds."""
+    frame = _frame(trace, ("rt", "intensity"), "Chromatogram points")
+    frame = frame.sort_values("rt", kind="stable").reset_index(drop=True)
+    start, end = (boundaries or (None, None))[:2]
+    data = feature_xic.rows(_text(label), frame["rt"], frame["intensity"], start, end)
+    settings = feature_xic.settings(
+        filters={}, interactivity={}, title=_text(label), x_label="Retention time (s)",
+        svg_filename="naseweis-lfq-xic",
+    )
+    table = frame[["rt", "intensity"]].assign(
+        in_feature=frame["rt"].between(start, end) if start is not None and end is not None else False
+    )
+    return Plot("SeriesPlot", data, settings, table, 340)
+
+
+def abundance_bars_plot(labels, values, title: str, y_label: str) -> Plot:
+    """One RNA target's abundance per acquisition as bars; a missing
+    measurement stays missing rather than drawn as zero."""
+    labels = [str(label) for label in labels]
+    numbers = [None if value is None or pd.isna(value) else float(value) for value in values]
+    if len(labels) != len(numbers) or not labels:
+        raise ValueError("Abundance bars need one value per acquisition.")
+    data = pl.DataFrame({"acquisition": labels, "abundance": numbers,
+                         "series": ["Abundance"] * len(labels)},
+                        schema={"acquisition": pl.Utf8, "abundance": pl.Float64, "series": pl.Utf8})
+    settings = dict(
+        x_column="acquisition", y_column="abundance", series_column="series",
+        series_names={"Abundance": _text(title)}, series_colors={"Abundance": "#29379b"},
+        mode="bars", y_range_mode="nonnegative", title=_text(title), x_label="Acquisition",
+        y_label=y_label, svg_filename="naseweis-abundance",
+    )
+    table = pd.DataFrame({"acquisition": labels, "abundance": numbers})
+    return Plot("SeriesPlot", data, settings, table, 340)

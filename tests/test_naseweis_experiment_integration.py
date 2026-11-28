@@ -21,7 +21,7 @@ def test_invalid_selection_cannot_create_a_run_or_rewrite_the_design(workflow, m
     before = workflow.parameter_manager.params_file.read_bytes()
     workflow.runs = RunManager(workflow.workflow_dir)
     monkeypatch.setattr(st, "session_state", {})
-    with pytest.raises(ValueError, match="Select.*Configure"):
+    with pytest.raises(ValueError, match="Select.*Describe experiment"):
         workflow._new_run()
     assert workflow.runs.list_runs() == []
     assert not design_path(workflow.workflow_dir).exists()
