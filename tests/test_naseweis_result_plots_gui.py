@@ -40,9 +40,11 @@ def _scatter(app):
 
 
 def _coverage_notes(app):
-    """The notes the coverage map (one Insight SequenceCoverage) carries in its own frame."""
-    return [note for item in naseweis_drawn.plots(app.drawn) if item.component == "SequenceCoverage"
-            for note in item.settings.get("notes", [])]
+    """The notes of the coverage map: inside the Insight SequenceCoverage, or
+    under the static map an openms-insight without that component gets."""
+    drawn = [note for item in naseweis_drawn.plots(app.drawn) if item.component == "SequenceCoverage"
+             for note in item.settings.get("notes") or []]
+    return drawn + [caption.value for caption in app.caption]
 
 
 def _log(settings):
@@ -85,6 +87,23 @@ def test_identification_only_experiment_has_condition_and_acquisition_coverage(s
     next(box for box in app.selectbox if box.label == "Bases per line").set_value(25).run(timeout=30)
     assert not app.exception
     assert app.session_state.opened_sample == "sample_001"
+
+
+def test_coverage_without_insight_component_still_shows_map_and_notes(saved_experiment, monkeypatch):  # noqa: F811
+    import openms_insight
+
+    monkeypatch.delattr(openms_insight, "SequenceCoverage", raising=False)
+    folder, root, manifest = saved_experiment
+    for sample in manifest["samples"]:
+        _coverage_file(root, sample["id"])
+    manifest.update(lfq_enabled=False, comparison_status="not_requested")
+    (root / "experiment.json").write_text(json.dumps(manifest))
+    app = _recorded(app_for(folder, mode="results"), monkeypatch).run(timeout=30)
+    assert not app.exception
+    assert not any(item.component == "SequenceCoverage" for item in app.drawn)
+    assert any(text.value.startswith("**Sequence coverage") and "NME1" in text.value for text in app.markdown)
+    assert any("4 of 4 acquisitions" in caption.value for caption in app.caption)
+    _download(app, "Download coverage (SVG)")
 
 
 def test_partial_coverage_uses_only_available_saved_results_and_reports_bad_file(saved_experiment, monkeypatch):  # noqa: F811

@@ -1,7 +1,10 @@
 """Saved-result coverage and comparative LFQ plots; viewing never reruns tools."""
 
+import re
+
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.naseweis_insight import show_plot
 from src.naseweis_comparison_plots import condition_scatter, paired_condition_rows
@@ -84,7 +87,10 @@ def render_coverage_groups(groups, prefix, accession=None, *, help=None, control
     except (ValueError, KeyError, IndexError, TypeError) as error:
         st.warning(f"Coverage is unavailable: {error}")
         return
-    show_plot(figure, f"{prefix}-plot", "naseweis-coverage", help=help, tsv=False)
+    if _has_coverage_component():
+        show_plot(figure, f"{prefix}-plot", "naseweis-coverage", help=help, tsv=False)
+    else:
+        _static_coverage(figure, svg, help=help)
     # Compact row under the map: narrow settings, a spacer, the download menu at the right.
     widths = {"accession": 2, "block": 1, "controls": 2, "spacer": 2, "download": 1}
     parts = (["accession"] if picker else []) + ["block"] + (["controls"] if controls else []) + ["spacer", "download"]
@@ -108,6 +114,26 @@ def render_coverage_groups(groups, prefix, accession=None, *, help=None, control
                 "Download plotted values (TSV)", figure.table.to_csv(sep="\t", index=False),
                 "naseweis-coverage.tsv", "text/tab-separated-values", key=f"{prefix}-plot-tsv",
             )
+
+
+def _has_coverage_component():
+    """Whether the installed openms-insight draws the coverage map itself."""
+    try:
+        import openms_insight
+    except ImportError:
+        return False
+    return hasattr(openms_insight, "SequenceCoverage")
+
+
+def _static_coverage(figure, svg, *, help=None):  # pylint: disable=redefined-builtin
+    """The same map as a static picture, for an openms-insight without SequenceCoverage."""
+    settings = figure.settings
+    st.markdown(f"**{settings.get('title', 'Sequence coverage')}** · {settings.get('reference_name', '')}",
+                help=help)
+    match = re.search(r'height="(\d+)"', svg)
+    components.html(svg, height=(int(match.group(1)) if match else 400) + 16, scrolling=True)
+    for note in settings.get("notes") or []:
+        st.caption(note)
 
 
 def _coverage_tracks(available, grouping):
