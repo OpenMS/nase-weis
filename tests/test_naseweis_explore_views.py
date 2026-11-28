@@ -28,8 +28,12 @@ def _clean(app):
 
 
 def _tabs(app):
-    # Each result section is a titled panel.
-    return [header.value for header in app.subheader]
+    # Each result section is a titled panel; the coverage map is one Insight
+    # SequenceCoverage, whose own frame carries its title.
+    titles = [header.value for header in app.subheader]
+    if any(item.component == "SequenceCoverage" for item in getattr(app, "drawn", [])):
+        titles.append("Sequence coverage map")
+    return titles
 
 
 def _has(app, sections):
@@ -141,9 +145,11 @@ def test_identification_only_experiment_has_no_comparison(app):
     _open_view(app, "experiment", "coverage")
     _clean(app)
     assert not any(m.value == "**Condition comparison**" for m in app.markdown)
-    # The RNA picked in the table (or, before a pick, in the accession box)
+    # The RNA picked in the table (or, before a pick, in the accession box) is
+    # the reference the coverage map names in its own frame.
     assert (any("NME1" in str(box.options) for box in app.selectbox if "accession" in box.label)
-            or any("NME1" in m.value for m in app.markdown))
+            or any(item.settings.get("reference_name") == "NME1" for item in app.drawn
+                   if item.component == "SequenceCoverage"))
 
 
 # --- Round 1: every ready-made view of both kinds ---------------------------

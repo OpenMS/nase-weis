@@ -28,8 +28,9 @@ def _draw(cls, path: Path, cache_id: str, build, call: dict) -> None:
     component(cls, path, cache_id, build)(**call)
 
 
-def show_plot(plot: Plot, key: str, filename: str, cache_dir=None, state_manager=None) -> None:
-    """Render ``plot`` with its Insight component and a TSV download of its rows."""
+def show_plot(plot: Plot, key: str, filename: str, cache_dir=None, state_manager=None, *,
+              help: str | None = None, tsv: bool = True) -> None:  # pylint: disable=redefined-builtin
+    """Render ``plot`` with its Insight component and, with ``tsv``, a TSV download of its rows."""
     import openms_insight
 
     cls = getattr(openms_insight, plot.component, None)
@@ -43,8 +44,10 @@ def show_plot(plot: Plot, key: str, filename: str, cache_dir=None, state_manager
     call = {"key": key, "height": plot.height}
     if state_manager is not None:
         call["state_manager"] = state_manager
+    if help:
+        call["help"] = help
     _draw(cls, path, cache_id, lambda: {"data": plot.data.lazy(), **settings}, call)
-    if not plot.table.empty:
+    if tsv and not plot.table.empty:
         st.download_button(
             "Download plotted values (TSV)",
             plot.table.to_csv(sep="\t", index=False),

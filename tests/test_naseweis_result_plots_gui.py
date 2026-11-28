@@ -39,6 +39,12 @@ def _scatter(app):
                 if item.key.endswith("-scatter"))
 
 
+def _coverage_notes(app):
+    """The notes the coverage map (one Insight SequenceCoverage) carries in its own frame."""
+    return [note for item in naseweis_drawn.plots(app.drawn) if item.component == "SequenceCoverage"
+            for note in item.settings.get("notes", [])]
+
+
 def _log(settings):
     return settings["x_label"].startswith("log10") and settings["y_label"].startswith("log10")
 
@@ -73,10 +79,10 @@ def test_identification_only_experiment_has_condition_and_acquisition_coverage(s
     _download(app, "Download coverage (HTML)")
     _download(app, "Download coverage (SVG)")
     assert not any(item.key.endswith("-scatter") for item in app.drawn)
-    assert any("4 of 4 acquisitions" in text.value for text in app.caption)
+    assert any("4 of 4 acquisitions" in note for note in _coverage_notes(app))
     next(radio for radio in app.radio if radio.label == "Coverage tracks").set_value("Acquisition").run(timeout=30)
     assert not app.exception
-    app.select_slider[0].set_value(25).run(timeout=30)
+    next(box for box in app.selectbox if box.label == "Bases per line").set_value(25).run(timeout=30)
     assert not app.exception
     assert app.session_state.opened_sample == "sample_001"
 
@@ -92,7 +98,7 @@ def test_partial_coverage_uses_only_available_saved_results_and_reports_bad_file
     app = _recorded(app_for(folder, mode="results"), monkeypatch).run(timeout=30)
     assert not app.exception
     assert any("Could not read coverage for run2.mzML" in text.value for text in app.warning)
-    assert any("1 of 4 acquisitions" in text.value for text in app.caption)
+    assert any("1 of 4 acquisitions" in note for note in _coverage_notes(app))
     _download(app, "Download coverage (SVG)")
     assert not any(radio.label == "Coverage tracks" for radio in app.radio)
     assert not any(item.key.endswith("-scatter") for item in app.drawn)

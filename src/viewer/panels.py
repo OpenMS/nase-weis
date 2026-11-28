@@ -72,9 +72,8 @@ def _loaded(src: Source):
 
 # --- result sections -------------------------------------------------------
 
-TITLES = {"matches": "Matches", "spectrum_viewer": "Spectra", "coverage": "Sequence coverage map",
-          "quantification": "Quantification", "downloads": "Export",
-          "experiment_summary": "Experiment summary", "experiment_coverage": "Sequence coverage map",
+TITLES = {"matches": "Matches", "spectrum_viewer": "Spectra", "quantification": "Quantification",
+          "downloads": "Export", "experiment_summary": "Experiment summary",
           "experiment_quantification": "Quantification", "sample_details": "Sample details"}
 
 
@@ -187,8 +186,8 @@ def coverage(ctx, src: Source) -> None:
         return
     from src.naseweis_result_plots_ui import render_coverage_groups
 
-    _titled("coverage", lambda: render_coverage_groups(
-        [("This acquisition", loaded["tables"])], f"coverage-{src.wf.results_dir}", picked_rna(ctx, src)))
+    render_coverage_groups([("This acquisition", loaded["tables"])], f"coverage-{src.wf.results_dir}",
+                           picked_rna(ctx, src), help=teaching.component("coverage"))
 
 
 def downloads(ctx, src: Source) -> None:
@@ -244,8 +243,8 @@ def experiment_coverage(ctx, src: Source) -> None:
     if context is not None:
         from src.naseweis_result_plots_ui import render_experiment_coverage
 
-        _titled("experiment_coverage", lambda: render_experiment_coverage(
-            context["root"], context["samples"], context["prefix"], picked_rna(ctx, src)))
+        render_experiment_coverage(context["root"], context["samples"], context["prefix"],
+                                   picked_rna(ctx, src), help=teaching.component("experiment_coverage"))
 
 
 def experiment_quantification(ctx, src: Source) -> None:

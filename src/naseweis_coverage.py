@@ -319,11 +319,15 @@ def coverage_plot(model, *, block_size=50):
     from src.naseweis_plots import Plot
     from src.viz.identification import sequence_coverage
 
-    hits, counts, notes = [], [], []
+    hits, counts, notes, summaries = [], [], [], []
     for group in model["groups"]:
         assignments = group.get("assignments")
-        note = (
-            f"{group['oligonucleotides']} oligonucleotides · {group['coverage']:.1%} covered"
+        # The component writes the track's coverage before this note, in the
+        # narrow label column; the full line goes below the legend.
+        note = (f"{group['oligonucleotides']} oligos" if assignments is None
+                else f"{assignments} matches")
+        summaries.append(
+            f"{group['name']}: {group['oligonucleotides']} oligonucleotides · {group['coverage']:.1%} covered"
             + ("" if assignments is None else f" · {assignments} spectrum matches")
         )
         for hit in group["hits"]:
@@ -339,7 +343,7 @@ def coverage_plot(model, *, block_size=50):
         track_order=[group["name"] for group in model["groups"]],
         track_note_column="note", block_size=int(block_size), count_bins=list(COUNT_BINS),
         title=f"Sequence coverage · {model['coverage']:.1%} of {model['length']} nt",
-        notes=list(model.get("warnings") or []),
+        notes=summaries + list(model.get("warnings") or []),
     )
     table = pd.DataFrame([
         {"track": hit["track"], "sequence": hit["sequence"], "start": hit["start"], "end": hit["end"],

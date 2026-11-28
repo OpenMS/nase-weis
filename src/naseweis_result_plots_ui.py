@@ -51,40 +51,63 @@ def rna_summary(groups):
                                        "matches", "coverage"])
 
 
-def render_coverage_groups(groups, prefix, accession=None):
-    """Render one accession across supplied acquisition/condition tracks.
+BLOCK_SIZES = [25, 50, 75, 100]
+
+
+def render_coverage_groups(groups, prefix, accession=None, *, help=None, controls=None, notes=()):  # pylint: disable=redefined-builtin
+    """Render one accession across supplied acquisition/condition tracks as one
+    component: the coverage map, with its settings and downloads in one row below.
 
     ``accession`` (picked elsewhere, in the RNA table) is shown without the
     accession selector; an accession these results do not hold falls back to it.
+    ``controls`` draws further settings into that row (it gets the column);
+    ``notes`` are shown under the map's legend.
     """
     accessions = coverage_accessions(groups)
     if not accessions:
         st.info("No RNA sequence coverage to display for these results.")
         return
-    if accession in accessions:
-        st.markdown(f"**{accession}**")
+    block_key = f"{prefix}-block-size"
+    block_size = st.session_state.get(block_key) or 50
+    if accession not in accessions:
+        accession = st.session_state.get(f"{prefix}-accession")
+        accession = accession if accession in accessions else accessions[0]
+        picker = True
     else:
-        accession = st.selectbox("RNA accession", accessions, key=f"{prefix}-accession")
-    block_size = st.select_slider(
-        "Bases per line", [25, 50, 75, 100], value=50, key=f"{prefix}-block-size"
-    )
+        picker = False
     try:
         model = build_coverage(groups, accession)
+        model["warnings"] = list(notes) + list(model.get("warnings") or [])
         figure = coverage_plot(model, block_size=block_size)
         plot = render_coverage_html(model, block_size=block_size)
         svg = render_coverage_svg(model, block_size=block_size)
     except (ValueError, KeyError, IndexError, TypeError) as error:
         st.warning(f"Coverage is unavailable: {error}")
         return
-    show_plot(figure, f"{prefix}-plot", "naseweis-coverage")
-    st.download_button(
-        "Download coverage (HTML)", plot, "naseweis-coverage.html", "text/html",
-        key=f"{prefix}-html",
-    )
-    st.download_button(
-        "Download coverage (SVG)", svg, "naseweis-coverage.svg", "image/svg+xml",
-        key=f"{prefix}-svg",
-    )
+    show_plot(figure, f"{prefix}-plot", "naseweis-coverage", help=help, tsv=False)
+    # Compact row under the map: narrow settings, a spacer, the download menu at the right.
+    widths = {"accession": 2, "block": 1, "controls": 2, "spacer": 2, "download": 1}
+    parts = (["accession"] if picker else []) + ["block"] + (["controls"] if controls else []) + ["spacer", "download"]
+    columns = dict(zip(parts, st.columns([widths[part] for part in parts], vertical_alignment="bottom")))
+    if picker:
+        columns["accession"].selectbox("RNA accession", accessions, key=f"{prefix}-accession")
+    columns["block"].selectbox("Bases per line", BLOCK_SIZES, index=BLOCK_SIZES.index(block_size) if block_size in BLOCK_SIZES else 1, key=block_key)
+    if controls is not None:
+        controls(columns["controls"])
+    with columns["download"].popover("Download", icon=":material/download:", use_container_width=True):
+        st.download_button(
+            "Download coverage (HTML)", plot, "naseweis-coverage.html", "text/html",
+            key=f"{prefix}-html",
+        )
+        st.download_button(
+            "Download coverage (SVG)", svg, "naseweis-coverage.svg", "image/svg+xml",
+            key=f"{prefix}-svg",
+        )
+        if not figure.table.empty:
+            st.download_button(
+                "Download plotted values (TSV)", figure.table.to_csv(sep="\t", index=False),
+                "naseweis-coverage.tsv", "text/tab-separated-values", key=f"{prefix}-plot-tsv",
+            )
 
 
 def _coverage_tracks(available, grouping):
@@ -129,27 +152,31 @@ def experiment_coverage_tables(root, samples):
     return available
 
 
-def render_experiment_coverage(root, samples, prefix, accession=None):
+def render_experiment_coverage(root, samples, prefix, accession=None, *, help=None):  # pylint: disable=redefined-builtin
     """Coverage of the experiment's acquisitions, as condition or acquisition tracks."""
     available = experiment_coverage_tables(root, samples)
     if not available:
         st.info("No RNA sequence coverage to display for these results.")
         return
-    st.caption(
-        f"Saved identification evidence from {len(available)} of {len(samples)} acquisitions. "
-        "Colors show summed spectrum matches, not LFQ abundance. "
-        "Condition tracks pool identification evidence across their acquisitions; "
-        "use acquisition tracks to inspect unequal group sizes."
-    )
+    # One short line each: the component draws its notes as single lines.
+    notes = [
+        f"Saved identification evidence from {len(available)} of {len(samples)} acquisitions.",
+        "Colors show summed spectrum matches, not LFQ abundance.",
+        "Condition tracks pool identification evidence across their acquisitions;",
+        "use acquisition tracks to inspect unequal group sizes.",
+    ]
+    choices = ["Condition", "Acquisition"]
+    grouping_key = f"{prefix}-grouping"
+    grouping, controls = "Acquisition", None
     if len(available) > 1:
-        assigned = all(sample.get("condition", "").strip() for sample, _ in available)
-        grouping = st.radio(
-            "Coverage tracks", ["Condition", "Acquisition"],
-            index=0 if assigned else 1, horizontal=True, key=f"{prefix}-grouping",
-        )
-    else:
-        grouping = "Acquisition"
-    render_coverage_groups(_coverage_tracks(available, grouping), f"{prefix}-coverage", accession)
+        default = 0 if all(sample.get("condition", "").strip() for sample, _ in available) else 1
+        grouping = st.session_state.get(grouping_key, choices[default])
+
+        def tracks_radio(column):
+            column.radio("Coverage tracks", choices, index=default, horizontal=True, key=grouping_key)
+        controls = tracks_radio
+    render_coverage_groups(_coverage_tracks(available, grouping), f"{prefix}-coverage", accession,
+                           help=help, controls=controls, notes=notes)
 
 
 def render_lfq_scatter(contrasts, numerator, denominator, prefix, *, measure, normalization):
